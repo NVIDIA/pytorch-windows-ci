@@ -1,0 +1,129 @@
+name: pytorch-wheel-test
+
+# Reusable Windows RTX test workflow. Mirrors `_win-rtx-test.yml` from
+# pytorch/pytorch PR #176678 - downloads the multi-arch wheel artifact
+# (which also carries `built_pytorch_sha.txt`) produced by the matching
+# build job, checks out pytorch/pytorch at that exact SHA, installs the
+# wheel, then runs PyTorch's in-tree Windows test suite via
+# `.ci/pytorch/win-test.sh`.
+#
+# Reading the built SHA out of the artifact (rather than passing it in as
+# an input) keeps build/test consistency intact even when matrix outputs
+# would not propagate cleanly.
+#
+# Runners are ephemeral pre-prepped images selected by the label set
+#   [self-hosted, Windows, X64, <runner-base>, <python-label>, <cuda-label>]
+# (e.g. [self-hosted, Windows, X64, rtx-40x0-test, py312, cu130]).
+
+on:
+  workflow_call:
+    inputs:
+      runner-base:
+        description: "Base runner label for the test pool (e.g. rtx-40x0-test)."
+        type: string
+        required: true
+      python-version:
+        description: "Python version in dotted form (e.g. 3.12)."
+        type: string
+        required: true
+      python-label:
+        description: "Python label used in runner labels (e.g. py312)."
+        type: string
+        required: true
+      cuda-version:
+        description: "CUDA toolkit version in dotted form (e.g. 13.0)."
+        type: string
+        required: true
+      cuda-label:
+        description: "CUDA label used in runner labels (e.g. cu130)."
+        type: string
+        required: true
+      build-environment:
+        description: "Logical name passed through as BUILD_ENVIRONMENT."
+        type: string
+        required: true
+      wheel-artifact:
+        description: "Artifact name produced by the matching build job (contains wheel + built_pytorch_sha.txt)."
+        type: string
+        required: true
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  test:
+    name: test
+    runs-on:
+      - self-hosted
+      - Windows
+      - X64
+      - ${{ inputs.runner-base }}
+      - ${{ inputs.python-label }}
+      - ${{ inputs.cuda-label }}
+    timeout-minutes: 480
+    env:
+      BUILD_ENVIRONMENT: ${{ inputs.build-environment }}
+      PYTHON_VERSION: ${{ inputs.python-version }}
+      CUDA_VERSION: ${{ inputs.cuda-version }}
+      PYTORCH_TEST_WITH_SLOW: "0"
+      CI: "1"
+    steps:
+      - name: Download wheel artifact (wheel + sha sidecar)
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ inputs.wheel-artifact }}
+          path: artifact
+
+      - name: Read built pytorch SHA
+        id: sha
+        shell: bash
+        run: |
+          set -euo pipefail
+          sha_file="artifact/built_pytorch_sha.txt"
+          if [ ! -f "$sha_file" ]; then
+            echo "::error::built_pytorch_sha.txt missing from artifact" >&2
+            exit 1
+          fi
+          sha=$(tr -d '[:space:]' < "$sha_file")
+          if ! [[ "$sha" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::Invalid SHA in artifact: '$sha'" >&2
+            exit 1
+          fi
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          echo "Will check out pytorch/pytorch @ $sha"
+
+      - name: Checkout pytorch/pytorch at the built SHA
+        uses: actions/checkout@v4
+        with:
+          repository: pytorch/pytorch
+          ref: ${{ steps.sha.outputs.sha }}
+          submodules: recursive
+          fetch-depth: 1
+          show-progress: false
+
+      - name: Install PyTorch wheel
+        shell: bash
+        run: |
+          set -euo pipefail
+          wheel=$(ls -1 artifact/*.whl | head -n1)
+          echo "Installing $wheel"
+          python -m pip install "$wheel"
+          python -c "import torch; print('torch', torch.__version__, 'cuda', torch.version.cuda); assert torch.cuda.is_available()"
+
+      - name: Run PyTorch Windows test suite
+        shell: bash
+        run: |
+          bash .ci/pytorch/win-test.sh
+
+      - name: Upload test reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pytorch-test-reports-${{ inputs.build-environment }}-${{ inputs.python-label }}-${{ inputs.cuda-label }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            test/**/*.xml
+            test/test-reports/**
+            test/**/test-reports/**
+          if-no-files-found: warn
+          retention-days: 14

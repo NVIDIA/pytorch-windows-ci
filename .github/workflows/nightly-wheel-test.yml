@@ -1,0 +1,91 @@
+name: nightly-wheel-test
+
+# Daily smoke of the *published* pytorch nightly wheel on self-hosted
+# Windows NVIDIA RTX runners. No source build, no preflight, no
+# artifact handoff - each test runner is told `pytorch-ref: nightly`,
+# `actions/checkout@v4` resolves that against `pytorch/pytorch` to a
+# concrete commit, the runner reads that commit's UTC date, then
+# greps `download.pytorch.org/whl/nightly/torch/` for the wheel whose
+# filename carries that exact `devYYYYMMDD` tag together with the
+# matrix `cu<label>` / `cp<pyshort>` tags, and `pip install`s the
+# resolved absolute URL. The job fails fast if the index has no
+# wheel for the checked-out commit's date (i.e. the wheel is not yet
+# published) - that guarantees the wheel under test and the pytorch
+# source checkout used by `.ci/pytorch/win-test.sh` come from the
+# same day.
+#
+# Counterparts:
+#   - relay-server-event-validate.yml  -> RFC-0050 handshake (no compute)
+#   - nightly-source-build-test.yml    -> full source build + test
+#
+# Shape (matrix anchored on the first test job, re-used by the second):
+#
+#   rtx-40x0-test  matrix( python x cuda )   sm89  / Ada
+#   rtx-50x0-test  matrix( python x cuda )   sm120 / Blackwell
+
+on:
+  schedule:
+    - cron: "0 14 * * *"
+  workflow_dispatch:
+    inputs:
+      test-architectures:
+        description: "Comma-separated subset of sm89,sm120 to test."
+        required: false
+        default: "sm89,sm120"
+      wheel-index-url:
+        description: "Override the nightly wheel index page (default: https://download.pytorch.org/whl/nightly/torch/)."
+        required: false
+        default: ""
+      pytorch-ref:
+        description: "pytorch/pytorch ref to test against (branch, tag, or SHA). Default: nightly."
+        required: false
+        default: "nightly"
+
+concurrency:
+  group: nightly-wheel-test-${{ github.run_id }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  rtx-40x0-test:
+    name: test sm89 / RTX 40x0 (${{ matrix.python.label }} / ${{ matrix.cuda.label }})
+    if: contains(inputs.test-architectures || 'sm89,sm120', 'sm89') || github.event_name != 'workflow_dispatch'
+    strategy:
+      fail-fast: false
+      matrix: &matrix
+        python:
+          - { version: "3.12", label: "py312" }
+          - { version: "3.13", label: "py313" }
+        cuda:
+          - { version: "13.0", label: "cu130" }
+          - { version: "13.2", label: "cu132" }
+    uses: ./.github/workflows/_rtx-test.yml
+    with:
+      runner-base: rtx-40x0-test
+      python-version: ${{ matrix.python.version }}
+      python-label: ${{ matrix.python.label }}
+      cuda-version: ${{ matrix.cuda.version }}
+      cuda-label: ${{ matrix.cuda.label }}
+      build-environment: win-rtx-nightly-wheel-sm89
+      pytorch-ref: ${{ inputs.pytorch-ref || 'nightly' }}
+      wheel-index-url: ${{ inputs.wheel-index-url || 'https://download.pytorch.org/whl/nightly/torch/' }}
+
+  rtx-50x0-test:
+    name: test sm120 / RTX 50x0 (${{ matrix.python.label }} / ${{ matrix.cuda.label }})
+    if: contains(inputs.test-architectures || 'sm89,sm120', 'sm120') || github.event_name != 'workflow_dispatch'
+    strategy:
+      fail-fast: false
+      matrix: *matrix
+    uses: ./.github/workflows/_rtx-test.yml
+    with:
+      runner-base: rtx-50x0-test
+      python-version: ${{ matrix.python.version }}
+      python-label: ${{ matrix.python.label }}
+      cuda-version: ${{ matrix.cuda.version }}
+      cuda-label: ${{ matrix.cuda.label }}
+      build-environment: win-rtx-nightly-wheel-sm120
+      pytorch-ref: ${{ inputs.pytorch-ref || 'nightly' }}
+      wheel-index-url: ${{ inputs.wheel-index-url || 'https://download.pytorch.org/whl/nightly/torch/' }}

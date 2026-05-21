@@ -65,10 +65,6 @@ on:
         type: string
         required: false
         default: "nightly"
-    outputs:
-      wheel-artifact:
-        description: "Name of the wheel + sha-sidecar artifact uploaded by this build."
-        value: ${{ jobs.build.outputs.wheel-artifact }}
 
 permissions:
   contents: read
@@ -84,17 +80,14 @@ jobs:
       - ${{ inputs.python-label }}
       - ${{ inputs.cuda-label }}
     timeout-minutes: 300
-    outputs:
-      wheel-artifact: ${{ steps.publish-name.outputs.artifact-name }}
     env:
       BUILD_ENVIRONMENT: ${{ inputs.build-environment }}
       TORCH_CUDA_ARCH_LIST: ${{ inputs.cuda-arch-list }}
       PYTHON_VERSION: ${{ inputs.python-version }}
       CUDA_VERSION: ${{ inputs.cuda-version }}
-      USE_CUDA: "1"
-      USE_CUDNN: "1"
+      # Test binaries are built by the test job, not here.
       BUILD_TEST: "0"
-      CMAKE_GENERATOR: "Ninja"
+      # MSVC env hint and machine-specific parallelism tuning.
       DISTUTILS_USE_SDK: "1"
       MAX_JOBS: "8"
     steps:
@@ -125,11 +118,9 @@ jobs:
 
       - name: Build PyTorch wheel
         shell: bash
-        run: |
-          bash .ci/pytorch/win-build.sh
+        run: bash .ci/pytorch/win-build.sh
 
-      - name: Locate built wheel
-        id: locate
+      - name: Stage wheel + sha into artifact dir
         shell: bash
         run: |
           set -euo pipefail
@@ -139,9 +130,7 @@ jobs:
             exit 1
           fi
           mkdir -p artifact
-          cp "$wheel" artifact/
-          cp built_pytorch_sha.txt artifact/
-          echo "Staged artifact contents:"
+          cp "$wheel" built_pytorch_sha.txt artifact/
           ls -la artifact
 
       - name: Publish wheel + sha artifact
@@ -151,10 +140,3 @@ jobs:
           path: artifact/**
           if-no-files-found: error
           retention-days: 14
-
-      - name: Export artifact name
-        id: publish-name
-        shell: bash
-        run: |
-          name="pytorch-wheel-${{ inputs.build-environment }}-${{ inputs.python-label }}-${{ inputs.cuda-label }}-${{ github.run_id }}-${{ github.run_attempt }}"
-          echo "artifact-name=$name" >> "$GITHUB_OUTPUT"

@@ -1,19 +1,33 @@
 name: pytorch-wheel-test
 
-# Reusable Windows RTX test workflow. Mirrors `_win-rtx-test.yml` from
-# pytorch/pytorch PR #176678 - downloads the multi-arch wheel artifact
-# (which also carries `built_pytorch_sha.txt`) produced by the matching
-# build job, checks out pytorch/pytorch at that exact SHA, installs the
-# wheel, then runs PyTorch's in-tree Windows test suite via
-# `.ci/pytorch/win-test.sh`.
+# Reusable Windows RTX test workflow. Two install paths, one set of
+# downstream steps:
 #
-# Reading the built SHA out of the artifact (rather than passing it in as
-# an input) keeps build/test consistency intact even when matrix outputs
-# would not propagate cleanly.
+#   A) artifact path  - the wheel is a producer-uploaded artifact from
+#                       `_rtx-build.yml`; SHA travels alongside the
+#                       wheel in `built_pytorch_sha.txt`. Used by
+#                       `nightly-source-build-test.yml`.
+#   B) pip-index path - the wheel is already on a public pip index
+#                       (download.pytorch.org/whl/nightly/torch/). The
+#                       orchestrator passes a `pytorch-ref` (typically
+#                       a branch like `nightly`); `actions/checkout@v4`
+#                       resolves it to a concrete commit, this workflow
+#                       reads the commit's UTC date, greps the index
+#                       for a wheel whose filename carries that exact
+#                       `devYYYYMMDD` tag together with the matrix
+#                       `cu<label>` / `cp<pyshort>` tags, and installs
+#                       the resolved URL directly. The job fails fast
+#                       if the index has no wheel for that date
+#                       (i.e. the wheel for the source we just checked
+#                       out is not yet published). Used by
+#                       `nightly-wheel-test.yml`.
 #
-# Runners are ephemeral pre-prepped images selected by the label set
-#   [self-hosted, Windows, X64, <runner-base>, <python-label>, <cuda-label>]
-# (e.g. [self-hosted, Windows, X64, rtx-40x0-test, py312, cu130]).
+# Exactly one path must be selected per call: set `wheel-artifact`
+# (path A) or `pytorch-ref` (path B).
+#
+# A lightweight runner-diagnostics monitor samples host + GPU metrics
+# in the background while the test step runs in the foreground, so OOT
+# failures can be triaged against an accurate picture of the machine.
 
 on:
   workflow_call:
@@ -42,10 +56,25 @@ on:
         description: "Logical name passed through as BUILD_ENVIRONMENT."
         type: string
         required: true
+
+      # ---- Path A: artifact-driven (source build) ---------------------
       wheel-artifact:
-        description: "Artifact name produced by the matching build job (contains wheel + built_pytorch_sha.txt)."
+        description: "Artifact name carrying wheel + built_pytorch_sha.txt. Mutually exclusive with pytorch-ref."
         type: string
-        required: true
+        required: false
+        default: ""
+
+      # ---- Path B: pip-index-driven (nightly wheel) -------------------
+      pytorch-ref:
+        description: "pytorch/pytorch ref to checkout (branch, tag, or SHA). Required when wheel-artifact is empty."
+        type: string
+        required: false
+        default: ""
+      wheel-index-url:
+        description: "Nightly wheel index page (PEP 503 simple index). The resolver greps this for a wheel whose filename matches the checked-out commit's date and the matrix cuda + python tags."
+        type: string
+        required: false
+        default: "https://download.pytorch.org/whl/nightly/torch/"
 
 permissions:
   contents: read
@@ -69,52 +98,155 @@ jobs:
       PYTORCH_TEST_WITH_SLOW: "0"
       CI: "1"
     steps:
-      - name: Download wheel artifact (wheel + sha sidecar)
+      - name: Validate install-path inputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -n "${{ inputs.wheel-artifact }}" ]; then
+            echo "install path: artifact (${{ inputs.wheel-artifact }})"
+          elif [ -n "${{ inputs.pytorch-ref }}" ]; then
+            echo "install path: pip-index"
+            echo "  pytorch-ref:     ${{ inputs.pytorch-ref }}"
+            echo "  wheel-index-url: ${{ inputs.wheel-index-url }}"
+          else
+            echo "::error::Either 'wheel-artifact' or 'pytorch-ref' must be set." >&2
+            exit 1
+          fi
+
+      - name: Checkout pytorch-oot-internal (runner-diagnostics actions)
+        uses: actions/checkout@v4
+        with:
+          path: oot
+          show-progress: false
+
+      - name: Download wheel artifact
+        if: inputs.wheel-artifact != ''
         uses: actions/download-artifact@v4
         with:
           name: ${{ inputs.wheel-artifact }}
           path: artifact
 
-      - name: Read built pytorch SHA
-        id: sha
+      - name: Resolve pytorch ref to check out
+        id: ref
         shell: bash
         run: |
           set -euo pipefail
-          sha_file="artifact/built_pytorch_sha.txt"
-          if [ ! -f "$sha_file" ]; then
-            echo "::error::built_pytorch_sha.txt missing from artifact" >&2
-            exit 1
+          if [ -n "${{ inputs.wheel-artifact }}" ]; then
+            ref=$(tr -d '[:space:]' < artifact/built_pytorch_sha.txt)
+            if ! [[ "$ref" =~ ^[0-9a-f]{40}$ ]]; then
+              echo "::error::Invalid SHA in artifact: '$ref'" >&2
+              exit 1
+            fi
+          else
+            ref="${{ inputs.pytorch-ref }}"
           fi
-          sha=$(tr -d '[:space:]' < "$sha_file")
-          if ! [[ "$sha" =~ ^[0-9a-f]{40}$ ]]; then
-            echo "::error::Invalid SHA in artifact: '$sha'" >&2
-            exit 1
-          fi
-          echo "sha=$sha" >> "$GITHUB_OUTPUT"
-          echo "Will check out pytorch/pytorch @ $sha"
+          echo "ref=$ref" >> "$GITHUB_OUTPUT"
+          echo "checkout ref: $ref"
 
-      - name: Checkout pytorch/pytorch at the built SHA
+      - name: Checkout pytorch/pytorch at the resolved ref
         uses: actions/checkout@v4
         with:
           repository: pytorch/pytorch
-          ref: ${{ steps.sha.outputs.sha }}
+          ref: ${{ steps.ref.outputs.ref }}
+          path: pytorch
           submodules: recursive
           fetch-depth: 1
           show-progress: false
 
-      - name: Install PyTorch wheel
+      - name: Record pytorch HEAD (SHA + commit date)
+        id: head
         shell: bash
+        working-directory: pytorch
         run: |
           set -euo pipefail
-          wheel=$(ls -1 artifact/*.whl | head -n1)
-          echo "Installing $wheel"
-          python -m pip install "$wheel"
+          sha=$(git rev-parse HEAD)
+          date_iso=$(git log -1 --format=%cI HEAD)
+          # Force UTC so the YYYYMMDD matches the wheel's `devYYYYMMDD` tag,
+          # which pytorch CI mints from the UTC build date.
+          date_ymd=$(TZ=UTC git log -1 --date=format-local:%Y%m%d --format=%cd HEAD)
+          {
+            echo "## pytorch checkout"
+            echo ""
+            echo "| field      | value |"
+            echo "| ---        | --- |"
+            echo "| input ref  | \`${{ steps.ref.outputs.ref }}\` |"
+            echo "| HEAD sha   | \`$sha\` |"
+            echo "| committed  | \`$date_iso\` |"
+            echo "| dev tag    | \`dev$date_ymd\` |"
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "date_ymd=$date_ymd" >> "$GITHUB_OUTPUT"
+          echo "pytorch HEAD: $sha @ $date_iso (dev$date_ymd)"
+
+      - name: Resolve nightly wheel URL for this cell
+        if: inputs.wheel-artifact == ''
+        id: wheel
+        shell: bash
+        env:
+          CUDA_LABEL: ${{ inputs.cuda-label }}
+          PY_VERSION: ${{ inputs.python-version }}
+          WHEEL_INDEX_URL: ${{ inputs.wheel-index-url }}
+          HEAD_DATE: ${{ steps.head.outputs.date_ymd }}
+        run: |
+          set -euo pipefail
+          py_short="${PY_VERSION//./}"
+          # PEP 503 simple-index hrefs encode '+' as '%2B':
+          #   torch-<ver>.dev<YYYYMMDD>%2B<cu>-cp<py>-cp<py>-win_amd64.whl
+          pattern="torch-[^/\"]+\.dev${HEAD_DATE}%2B${CUDA_LABEL}-cp${py_short}-cp${py_short}-win_amd64\.whl"
+          url=$(curl -fsSL --connect-timeout 30 --max-time 120 "$WHEEL_INDEX_URL" \
+            | grep -oE 'href="[^"]+"' \
+            | sed -E 's/^href="(.+)"$/\1/' \
+            | grep -E "${pattern}(#|$)" \
+            | head -n1 || true)
+          # download.pytorch.org's simple index always emits absolute hrefs,
+          # so no path normalisation is needed - just strip the PEP 503
+          # `#sha256=...` fragment.
+          url="${url%%#*}"
+          if [ -z "$url" ]; then
+            echo "::error::No nightly wheel for date=${HEAD_DATE} cuda=${CUDA_LABEL} cp=${py_short} at ${WHEEL_INDEX_URL}. The wheel for the checked-out pytorch commit is not yet published." >&2
+            exit 1
+          fi
+          echo "url=$url" >> "$GITHUB_OUTPUT"
+          echo "Resolved wheel: $url"
+
+      - name: Install PyTorch
+        shell: bash
+        env:
+          WHEEL_URL: ${{ steps.wheel.outputs.url }}
+        run: |
+          set -euo pipefail
+          if [ -n "$WHEEL_URL" ]; then
+            echo "pip install $WHEEL_URL"
+            python -m pip install "$WHEEL_URL"
+          else
+            wheel=$(ls -1 artifact/*.whl | head -n1)
+            echo "pip install $wheel"
+            python -m pip install "$wheel"
+          fi
           python -c "import torch; print('torch', torch.__version__, 'cuda', torch.version.cuda); assert torch.cuda.is_available()"
+
+      - name: Start runner diagnostics
+        id: diag
+        uses: ./oot/.github/actions/start-runner-diagnostics
 
       - name: Run PyTorch Windows test suite
         shell: bash
-        run: |
-          bash .ci/pytorch/win-test.sh
+        working-directory: pytorch
+        run: bash .ci/pytorch/win-test.sh
+
+      - name: Stop runner diagnostics
+        if: always()
+        uses: ./oot/.github/actions/stop-runner-diagnostics
+        with:
+          output-dir: ${{ steps.diag.outputs.output-dir }}
+
+      - name: Upload runner diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: runner-diagnostics-${{ inputs.build-environment }}-${{ inputs.python-label }}-${{ inputs.cuda-label }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ steps.diag.outputs.output-dir }}/**
+          if-no-files-found: warn
+          retention-days: 14
 
       - name: Upload test reports
         if: always()
@@ -122,8 +254,8 @@ jobs:
         with:
           name: pytorch-test-reports-${{ inputs.build-environment }}-${{ inputs.python-label }}-${{ inputs.cuda-label }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
-            test/**/*.xml
-            test/test-reports/**
-            test/**/test-reports/**
+            pytorch/test/**/*.xml
+            pytorch/test/test-reports/**
+            pytorch/test/**/test-reports/**
           if-no-files-found: warn
           retention-days: 14

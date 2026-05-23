@@ -1,0 +1,106 @@
+name: nightly-source-build-test
+
+# Full source-build + test CI for pytorch/pytorch on self-hosted
+# Windows NVIDIA RTX runners. Counterpart workflows:
+#
+#   - relay-server-event-validate.yml  -> RFC-0050 handshake, no compute
+#   - nightly-wheel-test.yml           -> nightly wheel smoke, no build
+#   - nightly-source-build-test.yml    -> THIS FILE: build wheel from source + test
+#
+# Every job runs on a self-hosted runner provided by NVIDIA
+# infrastructure; this workflow performs zero work on GitHub-hosted
+# (cloud) runners.
+#
+# Shape (matrix anchored on `build`, re-used by both test jobs):
+#
+#   build  matrix( python x cuda )            one multi-arch wheel per cell
+#       |   each cell records its built SHA into the wheel artifact
+#       |
+#       +---> rtx-40x0-test  matrix( python x cuda )   sm89  / Ada
+#       +---> rtx-50x0-test  matrix( python x cuda )   sm120 / Blackwell
+#
+# Triggers:
+#   - `schedule`            - daily at 12:00 UTC
+#   - `workflow_dispatch`   - manual, with knobs for ref / test subset
+#   - `repository_dispatch` - RFC-0050 Relay Server forwards `pytorch-pr-trigger`
+
+on:
+  schedule:
+    - cron: "0 12 * * *"
+  workflow_dispatch:
+    inputs:
+      pytorch-ref:
+        description: "pytorch/pytorch ref to build (branch / tag / SHA)."
+        required: false
+        default: "nightly"
+      test-architectures:
+        description: "Comma-separated subset of sm89,sm120 to test (build is always multi-arch)."
+        required: false
+        default: "sm89,sm120"
+  repository_dispatch:
+    types: [pytorch-pr-trigger]
+
+concurrency:
+  group: nightly-source-build-test-${{ github.event.client_payload.pr_number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'repository_dispatch' }}
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  build:
+    name: build (multi-arch / ${{ matrix.python.label }} / ${{ matrix.cuda.label }})
+    strategy:
+      fail-fast: false
+      matrix: &matrix
+        python:
+          - { version: "3.12", label: "py312" }
+          - { version: "3.13", label: "py313" }
+        cuda:
+          - { version: "13.0", label: "cu130" }
+          - { version: "13.2", label: "cu132" }
+    uses: ./.github/workflows/_rtx-build.yml
+    with:
+      runner-base: rtx-build
+      python-version: ${{ matrix.python.version }}
+      python-label: ${{ matrix.python.label }}
+      cuda-version: ${{ matrix.cuda.version }}
+      cuda-label: ${{ matrix.cuda.label }}
+      cuda-arch-list: "8.9;12.0"
+      build-environment: win-rtx-cuda
+      pytorch-ref: ${{ inputs.pytorch-ref || 'nightly' }}
+
+  rtx-40x0-test:
+    name: test sm89 / RTX 40x0 (${{ matrix.python.label }} / ${{ matrix.cuda.label }})
+    needs: build
+    if: contains(inputs.test-architectures || 'sm89,sm120', 'sm89') || github.event_name != 'workflow_dispatch'
+    strategy:
+      fail-fast: false
+      matrix: *matrix
+    uses: ./.github/workflows/_rtx-test.yml
+    with:
+      runner-base: rtx-40x0-test
+      python-version: ${{ matrix.python.version }}
+      python-label: ${{ matrix.python.label }}
+      cuda-version: ${{ matrix.cuda.version }}
+      cuda-label: ${{ matrix.cuda.label }}
+      build-environment: win-rtx-sm89
+      wheel-artifact: pytorch-wheel-win-rtx-cuda-${{ matrix.python.label }}-${{ matrix.cuda.label }}-${{ github.run_id }}-${{ github.run_attempt }}
+
+  rtx-50x0-test:
+    name: test sm120 / RTX 50x0 (${{ matrix.python.label }} / ${{ matrix.cuda.label }})
+    needs: build
+    if: contains(inputs.test-architectures || 'sm89,sm120', 'sm120') || github.event_name != 'workflow_dispatch'
+    strategy:
+      fail-fast: false
+      matrix: *matrix
+    uses: ./.github/workflows/_rtx-test.yml
+    with:
+      runner-base: rtx-50x0-test
+      python-version: ${{ matrix.python.version }}
+      python-label: ${{ matrix.python.label }}
+      cuda-version: ${{ matrix.cuda.version }}
+      cuda-label: ${{ matrix.cuda.label }}
+      build-environment: win-rtx-sm120
+      wheel-artifact: pytorch-wheel-win-rtx-cuda-${{ matrix.python.label }}-${{ matrix.cuda.label }}-${{ github.run_id }}-${{ github.run_attempt }}

@@ -1,0 +1,119 @@
+name: relay-server-event-validate
+
+# RFC-0050 handshake workflow.
+#
+# Confirms that this downstream repo is wired to the upstream Relay
+# Server: receives `repository_dispatch` events forwarded by the relay,
+# validates the payload shape, exposes the payload in the job summary
+# for inspection, and (once the upstream action is published) echoes a
+# structured CI-result back to the relay via
+# `pytorch/actions/report-ci-result@v1`.
+#
+# Intentionally lightweight - no pytorch source checkout, no build, no
+# install. Just a fast handshake on a self-hosted runner so the round-
+# trip latency reflects real CI plumbing without burning compute.
+#
+# Triggers:
+#   - `repository_dispatch: pytorch-pr-trigger` - real PR-time event from the relay
+#   - `repository_dispatch: pytorch-ping`       - relay-only heartbeat (no PR involved)
+#   - `workflow_dispatch`                       - manual probe (operator-driven)
+
+on:
+  workflow_dispatch:
+    inputs:
+      pr-number:
+        description: "Synthetic upstream PR number (manual probe only)."
+        required: false
+        default: "0"
+      head-sha:
+        description: "Synthetic upstream head SHA (manual probe only)."
+        required: false
+        default: "0000000000000000000000000000000000000000"
+  repository_dispatch:
+    types: [pytorch-pr-trigger, pytorch-ping]
+
+concurrency:
+  group: relay-validate-${{ github.event.client_payload.pr_number || github.run_id }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  validate:
+    name: validate relay event
+    runs-on: [self-hosted, Windows, X64, rtx-build]
+    timeout-minutes: 10
+    steps:
+      - name: Extract and validate payload
+        id: payload
+        shell: pwsh
+        env:
+          EVENT_NAME:    ${{ github.event_name }}
+          EVENT_ACTION:  ${{ github.event.action }}
+          PR_NUMBER:     ${{ github.event.client_payload.pr_number || inputs.pr-number }}
+          HEAD_SHA:      ${{ github.event.client_payload.head_sha  || inputs.head-sha }}
+          BASE_REF:      ${{ github.event.client_payload.base_ref  || 'main' }}
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $payload = [ordered]@{
+            event_name   = $env:EVENT_NAME
+            event_action = $env:EVENT_ACTION
+            pr_number    = $env:PR_NUMBER
+            head_sha     = $env:HEAD_SHA
+            base_ref     = $env:BASE_REF
+            received_at  = (Get-Date).ToString("o")
+            runner       = $env:COMPUTERNAME
+            run_url      = "$env:GITHUB_SERVER_URL/$env:GITHUB_REPOSITORY/actions/runs/$env:GITHUB_RUN_ID"
+          }
+          $json = $payload | ConvertTo-Json
+
+          # Hard-validate the shape for real relay events. Manual dispatch
+          # is allowed to use the zero-SHA / zero-PR placeholders above.
+          if ($env:EVENT_NAME -eq "repository_dispatch" -and $env:EVENT_ACTION -eq "pytorch-pr-trigger") {
+            if ($env:HEAD_SHA -notmatch "^[0-9a-f]{40}$") {
+              Write-Error "pytorch-pr-trigger payload missing or malformed head_sha: '$($env:HEAD_SHA)'"
+            }
+            if (-not ($env:PR_NUMBER -as [int]) -or [int]$env:PR_NUMBER -le 0) {
+              Write-Error "pytorch-pr-trigger payload missing or malformed pr_number: '$($env:PR_NUMBER)'"
+            }
+          }
+
+          Write-Host "::group::relay event payload"
+          Write-Host $json
+          Write-Host "::endgroup::"
+
+          $summary = "## Relay event received`n`n``````json`n$json`n``````n"
+          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value $summary
+
+      - name: Quick GPU + driver probe
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Continue"
+          $smi = Get-Command nvidia-smi -ErrorAction SilentlyContinue
+          if (-not $smi) { Write-Warning "nvidia-smi not on PATH on this runner."; return }
+          Write-Host "::group::nvidia-smi (probe only, no test work)"
+          & nvidia-smi --query-gpu=name,driver_version,memory.total,compute_cap --format=csv
+          Write-Host "::endgroup::"
+
+      - name: Acknowledge to relay (stub)
+        shell: pwsh
+        env:
+          PR_NUMBER: ${{ github.event.client_payload.pr_number || inputs.pr-number }}
+          HEAD_SHA:  ${{ github.event.client_payload.head_sha  || inputs.head-sha }}
+        run: |
+          # TODO(rfc-0050): replace this stub with
+          #   uses: pytorch/actions/report-ci-result@v1
+          # once the upstream action is published. The relay expects:
+          #   status:      success | failure
+          #   details_url: link back to this run
+          #   pr_number:   forwarded from the trigger payload
+          #   head_sha:    forwarded from the trigger payload
+          Write-Host "Acknowledgement is a stub today (report-ci-result@v1 not yet published)."
+          Write-Host "Would POST:"
+          Write-Host "  status       = success"
+          Write-Host "  details_url  = $env:GITHUB_SERVER_URL/$env:GITHUB_REPOSITORY/actions/runs/$env:GITHUB_RUN_ID"
+          Write-Host "  pr_number    = $env:PR_NUMBER"
+          Write-Host "  head_sha     = $env:HEAD_SHA"

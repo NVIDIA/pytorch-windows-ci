@@ -1,0 +1,142 @@
+name: pytorch-wheel-build
+
+# Reusable Windows RTX build workflow. Mirrors the role of
+# pytorch/pytorch's `_win-build.yml` (see PR #176678) but kept standalone
+# in this repo so it works before that PR lands upstream.
+#
+# Each invocation builds ONE multi-architecture CUDA wheel (one wheel that
+# serves sm89, sm120, ... whatever `cuda-arch-list` covers). The caller
+# drives Python and CUDA toolkit variations via its own matrix and passes
+# the cell's values in as `python-{version,label}` and `cuda-{version,label}`.
+#
+# The pytorch ref to build is resolved here per matrix cell:
+#   - repository_dispatch  -> RFC-0050 `pytorch/actions/checkout-pr@v1`
+#                             (uses `client_payload.head_sha`)
+#   - schedule / manual    -> actions/checkout against `pytorch-ref`
+#
+# After checkout, the resolved commit SHA is recorded into
+# `built_pytorch_sha.txt` and shipped in the same artifact as the wheel,
+# so the paired test job can pin its own checkout to the exact same source
+# tree without any cross-matrix output plumbing.
+#
+# Runners are ephemeral pre-prepped images selected by the label set
+#   [self-hosted, Windows, X64, <runner-base>, <python-label>, <cuda-label>]
+# (e.g. [self-hosted, Windows, X64, rtx-build, py312, cu130]). The image has
+# the right Python, CUDA toolkit, MSVC, sccache, magma, ninja, cmake, and
+# all PyTorch CI dependencies pre-installed - this workflow performs no
+# in-job environment setup.
+
+on:
+  workflow_call:
+    inputs:
+      runner-base:
+        description: "Base runner label for the build pool (e.g. rtx-build)."
+        type: string
+        required: true
+      python-version:
+        description: "Python version in dotted form (e.g. 3.12). Exposed as PYTHON_VERSION."
+        type: string
+        required: true
+      python-label:
+        description: "Python label used in runner labels and artifact names (e.g. py312)."
+        type: string
+        required: true
+      cuda-version:
+        description: "CUDA toolkit version in dotted form (e.g. 13.0). Exposed as CUDA_VERSION."
+        type: string
+        required: true
+      cuda-label:
+        description: "CUDA label used in runner labels and artifact names (e.g. cu130)."
+        type: string
+        required: true
+      cuda-arch-list:
+        description: >
+          Semicolon-separated SM list for TORCH_CUDA_ARCH_LIST. Use one value
+          (e.g. '12.0') for an arch-specific wheel, or multiple (e.g.
+          '8.9;12.0') for one wheel that fans out across architectures.
+        type: string
+        required: true
+      build-environment:
+        description: "Logical name used in BUILD_ENVIRONMENT env and the artifact name."
+        type: string
+        required: true
+      pytorch-ref:
+        description: "pytorch/pytorch ref for non-dispatch runs (branch / tag / SHA)."
+        type: string
+        required: false
+        default: "nightly"
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: build
+    runs-on:
+      - self-hosted
+      - Windows
+      - X64
+      - ${{ inputs.runner-base }}
+      - ${{ inputs.python-label }}
+      - ${{ inputs.cuda-label }}
+    timeout-minutes: 300
+    env:
+      BUILD_ENVIRONMENT: ${{ inputs.build-environment }}
+      TORCH_CUDA_ARCH_LIST: ${{ inputs.cuda-arch-list }}
+      PYTHON_VERSION: ${{ inputs.python-version }}
+      CUDA_VERSION: ${{ inputs.cuda-version }}
+      # Test binaries are built by the test job, not here.
+      BUILD_TEST: "0"
+      # MSVC env hint and machine-specific parallelism tuning.
+      DISTUTILS_USE_SDK: "1"
+      MAX_JOBS: "8"
+    steps:
+      - name: Checkout PyTorch PR (relay-driven)
+        if: github.event_name == 'repository_dispatch'
+        uses: pytorch/actions/checkout-pr@v1
+        with:
+          head-sha: ${{ github.event.client_payload.head_sha }}
+          path: .
+
+      - name: Checkout pytorch/pytorch (scheduled / manual)
+        if: github.event_name != 'repository_dispatch'
+        uses: actions/checkout@v4
+        with:
+          repository: pytorch/pytorch
+          ref: ${{ inputs.pytorch-ref }}
+          submodules: recursive
+          fetch-depth: 1
+          show-progress: false
+
+      - name: Record built SHA
+        shell: bash
+        run: |
+          set -euo pipefail
+          sha=$(git rev-parse HEAD)
+          echo "$sha" > built_pytorch_sha.txt
+          echo "Built from pytorch/pytorch @ $sha"
+
+      - name: Build PyTorch wheel
+        shell: bash
+        run: bash .ci/pytorch/win-build.sh
+
+      - name: Stage wheel + sha into artifact dir
+        shell: bash
+        run: |
+          set -euo pipefail
+          wheel=$(ls -1 build/dist/*.whl dist/*.whl 2>/dev/null | head -n1)
+          if [ -z "$wheel" ]; then
+            echo "::error::No wheel produced under build/dist or dist." >&2
+            exit 1
+          fi
+          mkdir -p artifact
+          cp "$wheel" built_pytorch_sha.txt artifact/
+          ls -la artifact
+
+      - name: Publish wheel + sha artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: pytorch-wheel-${{ inputs.build-environment }}-${{ inputs.python-label }}-${{ inputs.cuda-label }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: artifact/**
+          if-no-files-found: error
+          retention-days: 14

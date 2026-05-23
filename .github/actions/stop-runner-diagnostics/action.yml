@@ -1,0 +1,61 @@
+name: "Stop runner diagnostics"
+description: >
+  Signal the diagnostics monitor (started by `start-runner-diagnostics`)
+  to exit cleanly, wait for it to flush, then summarise into the job log.
+  Safe to call in an `if: always()` step.
+
+inputs:
+  output-dir:
+    description: "Diagnostics directory returned by `start-runner-diagnostics`."
+    required: true
+  wait-seconds:
+    description: "Seconds to wait for the monitor to exit before force-killing."
+    required: false
+    default: "30"
+
+runs:
+  using: "composite"
+  steps:
+    - name: Signal stop and summarise
+      shell: pwsh
+      env:
+        OUT_DIR: ${{ inputs.output-dir }}
+        WAIT: ${{ inputs.wait-seconds }}
+      run: |
+        $outDir = $env:OUT_DIR
+        if (-not $outDir -or -not (Test-Path $outDir)) {
+          Write-Warning "stop-runner-diagnostics: '$outDir' missing; nothing to stop."
+          return
+        }
+        New-Item -ItemType File -Force -Path (Join-Path $outDir ".stop") | Out-Null
+
+        $pidFile = Join-Path $outDir ".pid"
+        if (Test-Path $pidFile) {
+          try { $procId = [int]((Get-Content $pidFile -Raw).Trim()) } catch { $procId = 0 }
+          if ($procId -gt 0) {
+            try {
+              Wait-Process -Id $procId -Timeout ([int]$env:WAIT) -ErrorAction Stop
+              Write-Host "Monitor PID=$procId exited cleanly."
+            } catch {
+              Stop-Process -Id $procId -Force -ErrorAction SilentlyContinue
+              Write-Warning "Monitor PID=$procId killed after ${env:WAIT}s timeout."
+            }
+          }
+        }
+
+        Write-Host "::group::Diagnostics summary"
+        foreach ($f in @("spec-snapshot.json","system.jsonl","gpu.jsonl")) {
+          $p = Join-Path $outDir $f
+          if (Test-Path $p) {
+            $bytes = (Get-Item $p).Length
+            if ($f -like "*.jsonl") {
+              $lines = (Get-Content $p | Measure-Object).Count
+              Write-Host ("{0,-22} {1,6} samples / {2} bytes" -f $f, $lines, $bytes)
+            } else {
+              Write-Host ("{0,-22} {1,15} bytes" -f $f, $bytes)
+            }
+          }
+        }
+        $log = Join-Path $outDir "monitor.log"
+        if (Test-Path $log) { Get-Content $log }
+        Write-Host "::endgroup::"

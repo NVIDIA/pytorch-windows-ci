@@ -1,3 +1,8 @@
+<!--
+SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+SPDX-License-Identifier: MIT
+-->
+
 # pytorch-oot-internal
 
 Internal staging ground for the NVIDIA PyTorch out-of-tree (OOT) CI on
@@ -15,6 +20,13 @@ upstream. Build/test logic itself comes entirely from PyTorch's in-tree
 **Every job runs on a self-hosted runner provided by NVIDIA infrastructure.**
 There are no GitHub-hosted (cloud) runs anywhere in this repo, including
 the PR-time YAML validation.
+
+## License, notices, and contributions
+
+This repository is released under MIT terms. See [LICENSE](LICENSE) for
+the project license, [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) for
+third-party OSS notices, and [CONTRIBUTING.md](CONTRIBUTING.md) for the
+current contribution policy and CLA reference.
 
 ## Three top-level workflows
 
@@ -178,7 +190,7 @@ failure. To tune the interval or relocate the output dir, edit the
 | Handshake workflow that proves the downstream is wired | `relay-server-event-validate.yml` (listens for `pytorch-pr-trigger` and the heartbeat-only `pytorch-ping`) |
 | Downstream CI on real PR-time events | `nightly-source-build-test.yml` (also subscribes to `pytorch-pr-trigger`) |
 | `concurrency: upstream-pr-<pr_number>` | Both workflows above key `concurrency.group` on `client_payload.pr_number` when present |
-| `pytorch/actions/checkout-pr@v1` (RFC Action #1) | Used as-is in `_rtx-build.yml` for `repository_dispatch`; falls back to `actions/checkout@v4` against `pytorch/pytorch@<ref>` for schedule / manual runs |
+| RFC PR checkout action behavior | Implemented in `_rtx-build.yml` with `actions/checkout@v4` against `pytorch/pytorch` PR refs for `repository_dispatch`, followed by an explicit `client_payload.head_sha` validation; schedule / manual runs use `actions/checkout@v4` against `pytorch/pytorch@<ref>` |
 | `pytorch/actions/report-ci-result@v1` (RFC Action #2) | Stubbed in `relay-server-event-validate.yml` (acknowledgement step is a placeholder); we will swap in the upstream action once published |
 
 ## Local workflow validation

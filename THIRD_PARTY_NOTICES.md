@@ -8,7 +8,7 @@ SPDX-License-Identifier: MIT
 This repository contains NVIDIA-authored workflow configuration and helper
 scripts. It does not vendor third-party source code. The workflows do,
 however, reference or install the following third-party OSS components at
-runtime. 
+runtime.
 
 | Component | Use | License | Copyright / attribution | Source |
 | --- | --- | --- | --- | --- |

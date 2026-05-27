@@ -13,9 +13,8 @@ name: pytorch-wheel-build
 # the cell's values in as `python-{version,label}` and `cuda-{version,label}`.
 #
 # The pytorch ref to build is resolved here per matrix cell:
-#   - repository_dispatch  -> actions/checkout against the PyTorch PR ref
-#                             (`client_payload.pr_number`), then validates
-#                             the checked-out HEAD against `head_sha`
+#   - repository_dispatch  -> RFC-0050 `pytorch/actions/checkout-pr@v1`
+#                             (uses `client_payload.head_sha`)
 #   - schedule / manual    -> actions/checkout against `pytorch-ref`
 #
 # After checkout, the resolved commit SHA is recorded into
@@ -97,26 +96,10 @@ jobs:
     steps:
       - name: Checkout PyTorch PR (relay-driven)
         if: github.event_name == 'repository_dispatch'
-        uses: actions/checkout@v4
+        uses: pytorch/actions/checkout-pr@v1
         with:
-          repository: pytorch/pytorch
-          ref: refs/pull/${{ github.event.client_payload.pr_number }}/head
-          submodules: recursive
-          fetch-depth: 1
-          show-progress: false
-
-      - name: Validate relay checkout SHA
-        if: github.event_name == 'repository_dispatch'
-        shell: bash
-        run: |
-          set -euo pipefail
-          actual=$(git rev-parse HEAD)
-          expected="${{ github.event.client_payload.head_sha }}"
-          if [ "$actual" != "$expected" ]; then
-            echo "::error::Relay checkout HEAD '$actual' does not match payload head_sha '$expected'." >&2
-            exit 1
-          fi
-          echo "Relay checkout HEAD matches payload head_sha: $actual"
+          head-sha: ${{ github.event.client_payload.head_sha }}
+          path: .
 
       - name: Checkout pytorch/pytorch (scheduled / manual)
         if: github.event_name != 'repository_dispatch'

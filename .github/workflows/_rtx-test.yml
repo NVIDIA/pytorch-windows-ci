@@ -28,11 +28,16 @@ name: pytorch-wheel-test
 # Exactly one path must be selected per call: set `wheel-artifact`
 # (path A) or `pytorch-ref` (path B).
 #
-# Each invocation is one shard. The caller fans out `(shard, num-shards)`
-# across N cells; the test step exports `SHARD_NUMBER`, `NUM_TEST_SHARDS`,
-# and `TEST_CONFIG` so `.ci/pytorch/win-test.sh` (which delegates to
-# `test/run_test.py`) runs only its slice. This mirrors the upstream
-# `_win-rtx-test.yml` pattern in `pytorch/pytorch` PR #176678.
+# Each invocation is one (config x arch) test cell. Sharding is an
+# internal fanout: `strategy.matrix.shard` below spawns 5 parallel
+# runners under this single workflow call, and the test step exports
+# `SHARD_NUMBER` (per-cell) / `NUM_TEST_SHARDS` (constant 5) /
+# `TEST_CONFIG` so `.ci/pytorch/win-test.sh` (which delegates to
+# `test/run_test.py`) runs only its slice. The orchestrator therefore
+# sees one cell per (config x arch), not one cell per shard - matching
+# the upstream `_win-rtx-test.yml` pattern in pytorch/pytorch PR
+# #176678 where the test job's `test-matrix` JSON carries the shard
+# fanout internally.
 #
 # A lightweight runner-diagnostics monitor samples host + GPU metrics
 # in the background while the test step runs in the foreground, so OOT
@@ -69,22 +74,23 @@ on:
           arch to exercise.
         type: string
         required: true
+      arch-name:
+        description: "Architecture token (e.g. 'sm89', 'sm120'); used for the test-architectures filter."
+        type: string
+        required: true
       build-environment:
         description: "Logical name passed through as BUILD_ENVIRONMENT."
         type: string
         required: true
 
       # ---- Sharding (matches pytorch/pytorch PR #176678) --------------
-      shard:
-        description: "1-based shard index for this cell (1 .. num-shards)."
-        type: number
-        required: false
-        default: 1
-      num-shards:
-        description: "Total number of shards in the fanout."
-        type: number
-        required: false
-        default: 1
+      # The shard fanout is internal to this workflow: each invocation
+      # spawns 5 parallel shard runners via `strategy.matrix.shard`
+      # below. The caller does NOT see shards in its own matrix - one
+      # call to this reusable workflow == one (config x arch) test
+      # cell, period. To change the shard count, edit both the
+      # `shard:` list under `strategy.matrix` and the `NUM_TEST_SHARDS`
+      # env in the test step.
       test-config:
         description: "Test-config name forwarded as TEST_CONFIG (e.g. 'default')."
         type: string
@@ -110,13 +116,44 @@ on:
         required: false
         default: "https://download.pytorch.org/whl/nightly/torch/"
 
+      # ---- workflow_dispatch matrix filters ---------------------------
+      # The caller cannot reference `matrix.*` in its own job-level
+      # `if:` (GitHub Actions restricts that context for reusable-
+      # workflow-calling jobs), so the per-cell filter is evaluated
+      # here instead, against this invocation's own `python-version` /
+      # `cuda-version` / `arch-name` inputs. Empty string disables the
+      # corresponding filter dimension.
+      python-versions:
+        description: "Comma-separated allowlist of python versions; empty = no filter."
+        type: string
+        required: false
+        default: ""
+      cuda-versions:
+        description: "Comma-separated allowlist of CUDA toolkit versions; empty = no filter."
+        type: string
+        required: false
+        default: ""
+      test-architectures:
+        description: "Comma-separated allowlist of arch tokens (e.g. 'sm89,sm120'); empty = no filter."
+        type: string
+        required: false
+        default: ""
+
 permissions:
   contents: read
   actions: read
 
 jobs:
   test:
-    name: test (shard ${{ inputs.shard }}/${{ inputs.num-shards }})
+    name: test (shard ${{ matrix.shard }}/5)
+    if: >
+      (inputs.python-versions == '' || contains(inputs.python-versions, inputs.python-version))
+      && (inputs.cuda-versions == '' || contains(inputs.cuda-versions, inputs.cuda-version))
+      && (inputs.test-architectures == '' || contains(inputs.test-architectures, inputs.arch-name))
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4, 5]
     runs-on:
       - self-hosted
       - Windows
@@ -283,8 +320,8 @@ jobs:
         working-directory: pytorch
         env:
           # ---- sharding (consumed by .ci/pytorch/win-test.sh -> test/run_test.py)
-          SHARD_NUMBER: ${{ inputs.shard }}
-          NUM_TEST_SHARDS: ${{ inputs.num-shards }}
+          SHARD_NUMBER: ${{ matrix.shard }}
+          NUM_TEST_SHARDS: "5"
           TEST_CONFIG: ${{ inputs.test-config }}
           # ---- where the wheel lives on this runner (path A) or
           # ----   a placeholder dir for path B (pip-index install
@@ -313,7 +350,7 @@ jobs:
         if: false
         uses: actions/upload-artifact@v4
         with:
-          name: runner-diagnostics-${{ inputs.build-environment }}-${{ inputs.python-label }}-${{ inputs.cuda-label }}-shard${{ inputs.shard }}-${{ github.run_id }}-${{ github.run_attempt }}
+          name: runner-diagnostics-${{ inputs.build-environment }}-${{ inputs.python-label }}-${{ inputs.cuda-label }}-shard${{ matrix.shard }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ steps.diag.outputs.output-dir }}/**
           if-no-files-found: warn
           retention-days: 14
@@ -324,7 +361,7 @@ jobs:
         if: false
         uses: actions/upload-artifact@v4
         with:
-          name: pytorch-test-reports-${{ inputs.build-environment }}-${{ inputs.python-label }}-${{ inputs.cuda-label }}-shard${{ inputs.shard }}-${{ github.run_id }}-${{ github.run_attempt }}
+          name: pytorch-test-reports-${{ inputs.build-environment }}-${{ inputs.python-label }}-${{ inputs.cuda-label }}-shard${{ matrix.shard }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
             pytorch/test/**/*.xml
             pytorch/test/test-reports/**

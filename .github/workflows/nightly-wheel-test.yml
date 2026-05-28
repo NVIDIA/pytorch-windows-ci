@@ -21,21 +21,54 @@ name: nightly-wheel-test
 #   - relay-server-event-validate.yml  -> RFC-0050 handshake (no compute)
 #   - nightly-source-build-test.yml    -> full source build + test
 #
-# Shape (matrix anchored on the first test job, re-used by the second):
+# Shape - one test job, 2-D matrix:
 #
-#   rtx-40x0-test  matrix( python x cuda x shard )   sm89  / Ada
-#   rtx-50x0-test  matrix( python x cuda x shard )   sm120 / Blackwell
-#                  (4 x 5 = 20 cells per arch)
+#   test  matrix( config x arch )       1 reusable-workflow call per cell;
+#         4 x 2 = 8 cells                each call internally fans out 5
+#                                        shard runners (40 runners total).
 #
-# The shard dimension (5 shards per cell, matching pytorch/pytorch PR
-# #176678) is consumed by `.ci/pytorch/win-test.sh` via the env vars
-# SHARD_NUMBER / NUM_TEST_SHARDS / TEST_CONFIG set in `_rtx-test.yml`.
+# `config` is a paired `{python, cuda}` entry rather than independent
+# `python` and `cuda` axes - the runner pool is allocated per (python,
+# cuda) combination (e.g. py312/cu130 and py312/cu132 are different
+# machines), so each config is one explicit pairing. Add or remove
+# pairings by editing the `config:` list directly; no `exclude`
+# gymnastics needed.
+#
+# Sharding is NOT a top-level matrix axis here - it lives inside
+# `_rtx-test.yml`'s own `strategy.matrix.shard`. Each test cell in this
+# orchestrator therefore represents "this wheel x this architecture"
+# (one runner per shard nested under it), matching the upstream
+# `_win-rtx-test.yml` pattern in pytorch/pytorch PR #176678. The
+# SHARD_NUMBER / NUM_TEST_SHARDS / TEST_CONFIG env vars consumed by
+# `.ci/pytorch/win-test.sh` are populated inside the reusable workflow.
+#
+# Cell-name shape mirrors `pytorch/pytorch`'s generated
+# `windows-binary-wheel` nightly:
+#   test cell -> `<build_name>-<arch>-test`   e.g. `wheel-py312-cu130-sm89-test`
+# Each `config:` entry carries its own precomputed `build_name` so the
+# job-level `name:` is a one-token reference instead of a multi-piece
+# template, matching upstream's `name: ${{ matrix.build_name }}-test`
+# pattern. `arch` carries the runner-base label and the
+# TORCH_CUDA_ARCH_LIST value, so a single job declaration drives both
+# RTX 40x0 (sm89) and RTX 50x0 (sm120).
 
 on:
   schedule:
     - cron: "0 14 * * *"
   workflow_dispatch:
     inputs:
+      pytorch-ref:
+        description: "pytorch/pytorch ref to test against (branch, tag, or SHA). Default: nightly."
+        required: false
+        default: "nightly"
+      python-versions:
+        description: "Comma-separated subset of 3.12,3.13 to test."
+        required: false
+        default: "3.12,3.13"
+      cuda-versions:
+        description: "Comma-separated subset of 13.0,13.2 to test."
+        required: false
+        default: "13.0,13.2"
       test-architectures:
         description: "Comma-separated subset of sm89,sm120 to test."
         required: false
@@ -44,10 +77,6 @@ on:
         description: "Override the nightly wheel index page (default: https://download.pytorch.org/whl/nightly/torch/)."
         required: false
         default: ""
-      pytorch-ref:
-        description: "pytorch/pytorch ref to test against (branch, tag, or SHA). Default: nightly."
-        required: false
-        default: "nightly"
 
 concurrency:
   group: nightly-wheel-test-${{ github.run_id }}
@@ -58,54 +87,44 @@ permissions:
   actions: read
 
 jobs:
-  rtx-40x0-test:
-    name: test sm89 / RTX 40x0 (${{ matrix.python.label }} / ${{ matrix.cuda.label }} / shard ${{ matrix.shard }}/5)
-    if: contains(inputs.test-architectures || 'sm89,sm120', 'sm89') || github.event_name != 'workflow_dispatch'
+  test:
+    name: ${{ matrix.config.build_name }}-${{ matrix.arch.name }}-test
     strategy:
       fail-fast: false
       matrix:
-        python: &python
-          - { version: "3.12", label: "py312" }
-          - { version: "3.13", label: "py313" }
-        cuda: &cuda
-          - { version: "13.0", label: "cu130" }
-          - { version: "13.2", label: "cu132" }
-        shard: &shards [1, 2, 3, 4, 5]
+        # One entry per actual runner pairing. The test job needs a
+        # machine labelled `[<arch.runner>, <config.python.label>,
+        # <config.cuda.label>]` for each (config, arch) combination.
+        # `build_name` is the canonical cell identity - the test job
+        # renders as `<build_name>-<arch>-test`, matching the source-
+        # build orchestrator's naming so a wheel-test row and its
+        # source-build-test counterpart sort adjacent in cross-
+        # workflow dashboards. Sharding is internal to `_rtx-test.yml`
+        # (its own `strategy.matrix.shard` fans out 5 runners per
+        # cell), so it deliberately does NOT appear in this matrix.
+        config:
+          - { python: { version: "3.12", label: "py312" }, cuda: { version: "13.0", label: "cu130" }, build_name: "wheel-py312-cu130" }
+          - { python: { version: "3.12", label: "py312" }, cuda: { version: "13.2", label: "cu132" }, build_name: "wheel-py312-cu132" }
+          - { python: { version: "3.13", label: "py313" }, cuda: { version: "13.0", label: "cu130" }, build_name: "wheel-py313-cu130" }
+          - { python: { version: "3.13", label: "py313" }, cuda: { version: "13.2", label: "cu132" }, build_name: "wheel-py313-cu132" }
+        arch:
+          - { name: sm89,  runner: rtx-40x0-test, arch_list: "8.9"  }
+          - { name: sm120, runner: rtx-50x0-test, arch_list: "12.0" }
     uses: ./.github/workflows/_rtx-test.yml
     with:
-      runner-base: rtx-40x0-test
-      python-version: ${{ matrix.python.version }}
-      python-label: ${{ matrix.python.label }}
-      cuda-version: ${{ matrix.cuda.version }}
-      cuda-label: ${{ matrix.cuda.label }}
-      cuda-arch-list: "8.9"
-      build-environment: win-rtx-nightly-wheel-sm89
-      shard: ${{ matrix.shard }}
-      num-shards: 5
+      runner-base: ${{ matrix.arch.runner }}
+      python-version: ${{ matrix.config.python.version }}
+      python-label: ${{ matrix.config.python.label }}
+      cuda-version: ${{ matrix.config.cuda.version }}
+      cuda-label: ${{ matrix.config.cuda.label }}
+      cuda-arch-list: ${{ matrix.arch.arch_list }}
+      arch-name: ${{ matrix.arch.name }}
+      build-environment: win-rtx-nightly-wheel-${{ matrix.arch.name }}
       test-config: "default"
       pytorch-ref: ${{ inputs.pytorch-ref || 'nightly' }}
       wheel-index-url: ${{ inputs.wheel-index-url || 'https://download.pytorch.org/whl/nightly/torch/' }}
-
-  rtx-50x0-test:
-    name: test sm120 / RTX 50x0 (${{ matrix.python.label }} / ${{ matrix.cuda.label }} / shard ${{ matrix.shard }}/5)
-    if: contains(inputs.test-architectures || 'sm89,sm120', 'sm120') || github.event_name != 'workflow_dispatch'
-    strategy:
-      fail-fast: false
-      matrix:
-        python: *python
-        cuda: *cuda
-        shard: *shards
-    uses: ./.github/workflows/_rtx-test.yml
-    with:
-      runner-base: rtx-50x0-test
-      python-version: ${{ matrix.python.version }}
-      python-label: ${{ matrix.python.label }}
-      cuda-version: ${{ matrix.cuda.version }}
-      cuda-label: ${{ matrix.cuda.label }}
-      cuda-arch-list: "12.0"
-      build-environment: win-rtx-nightly-wheel-sm120
-      shard: ${{ matrix.shard }}
-      num-shards: 5
-      test-config: "default"
-      pytorch-ref: ${{ inputs.pytorch-ref || 'nightly' }}
-      wheel-index-url: ${{ inputs.wheel-index-url || 'https://download.pytorch.org/whl/nightly/torch/' }}
+      # Forward the dispatcher's subset filters; the reusable workflow's
+      # job-level `if:` evaluates them. Empty string = no filter.
+      python-versions: ${{ inputs.python-versions }}
+      cuda-versions: ${{ inputs.cuda-versions }}
+      test-architectures: ${{ inputs.test-architectures }}

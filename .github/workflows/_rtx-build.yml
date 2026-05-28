@@ -69,12 +69,32 @@ on:
         required: false
         default: "nightly"
 
+      # ---- workflow_dispatch matrix filters ---------------------------
+      # The caller cannot reference `matrix.*` in its own job-level
+      # `if:` (GitHub Actions restricts that context for reusable-
+      # workflow-calling jobs), so the per-cell filter is evaluated
+      # here instead, against this invocation's own `python-version` /
+      # `cuda-version` inputs. Empty string disables the filter.
+      python-versions:
+        description: "Comma-separated allowlist of python versions; empty = no filter."
+        type: string
+        required: false
+        default: ""
+      cuda-versions:
+        description: "Comma-separated allowlist of CUDA toolkit versions; empty = no filter."
+        type: string
+        required: false
+        default: ""
+
 permissions:
   contents: read
 
 jobs:
   build:
     name: build
+    if: >
+      (inputs.python-versions == '' || contains(inputs.python-versions, inputs.python-version))
+      && (inputs.cuda-versions == '' || contains(inputs.cuda-versions, inputs.cuda-version))
     runs-on:
       - self-hosted
       - Windows

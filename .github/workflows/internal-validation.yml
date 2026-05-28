@@ -22,6 +22,8 @@ on:
     paths:
       - ".github/**"
   workflow_dispatch:
+  repository_dispatch:
+  
 
 concurrency:
   group: internal-validation-${{ github.ref }}

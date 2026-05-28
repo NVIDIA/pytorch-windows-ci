@@ -28,6 +28,12 @@ name: pytorch-wheel-test
 # Exactly one path must be selected per call: set `wheel-artifact`
 # (path A) or `pytorch-ref` (path B).
 #
+# Each invocation is one shard. The caller fans out `(shard, num-shards)`
+# across N cells; the test step exports `SHARD_NUMBER`, `NUM_TEST_SHARDS`,
+# and `TEST_CONFIG` so `.ci/pytorch/win-test.sh` (which delegates to
+# `test/run_test.py`) runs only its slice. This mirrors the upstream
+# `_win-rtx-test.yml` pattern in `pytorch/pytorch` PR #176678.
+#
 # A lightweight runner-diagnostics monitor samples host + GPU metrics
 # in the background while the test step runs in the foreground, so OOT
 # failures can be triaged against an accurate picture of the machine.
@@ -55,10 +61,35 @@ on:
         description: "CUDA label used in runner labels (e.g. cu130)."
         type: string
         required: true
+      cuda-arch-list:
+        description: >
+          Target SM for TORCH_CUDA_ARCH_LIST in the test step (e.g. '8.9'
+          for sm89 / RTX 40x0, '12.0' for sm120 / RTX 50x0). The wheel
+          itself may be multi-arch; this just tells the test runner which
+          arch to exercise.
+        type: string
+        required: true
       build-environment:
         description: "Logical name passed through as BUILD_ENVIRONMENT."
         type: string
         required: true
+
+      # ---- Sharding (matches pytorch/pytorch PR #176678) --------------
+      shard:
+        description: "1-based shard index for this cell (1 .. num-shards)."
+        type: number
+        required: false
+        default: 1
+      num-shards:
+        description: "Total number of shards in the fanout."
+        type: number
+        required: false
+        default: 1
+      test-config:
+        description: "Test-config name forwarded as TEST_CONFIG (e.g. 'default')."
+        type: string
+        required: false
+        default: "default"
 
       # ---- Path A: artifact-driven (source build) ---------------------
       wheel-artifact:
@@ -85,7 +116,7 @@ permissions:
 
 jobs:
   test:
-    name: test
+    name: test (shard ${{ inputs.shard }}/${{ inputs.num-shards }})
     runs-on:
       - self-hosted
       - Windows
@@ -95,9 +126,23 @@ jobs:
       - ${{ inputs.cuda-label }}
     timeout-minutes: 480
     env:
+      # ---- carried from the matrix cell -------------------------------
       BUILD_ENVIRONMENT: ${{ inputs.build-environment }}
       PYTHON_VERSION: ${{ inputs.python-version }}
       CUDA_VERSION: ${{ inputs.cuda-version }}
+      TORCH_CUDA_ARCH_LIST: ${{ inputs.cuda-arch-list }}
+      # ---- pytorch CI knobs (subset of pytorch/pytorch PR #176678) ----
+      USE_CUDA: "1"
+      # Runner image already carries the Windows SDK and VS BuildTools;
+      # tell win-test.sh not to re-install them.
+      INSTALL_WINDOWS_SDK: "0"
+      # Don't stop the whole shard on the first test failure - we want
+      # the full pass/fail picture per shard.
+      CONTINUE_THROUGH_ERROR: "1"
+      VC_PRODUCT: "BuildTools"
+      VC_YEAR: "2022"
+      VS_VERSION: "17.4.1"
+      VC_VERSION: ""
       PYTORCH_TEST_WITH_SLOW: "0"
       CI: "1"
     steps:
@@ -122,8 +167,10 @@ jobs:
           path: oot
           show-progress: false
 
+      # DISABLED: GitHub Actions artifact download. Re-enable by restoring
+      # the original `if: inputs.wheel-artifact != ''` condition below.
       - name: Download wheel artifact
-        if: inputs.wheel-artifact != ''
+        if: false
         uses: actions/download-artifact@v4
         with:
           name: ${{ inputs.wheel-artifact }}
@@ -234,6 +281,24 @@ jobs:
       - name: Run PyTorch Windows test suite
         shell: bash
         working-directory: pytorch
+        env:
+          # ---- sharding (consumed by .ci/pytorch/win-test.sh -> test/run_test.py)
+          SHARD_NUMBER: ${{ inputs.shard }}
+          NUM_TEST_SHARDS: ${{ inputs.num-shards }}
+          TEST_CONFIG: ${{ inputs.test-config }}
+          # ---- where the wheel lives on this runner (path A) or
+          # ----   a placeholder dir for path B (pip-index install
+          # ----   already happened in `Install PyTorch`).
+          PYTORCH_FINAL_PACKAGE_DIR: ${{ github.workspace }}/artifact
+          # ---- GH context useful for log correlation + stats hooks
+          PR_NUMBER: ${{ github.event.pull_request.number || github.event.client_payload.pr_number || '' }}
+          SHA1: ${{ github.event.pull_request.head.sha || github.event.client_payload.head_sha || github.sha }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          GITHUB_WORKFLOW: ${{ github.workflow }}
+          GITHUB_JOB: ${{ github.job }}
+          GITHUB_RUN_ID: ${{ github.run_id }}
+          GITHUB_RUN_NUMBER: ${{ github.run_number }}
+          GITHUB_RUN_ATTEMPT: ${{ github.run_attempt }}
         run: bash .ci/pytorch/win-test.sh
 
       - name: Stop runner diagnostics
@@ -242,20 +307,24 @@ jobs:
         with:
           output-dir: ${{ steps.diag.outputs.output-dir }}
 
+      # DISABLED: GitHub Actions artifact upload. Re-enable by restoring
+      # the original `if: always()` condition below.
       - name: Upload runner diagnostics
-        if: always()
+        if: false
         uses: actions/upload-artifact@v4
         with:
-          name: runner-diagnostics-${{ inputs.build-environment }}-${{ inputs.python-label }}-${{ inputs.cuda-label }}-${{ github.run_id }}-${{ github.run_attempt }}
+          name: runner-diagnostics-${{ inputs.build-environment }}-${{ inputs.python-label }}-${{ inputs.cuda-label }}-shard${{ inputs.shard }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ steps.diag.outputs.output-dir }}/**
           if-no-files-found: warn
           retention-days: 14
 
+      # DISABLED: GitHub Actions artifact upload. Re-enable by restoring
+      # the original `if: always()` condition below.
       - name: Upload test reports
-        if: always()
+        if: false
         uses: actions/upload-artifact@v4
         with:
-          name: pytorch-test-reports-${{ inputs.build-environment }}-${{ inputs.python-label }}-${{ inputs.cuda-label }}-${{ github.run_id }}-${{ github.run_attempt }}
+          name: pytorch-test-reports-${{ inputs.build-environment }}-${{ inputs.python-label }}-${{ inputs.cuda-label }}-shard${{ inputs.shard }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
             pytorch/test/**/*.xml
             pytorch/test/test-reports/**

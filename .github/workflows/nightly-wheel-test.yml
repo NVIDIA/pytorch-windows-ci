@@ -23,8 +23,13 @@ name: nightly-wheel-test
 #
 # Shape (matrix anchored on the first test job, re-used by the second):
 #
-#   rtx-40x0-test  matrix( python x cuda )   sm89  / Ada
-#   rtx-50x0-test  matrix( python x cuda )   sm120 / Blackwell
+#   rtx-40x0-test  matrix( python x cuda x shard )   sm89  / Ada
+#   rtx-50x0-test  matrix( python x cuda x shard )   sm120 / Blackwell
+#                  (4 x 5 = 20 cells per arch)
+#
+# The shard dimension (5 shards per cell, matching pytorch/pytorch PR
+# #176678) is consumed by `.ci/pytorch/win-test.sh` via the env vars
+# SHARD_NUMBER / NUM_TEST_SHARDS / TEST_CONFIG set in `_rtx-test.yml`.
 
 on:
   schedule:
@@ -54,17 +59,18 @@ permissions:
 
 jobs:
   rtx-40x0-test:
-    name: test sm89 / RTX 40x0 (${{ matrix.python.label }} / ${{ matrix.cuda.label }})
+    name: test sm89 / RTX 40x0 (${{ matrix.python.label }} / ${{ matrix.cuda.label }} / shard ${{ matrix.shard }}/5)
     if: contains(inputs.test-architectures || 'sm89,sm120', 'sm89') || github.event_name != 'workflow_dispatch'
     strategy:
       fail-fast: false
-      matrix: &matrix
-        python:
+      matrix:
+        python: &python
           - { version: "3.12", label: "py312" }
           - { version: "3.13", label: "py313" }
-        cuda:
+        cuda: &cuda
           - { version: "13.0", label: "cu130" }
           - { version: "13.2", label: "cu132" }
+        shard: &shards [1, 2, 3, 4, 5]
     uses: ./.github/workflows/_rtx-test.yml
     with:
       runner-base: rtx-40x0-test
@@ -72,16 +78,23 @@ jobs:
       python-label: ${{ matrix.python.label }}
       cuda-version: ${{ matrix.cuda.version }}
       cuda-label: ${{ matrix.cuda.label }}
+      cuda-arch-list: "8.9"
       build-environment: win-rtx-nightly-wheel-sm89
+      shard: ${{ matrix.shard }}
+      num-shards: 5
+      test-config: "default"
       pytorch-ref: ${{ inputs.pytorch-ref || 'nightly' }}
       wheel-index-url: ${{ inputs.wheel-index-url || 'https://download.pytorch.org/whl/nightly/torch/' }}
 
   rtx-50x0-test:
-    name: test sm120 / RTX 50x0 (${{ matrix.python.label }} / ${{ matrix.cuda.label }})
+    name: test sm120 / RTX 50x0 (${{ matrix.python.label }} / ${{ matrix.cuda.label }} / shard ${{ matrix.shard }}/5)
     if: contains(inputs.test-architectures || 'sm89,sm120', 'sm120') || github.event_name != 'workflow_dispatch'
     strategy:
       fail-fast: false
-      matrix: *matrix
+      matrix:
+        python: *python
+        cuda: *cuda
+        shard: *shards
     uses: ./.github/workflows/_rtx-test.yml
     with:
       runner-base: rtx-50x0-test
@@ -89,6 +102,10 @@ jobs:
       python-label: ${{ matrix.python.label }}
       cuda-version: ${{ matrix.cuda.version }}
       cuda-label: ${{ matrix.cuda.label }}
+      cuda-arch-list: "12.0"
       build-environment: win-rtx-nightly-wheel-sm120
+      shard: ${{ matrix.shard }}
+      num-shards: 5
+      test-config: "default"
       pytorch-ref: ${{ inputs.pytorch-ref || 'nightly' }}
       wheel-index-url: ${{ inputs.wheel-index-url || 'https://download.pytorch.org/whl/nightly/torch/' }}

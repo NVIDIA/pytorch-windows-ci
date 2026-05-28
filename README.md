@@ -35,21 +35,25 @@ third-party OSS notices.
 | `nightly-wheel-test.yml`           | Each test cell checks out `pytorch/pytorch` at `pytorch-ref` (default `nightly`) via `actions/checkout@v4` (which resolves the branch to a concrete commit), records the actual HEAD SHA + commit date into the cell's job summary, then greps `download.pytorch.org/whl/nightly/torch/` for the wheel whose filename carries that exact `devYYYYMMDD` tag together with the matrix `cu<label>` / `cp<pyshort>` tags and `pip install`s the resolved absolute URL before running `.ci/pytorch/win-test.sh`. Fails fast if no matching wheel exists, so the wheel under test always shares its commit date with the pytorch source on disk. No preflight job, no artifact transit. | `schedule` (`0 14 * * *`), `workflow_dispatch` | `_rtx-test.yml` (sm89 + sm120) |
 | `nightly-source-build-test.yml`    | Full source build (multi-arch wheel) + test. The path that handles real RFC-0050 PR-time events. | `schedule` (`0 12 * * *`), `workflow_dispatch`, `repository_dispatch:[pytorch-pr-trigger]` | `_rtx-build.yml` -> `_rtx-test.yml` (sm89 + sm120) |
 
-Both nightly workflows fan out across the same `(python x cuda)` matrix
-(declared once via a YAML anchor on the first test job and re-used by
-the second) and share `_rtx-test.yml` as the single test runner.
+Both nightly workflows fan out across `(python x cuda)` for builds and
+`(python x cuda x shard)` for tests. The 5-shard split per test cell
+mirrors `pytorch/pytorch` PR #176678's `_win-rtx-test.yml` - each shard
+is its own runner job, and `.ci/pytorch/win-test.sh` (via
+`test/run_test.py`) honours the `SHARD_NUMBER` / `NUM_TEST_SHARDS` /
+`TEST_CONFIG` env vars set by `_rtx-test.yml` to run just its slice.
 
 ```
 nightly-source-build-test.yml:                         nightly-wheel-test.yml:
 
   build  matrix( python x cuda )                         (no preflight job)
       |  multi-arch wheel + SHA sidecar per cell
-      |  uploaded as artifact
-      |                                                    rtx-40x0-test (sm89)   matrix( python x cuda )
-      +--->  rtx-40x0-test (sm89)                          rtx-50x0-test (sm120)  matrix( python x cuda )
-      +--->  rtx-50x0-test (sm120)                          (each cell: checkout pytorch@nightly,
-                                                            grep public index for the matching
-                                                            devYYYYMMDD wheel, pip install URL)
+      |  uploaded as artifact (currently disabled)
+      |                                                    rtx-40x0-test (sm89)   matrix( python x cuda x shard )
+      +--->  rtx-40x0-test (sm89)   matrix(...x shard)     rtx-50x0-test (sm120)  matrix( python x cuda x shard )
+      +--->  rtx-50x0-test (sm120)  matrix(...x shard)       (each cell: checkout pytorch@nightly,
+                                                              grep public index for the matching
+                                                              devYYYYMMDD wheel, pip install URL,
+                                                              run shard N of 5)
 ```
 
 `_rtx-test.yml` accepts two install paths and routes between them based
@@ -83,9 +87,17 @@ with the source tree on disk.
 | 3.13 | 13.0 | `py313` | `cu130` |
 | 3.13 | 13.2 | `py313` | `cu132` |
 
-Per source-build run that's 4 build jobs + 8 test jobs (4 cells x 2
-RTX architectures) = 12 jobs. The nightly-wheel run is 8 test jobs
-only - no preflight, no per-cell wheel producer.
+Plus `shard: [1, 2, 3, 4, 5]` on every test job, fixed `num-shards: 5`
+to match PR #176678.
+
+Per source-build run that's **4 build jobs + 40 test jobs** (4 cells x
+2 RTX architectures x 5 shards) = 44 jobs. The nightly-wheel run is
+**40 test jobs** only - no preflight, no per-cell wheel producer.
+
+`TORCH_CUDA_ARCH_LIST` is set per test job (not per matrix cell):
+`8.9` on `rtx-40x0-test`, `12.0` on `rtx-50x0-test`. The build wheel
+itself is multi-arch (`8.9;12.0`) so a single producer feeds both
+architectures.
 
 ## Runner model
 
@@ -153,13 +165,36 @@ scripts/
 
 ## Customising the matrix
 
-The `(python x cuda)` matrix is declared once on the first test job in
-each orchestrator (`build` in `nightly-source-build-test.yml`,
-`rtx-40x0-test` in `nightly-wheel-test.yml`) via a YAML anchor
-(`matrix: &matrix`) and re-used on the second test job
-(`matrix: *matrix`) so the fanouts within a workflow stay in lockstep.
-Edit the anchor in the relevant orchestrator file to add or remove
-cells.
+The `python`, `cuda`, and `shard` lists are each declared once per
+orchestrator via per-list YAML anchors (`&python`, `&cuda`, `&shards`)
+on the first job that needs them, then re-used on the remaining jobs
+via aliases (`*python`, `*cuda`, `*shards`). This lets the build job
+keep a 2-D `(python x cuda)` matrix while the test jobs use a 3-D
+`(python x cuda x shard)` matrix without duplicating the python or
+cuda lists.
+
+To add or remove cells:
+- **python / cuda axes**: edit the `&python` / `&cuda` lists at the
+  top of the build job (`nightly-source-build-test.yml`) or the first
+  test job (`nightly-wheel-test.yml`).
+- **shard axis**: edit `&shards` and the matching `num-shards: 5`
+  literal on every test fanout (one place each per orchestrator).
+
+## Test env vars
+
+`_rtx-test.yml` exports the subset of PR #176678's test env block that
+applies off the pytorch-internal infra (no AWS, no `filter-test-configs`,
+no `get-workflow-job-id`):
+
+| Scope | Variable | Source |
+| --- | --- | --- |
+| job  | `BUILD_ENVIRONMENT`, `PYTHON_VERSION`, `CUDA_VERSION`, `TORCH_CUDA_ARCH_LIST` | matrix cell |
+| job  | `USE_CUDA=1`, `INSTALL_WINDOWS_SDK=0`, `CONTINUE_THROUGH_ERROR=1`, `PYTORCH_TEST_WITH_SLOW=0`, `CI=1` | static |
+| job  | `VC_PRODUCT=BuildTools`, `VC_YEAR=2022`, `VS_VERSION=17.4.1`, `VC_VERSION=""` | MSVC tooling info |
+| step | `SHARD_NUMBER`, `NUM_TEST_SHARDS`, `TEST_CONFIG` | matrix shard cell |
+| step | `PYTORCH_FINAL_PACKAGE_DIR` | `${{ github.workspace }}/artifact` |
+| step | `PR_NUMBER`, `SHA1` | `repository_dispatch` payload or PR context |
+| step | `GITHUB_REPOSITORY` / `_WORKFLOW` / `_JOB` / `_RUN_ID` / `_RUN_NUMBER` / `_RUN_ATTEMPT` | `github.*` context |
 
 ## Runner diagnostics
 

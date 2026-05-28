@@ -1,3 +1,8 @@
+<!--
+SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+SPDX-License-Identifier: MIT
+-->
+
 # pytorch-oot-internal
 
 Internal staging ground for the NVIDIA PyTorch out-of-tree (OOT) CI on
@@ -15,6 +20,12 @@ upstream. Build/test logic itself comes entirely from PyTorch's in-tree
 **Every job runs on a self-hosted runner provided by NVIDIA infrastructure.**
 There are no GitHub-hosted (cloud) runs anywhere in this repo, including
 the PR-time YAML validation.
+
+## License and notices
+
+This repository is released under MIT terms. See [LICENSE](LICENSE) for
+the project license, [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) for
+third-party OSS notices.
 
 ## Three top-level workflows
 

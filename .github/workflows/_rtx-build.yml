@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: MIT
+
 name: pytorch-wheel-build
 
 # Reusable Windows RTX build workflow. Mirrors the role of

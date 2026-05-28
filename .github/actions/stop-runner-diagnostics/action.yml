@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: MIT
+
 name: "Stop runner diagnostics"
 description: >
   Signal the diagnostics monitor (started by `start-runner-diagnostics`)

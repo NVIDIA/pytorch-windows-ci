@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: MIT
+
 name: internal-validation
 
 # Cheap PR-time check: ensures every workflow YAML in `.github/workflows` is

@@ -5,10 +5,7 @@ SPDX-License-Identifier: MIT
 
 # Third-Party Notices
 
-This repository contains NVIDIA-authored workflow configuration and helper
-scripts. It does not vendor third-party source code. The workflows do,
-however, reference or install the following third-party OSS components at
-runtime.
+This project will require or download and install additional third-party open source software projects. Review the license terms of these open source projects before use.
 
 | Component | Use | License | Copyright / attribution | Source |
 | --- | --- | --- | --- | --- |

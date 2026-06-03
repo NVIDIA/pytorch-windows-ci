@@ -161,14 +161,21 @@ routed to its image via the runner-label set:
 
 | Job kind | Label set |
 | --- | --- |
-| `build` (source-build wheel producer) | `[self-hosted, Windows, X64, rtx-build, <python-label>, <cuda-label>]` |
-| `test` cells where `matrix.arch.name == sm89`  | `[self-hosted, Windows, X64, rtx-40x0-test, <python-label>, <cuda-label>]` |
-| `test` cells where `matrix.arch.name == sm120` | `[self-hosted, Windows, X64, rtx-50x0-test, <python-label>, <cuda-label>]` |
-| `relay-server-event-validate`        | `[self-hosted, Windows, X64, rtx-build]` (any free build runner) |
-| `internal-validation` (PR-time YAML lint) | `[self-hosted, Windows, X64, rtx-build]` (any free build runner) |
+| `build` (source-build wheel producer)           | `[rtx-build, <python-label>, <cuda-label>]` |
+| `test` cells where `matrix.arch.name == sm89`   | `[rtx-40x0-test, <python-label>, <cuda-label>]` |
+| `test` cells where `matrix.arch.name == sm120`  | `[rtx-50x0-test, <python-label>, <cuda-label>]` |
+| `relay-server-event-validate`                   | `[rtx-build]` (any free build runner) |
+| `internal-validation` (PR-time YAML lint)       | `[rtx-build]` (any free build runner) |
 
-For example, the sm120 test cell for Python 3.13 + CUDA 13.0 needs an image registered as
-`[self-hosted, Windows, X64, rtx-50x0-test, py313, cu130]`.
+The narrow labels (`rtx-build`, `rtx-40x0-test`, `rtx-50x0-test`,
+`py3xx`, `cu1xx`) are unique to our self-hosted Windows pool, so the
+GitHub auto-tags (`self-hosted`, `Windows`, `X64`) that the runner
+agent applies are redundant in the AND filter and are deliberately
+left off `runs-on:` everywhere.
+
+For example, the sm120 test cell for Python 3.13 + CUDA 13.0 needs an
+image registered as `[rtx-50x0-test, py313, cu130]` (plus whatever
+auto-tags the runner agent adds).
 
 ## What the runner image must already contain
 
@@ -187,8 +194,10 @@ PyTorch CI scripts (`.ci/pytorch/win-build.sh`, `.ci/pytorch/win-test.sh`,
   numpy, ...; see `pytorch/pytorch` PR #176678 review thread for the
   current pin set)
 - `nvidia-smi` on `PATH`
-- `pwsh` (PowerShell 7+) on `PATH` - required by the runner-diagnostics
-  composite actions
+- Windows PowerShell 5.1 (the in-box `powershell.exe`) is sufficient
+  for the runner-diagnostics composite actions and the relay-validate
+  workflow. PowerShell 7+ (`pwsh`) is NOT required - every script in
+  this repo sticks to cmdlets and language features available in 5.1.
 
 The only repo-local helper is the runner-diagnostics monitor described
 [below](#runner-diagnostics); PyTorch's in-tree CI scripts cover build,

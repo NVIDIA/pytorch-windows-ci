@@ -61,7 +61,12 @@ name: nightly-source-build-test
 #                             reusable-workflow-calling job, so the filter
 #                             lives one layer down.)
 #   - `repository_dispatch` - RFC-0050 Relay Server forwards `pytorch-pr-trigger`
-#                             (always runs all cells, no filter applied)
+#                             (when enabled, always runs all cells - no filter).
+#                             Currently PARKED behind a `dispatch-gate` guard:
+#                             the inspect-dispatch job still prints the relay
+#                             payload, but build/test are skipped. Grep for
+#                             `dispatch-gate` in `.github/workflows/` to
+#                             re-enable.
 
 on:
   schedule:
@@ -96,8 +101,44 @@ permissions:
   actions: read
 
 jobs:
+  # ===========================================================================
+  # Once-per-dispatch observability hook. Renders the relay payload (table
+  # + full event JSON) into the run's step summary so the matrix fanout
+  # below doesn't have to. Lives in the orchestrator on purpose - putting
+  # it inside `_rtx-build.yml` / `_rtx-test.yml` would replay the summary
+  # for every (config x arch x shard) cell. Gated to `repository_dispatch`
+  # so schedule / workflow_dispatch runs don't waste a runner on it.
+  #
+  # TODO(dispatch-gate): repository_dispatch handling for this workflow is
+  # currently parked - the build / test jobs below carry a matching
+  # `dispatch-gate` guard. Remove the guards together to re-enable a real
+  # PR-driven source build + test.
+  # ===========================================================================
+  inspect-dispatch:
+    name: inspect relay dispatch (parked)
+    if: github.event_name == 'repository_dispatch'
+    runs-on: [rtx-build]
+    timeout-minutes: 5
+    steps:
+      - name: Checkout pytorch-oot-internal (for composite actions)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          show-progress: false
+
+      - name: Inspect repository_dispatch event
+        uses: ./.github/actions/inspect-dispatch-event
+
+      - name: Note parked state
+        shell: bash
+        run: |
+          echo "::notice title=dispatch-gate::repository_dispatch event acknowledged; source build + test fanout is paused. Remove the dispatch-gate guards in .github/workflows/ to re-enable."
+
   build:
     name: ${{ matrix.config.build_name }}-build
+    # TODO(dispatch-gate): remove this guard once relay-driven source
+    # builds are ready to run. Currently scheduled / manual runs only.
+    if: github.event_name != 'repository_dispatch'
     strategy:
       fail-fast: false
       matrix:
@@ -133,6 +174,11 @@ jobs:
   test:
     name: ${{ matrix.config.build_name }}-${{ matrix.arch.name }}-test
     needs: build
+    # TODO(dispatch-gate): remove this guard once relay-driven testing is
+    # ready. With `needs: build` the test job would already inherit the
+    # skip via the build gate, but stating the gate explicitly makes the
+    # intent obvious at the job level.
+    if: github.event_name != 'repository_dispatch'
     strategy:
       fail-fast: false
       matrix:

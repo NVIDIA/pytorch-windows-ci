@@ -23,11 +23,13 @@ name: pytorch-wheel-build
 # tree without any cross-matrix output plumbing.
 #
 # Runners are ephemeral pre-prepped images selected by the label set
-#   [self-hosted, Windows, X64, <runner-base>, <python-label>, <cuda-label>]
-# (e.g. [self-hosted, Windows, X64, rtx-build, py312, cu130]). The image has
-# the right Python, CUDA toolkit, MSVC, sccache, magma, ninja, cmake, and
-# all PyTorch CI dependencies pre-installed - this workflow performs no
-# in-job environment setup.
+#   [<runner-base>, <python-label>, <cuda-label>]
+# (e.g. [rtx-build, py312, cu130]). The narrow labels are unique to
+# our self-hosted Windows pool, so the GitHub auto-tags (`self-hosted`,
+# `Windows`, `X64`) are redundant and intentionally omitted. The image
+# has the right Python, CUDA toolkit, MSVC, sccache, magma, ninja,
+# cmake, and all PyTorch CI dependencies pre-installed - this workflow
+# performs no in-job environment setup.
 
 on:
   workflow_call:
@@ -96,9 +98,6 @@ jobs:
       (inputs.python-versions == '' || contains(inputs.python-versions, inputs.python-version))
       && (inputs.cuda-versions == '' || contains(inputs.cuda-versions, inputs.cuda-version))
     runs-on:
-      - self-hosted
-      - Windows
-      - X64
       - ${{ inputs.runner-base }}
       - ${{ inputs.python-label }}
       - ${{ inputs.cuda-label }}

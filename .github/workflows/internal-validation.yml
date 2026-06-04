@@ -3,69 +3,38 @@
 
 name: internal-validation
 
-# Workflow-YAML validator. Ensures every workflow under `.github/workflows`
-# is syntactically valid and matches the GitHub Actions schema before a
-# real build / test runner has a chance to choke on it.
+# Cheap PR-time check: ensures every workflow YAML in `.github/workflows` is
+# syntactically valid and matches the GitHub Actions schema. Catches broken
+# workflows before they reach a real build / test runner.
 #
-# Triggers are deliberately limited to:
-#   - `workflow_dispatch`   - manual / ad-hoc validation
-#   - `repository_dispatch` - acknowledged but currently parked behind a
-#                             `dispatch-gate` (see TODO below). The
-#                             payload is still printed for relay-wiring
-#                             observability; no validation work runs.
-#
-# `pull_request` / `push` triggers are intentionally omitted - we only
-# want this surface to react to manual runs or relay events.
+# Runs on the same self-hosted Windows runner pool as the build jobs.
+# `rtx-build` is used because every pre-prepped image in that pool already
+# has Python and Git Bash on PATH; only the `rtx-build` label is required
+# here, matrix-specific labels (py3xx / cu1xx) are intentionally omitted so
+# any free build runner can pick this job up.
 
 on:
+  pull_request:
+    paths:
+      - ".github/**"
+  push:
+    branches: [main]
+    paths:
+      - ".github/**"
   workflow_dispatch:
   repository_dispatch:
 
+
 concurrency:
-  group: internal-validation-${{ github.event.client_payload.pr_number || github.run_id }}
+  group: internal-validation-${{ github.ref }}
   cancel-in-progress: true
 
 permissions:
   contents: read
 
 jobs:
-  # ===========================================================================
-  # repository_dispatch arm - currently a no-op.
-  #
-  # TODO(dispatch-gate): re-enable real validation on repository_dispatch by
-  # removing this job's `if:` guard (and lifting the corresponding guard on
-  # the `yaml` job). Until then we only acknowledge the dispatch and print
-  # the payload, so the upstream relay can confirm wiring without us burning
-  # a runner on validation work.
-  # ===========================================================================
-  inspect-dispatch:
-    name: inspect relay dispatch (parked)
-    if: github.event_name == 'repository_dispatch'
-    runs-on: [rtx-build]
-    timeout-minutes: 5
-    steps:
-      - name: Checkout pytorch-oot-internal (for composite actions)
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 1
-          show-progress: false
-
-      - name: Inspect repository_dispatch event
-        uses: ./.github/actions/inspect-dispatch-event
-
-      - name: Note parked state
-        shell: bash
-        run: |
-          echo "::notice title=dispatch-gate::repository_dispatch event acknowledged; downstream validation is paused. Remove the dispatch-gate guards in .github/workflows/ to re-enable."
-
-  # ===========================================================================
-  # Real validation arm - ad-hoc only while the dispatch gate is in place.
-  # ===========================================================================
   yaml:
     name: validate workflow YAML
-    # TODO(dispatch-gate): remove this guard to let repository_dispatch
-    # exercise the real validator again.
-    if: github.event_name != 'repository_dispatch'
     runs-on: [rtx-build]
     timeout-minutes: 15
     steps:

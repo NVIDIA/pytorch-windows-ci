@@ -158,7 +158,7 @@ jobs:
       - ${{ inputs.runner-base }}
       - ${{ inputs.python-label }}
       - ${{ inputs.cuda-label }}
-    timeout-minutes: 480
+    timeout-minutes: 210
     env:
       # ---- carried from the matrix cell -------------------------------
       BUILD_ENVIRONMENT: ${{ inputs.build-environment }}
@@ -201,10 +201,21 @@ jobs:
           path: oot
           show-progress: false
 
-      # DISABLED: GitHub Actions artifact download. Re-enable by restoring
-      # the original `if: inputs.wheel-artifact != ''` condition below.
-      - name: Download wheel artifact
-        if: false
+      # Primary artifact path: pull the wheel + SHA from the on-prem
+      # storage server. The composite action defaults dest-dir to
+      # $GITHUB_WORKSPACE so files land at `artifact/...` - the same
+      # layout `actions/download-artifact` produces with `path: artifact`.
+      - name: Download wheel artifact from internal storage (primary)
+        id: download-local
+        if: inputs.wheel-artifact != ''
+        continue-on-error: true
+        uses: ./oot/.github/actions/download-local-artifact
+        with:
+          artifact-name: ${{ inputs.wheel-artifact }}
+
+      # Fallback: only runs when the internal storage download failed.
+      - name: Download wheel artifact (GitHub fallback)
+        if: inputs.wheel-artifact != '' && steps.download-local.outcome != 'success'
         uses: actions/download-artifact@v4
         with:
           name: ${{ inputs.wheel-artifact }}
@@ -235,7 +246,7 @@ jobs:
           path: pytorch
           submodules: recursive
           fetch-depth: 1
-          show-progress: false
+          show-progress: true
 
       - name: Record pytorch HEAD (SHA + commit date)
         id: head
@@ -272,6 +283,7 @@ jobs:
           HEAD_DATE: ${{ steps.head.outputs.date_ymd }}
         run: |
           set -euo pipefail
+          # TODO: Add a sleep timer to check & pull the wheel with max timeout of 6 hours
           py_short="${PY_VERSION//./}"
           # PEP 503 simple-index hrefs encode '+' as '%2B':
           #   torch-<ver>.dev<YYYYMMDD>%2B<cu>-cp<py>-cp<py>-win_amd64.whl

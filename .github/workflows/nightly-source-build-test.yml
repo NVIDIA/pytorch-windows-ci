@@ -166,6 +166,9 @@ jobs:
       cuda-arch-list: "8.9;12.0"
       build-environment: win-rtx-cuda
       pytorch-ref: ${{ inputs.pytorch-ref || 'nightly' }}
+      # Must match the `wheel-artifact:` value passed to the paired test
+      # call below so the test job picks up exactly this build's wheel.
+      wheel-artifact: ${{ matrix.config.build_name }}-${{ github.run_id }}-${{ github.run_attempt }}
       # Forward the dispatcher's subset filters; the reusable workflow's
       # job-level `if:` evaluates them. Empty string = no filter.
       python-versions: ${{ inputs.python-versions }}

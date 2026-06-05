@@ -48,7 +48,7 @@ jobs:
   # dispatched.
   # ===========================================================================
   inspect-dispatch:
-    if: github.event_name == 'repository_dispatch'
+    # if: github.event_name == 'repository_dispatch'
     name: inspect upstream PR dispatch
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -73,7 +73,7 @@ jobs:
   # ===========================================================================
   build:
     name: wheel-py312-cu132-build
-    needs: inspect-dispatch
+    # needs: inspect-dispatch
     uses: ./.github/workflows/_rtx-build.yml
     with:
       runner-base: rtx-build

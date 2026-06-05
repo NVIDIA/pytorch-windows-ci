@@ -20,7 +20,7 @@ runs:
   using: "composite"
   steps:
     - name: Signal stop and summarise
-      shell: pwsh
+      shell: powershell
       env:
         OUT_DIR: ${{ inputs.output-dir }}
         WAIT: ${{ inputs.wait-seconds }}

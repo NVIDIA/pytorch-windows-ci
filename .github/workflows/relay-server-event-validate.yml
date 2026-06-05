@@ -13,13 +13,19 @@ name: relay-server-event-validate
 # `pytorch/actions/report-ci-result@v1`.
 #
 # Intentionally lightweight - no pytorch source checkout, no build, no
-# install. Just a fast handshake on a self-hosted runner so the round-
-# trip latency reflects real CI plumbing without burning compute.
+# install. Runs on the GitHub-hosted `ubuntu-latest` runner so the
+# handshake doesn't occupy the self-hosted RTX pool; the GPU probe step
+# is best-effort and simply no-ops when nvidia-smi is absent.
 #
 # Triggers:
 #   - `repository_dispatch: pytorch-pr-trigger` - real PR-time event from the relay
 #   - `repository_dispatch: pytorch-ping`       - relay-only heartbeat (no PR involved)
 #   - `workflow_dispatch`                       - manual probe (operator-driven)
+#
+# NOTE: the repository_dispatch arm is currently parked behind a
+# `dispatch-gate` guard - it only acknowledges + logs the payload, no
+# validate / GPU probe / relay-ack work runs. Grep for `dispatch-gate`
+# in `.github/workflows/` to re-enable.
 
 on:
   workflow_dispatch:
@@ -44,9 +50,50 @@ permissions:
   actions: read
 
 jobs:
+  # ===========================================================================
+  # repository_dispatch arm - currently parked.
+  #
+  # TODO(dispatch-gate): re-enable real validation on repository_dispatch by
+  # removing this job's `if:` guard AND lifting the matching guard on the
+  # `validate` job below. Until then this job just acknowledges the
+  # dispatch and prints the payload so the upstream relay can confirm
+  # wiring without us running validation / GPU probe / ack work.
+  # ===========================================================================
+  inspect-dispatch:
+    name: inspect relay dispatch (parked)
+    if: github.event_name == 'repository_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      # Checkout needed so `uses: ./.github/actions/...` can resolve.
+      - name: Checkout pytorch-oot-internal (for composite actions)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          show-progress: false
+
+      # Standard dispatch-event summary (table + full payload JSON) that
+      # matches the schema used by pytorch/crcr-test's
+      # `crcr-dispatch-receiver.yml`. Falls back to this repo's legacy
+      # RFC-0050 flat schema (pr_number / head_sha / base_ref) when the
+      # nested payload shape isn't present.
+      - name: Inspect repository_dispatch event
+        uses: ./.github/actions/inspect-dispatch-event
+
+      - name: Note parked state
+        shell: bash
+        run: |
+          echo "::notice title=dispatch-gate::repository_dispatch event acknowledged; relay validate/ack pipeline is paused. Remove the dispatch-gate guards in .github/workflows/ to re-enable."
+
+  # ===========================================================================
+  # Real validation arm - ad-hoc only while the dispatch gate is in place.
+  # ===========================================================================
   validate:
     name: validate relay event
-    runs-on: [self-hosted, Windows, X64, rtx-build]
+    # TODO(dispatch-gate): remove this guard to let repository_dispatch
+    # exercise the full validate -> GPU probe -> relay-ack pipeline again.
+    if: github.event_name != 'repository_dispatch'
+    runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
       - name: Extract and validate payload
@@ -68,7 +115,7 @@ jobs:
             head_sha     = $env:HEAD_SHA
             base_ref     = $env:BASE_REF
             received_at  = (Get-Date).ToString("o")
-            runner       = $env:COMPUTERNAME
+            runner       = $env:RUNNER_NAME
             run_url      = "$env:GITHUB_SERVER_URL/$env:GITHUB_REPOSITORY/actions/runs/$env:GITHUB_RUN_ID"
           }
           $json = $payload | ConvertTo-Json

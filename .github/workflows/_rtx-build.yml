@@ -5,7 +5,9 @@ name: pytorch-wheel-build
 
 # Reusable Windows RTX build workflow. Mirrors the role of
 # pytorch/pytorch's `_win-build.yml` (see PR #176678) but kept standalone
-# in this repo so it works before that PR lands upstream.
+# in this repo so it works before that PR lands upstream. The actual
+# build is driven by THIS repo's `tools/pytorch-build/build_pytorch_windows.sh`
+# (a slimmer, no-S3 replacement for upstream `.ci/pytorch/win-build.sh`).
 #
 # Each invocation builds ONE multi-architecture CUDA wheel (one wheel that
 # serves sm89, sm120, ... whatever `cuda-arch-list` covers). The caller
@@ -23,11 +25,13 @@ name: pytorch-wheel-build
 # tree without any cross-matrix output plumbing.
 #
 # Runners are ephemeral pre-prepped images selected by the label set
-#   [self-hosted, Windows, X64, <runner-base>, <python-label>, <cuda-label>]
-# (e.g. [self-hosted, Windows, X64, rtx-build, py312, cu130]). The image has
-# the right Python, CUDA toolkit, MSVC, sccache, magma, ninja, cmake, and
-# all PyTorch CI dependencies pre-installed - this workflow performs no
-# in-job environment setup.
+#   [<runner-base>, <python-label>, <cuda-label>]
+# (e.g. [rtx-build, py312, cu130]). The narrow labels are unique to
+# our self-hosted Windows pool, so the GitHub auto-tags (`self-hosted`,
+# `Windows`, `X64`) are redundant and intentionally omitted. The image
+# has the right Python, CUDA toolkit, MSVC, sccache, magma, ninja,
+# cmake, and all PyTorch CI dependencies pre-installed - this workflow
+# performs no in-job environment setup.
 
 on:
   workflow_call:
@@ -68,6 +72,42 @@ on:
         type: string
         required: false
         default: "nightly"
+      wheel-artifact:
+        description: >
+          Artifact name to publish the built wheel + built_pytorch_sha.txt
+          under. Pass the same value as `wheel-artifact` on the paired
+          `_rtx-test.yml` call so the downstream test job downloads
+          exactly this wheel. Empty = skip publication entirely.
+        type: string
+        required: false
+        default: ""
+      use-powershell-build:
+        description: >
+          Drive the build with the native PowerShell script
+          `tools/pytorch-build/Build-PyTorchWindows.ps1` instead of the
+          Git Bash `build_pytorch_windows.sh`. Both produce the same wheel
+          under `pytorch/dist`; the PowerShell path is a clean-build,
+          no-Git-Bash equivalent. Default false preserves the bash driver.
+        type: boolean
+        required: false
+        default: false
+
+      # ---- workflow_dispatch matrix filters ---------------------------
+      # The caller cannot reference `matrix.*` in its own job-level
+      # `if:` (GitHub Actions restricts that context for reusable-
+      # workflow-calling jobs), so the per-cell filter is evaluated
+      # here instead, against this invocation's own `python-version` /
+      # `cuda-version` inputs. Empty string disables the filter.
+      python-versions:
+        description: "Comma-separated allowlist of python versions; empty = no filter."
+        type: string
+        required: false
+        default: ""
+      cuda-versions:
+        description: "Comma-separated allowlist of CUDA toolkit versions; empty = no filter."
+        type: string
+        required: false
+        default: ""
 
 permissions:
   contents: read
@@ -75,10 +115,10 @@ permissions:
 jobs:
   build:
     name: build
+    if: >
+      (inputs.python-versions == '' || contains(inputs.python-versions, inputs.python-version))
+      && (inputs.cuda-versions == '' || contains(inputs.cuda-versions, inputs.cuda-version))
     runs-on:
-      - self-hosted
-      - Windows
-      - X64
       - ${{ inputs.runner-base }}
       - ${{ inputs.python-label }}
       - ${{ inputs.cuda-label }}
@@ -94,12 +134,20 @@ jobs:
       DISTUTILS_USE_SDK: "1"
       MAX_JOBS: "8"
     steps:
+      # This (OOT) repo carries `tools/pytorch-build/build_pytorch_windows.sh`,
+      # which replaces upstream `.ci/pytorch/win-build.sh`. Keep it in `oot/`
+      # so the parallel pytorch checkout below doesn't trample it.
+      - name: Checkout OOT tooling repo
+        uses: actions/checkout@v4
+        with:
+          path: oot
+
       - name: Checkout PyTorch PR (relay-driven)
         if: github.event_name == 'repository_dispatch'
         uses: pytorch/actions/checkout-pr@v1
         with:
           head-sha: ${{ github.event.client_payload.head_sha }}
-          path: .
+          path: pytorch
 
       - name: Checkout pytorch/pytorch (scheduled / manual)
         if: github.event_name != 'repository_dispatch'
@@ -110,36 +158,80 @@ jobs:
           submodules: recursive
           fetch-depth: 1
           show-progress: false
+          path: pytorch
 
       - name: Record built SHA
         shell: bash
         run: |
           set -euo pipefail
-          sha=$(git rev-parse HEAD)
+          sha=$(git -C pytorch rev-parse HEAD)
           echo "$sha" > built_pytorch_sha.txt
           echo "Built from pytorch/pytorch @ $sha"
 
-      - name: Build PyTorch wheel
+      - name: Build PyTorch wheel (Git Bash)
+        if: ${{ !inputs.use-powershell-build }}
         shell: bash
-        run: bash .ci/pytorch/win-build.sh
+        run: |
+          set -euo pipefail
+          bash oot/tools/pytorch-build/build_pytorch_windows.sh \
+            "${GITHUB_WORKSPACE}/pytorch" \
+            --build-environment "${BUILD_ENVIRONMENT}" \
+            --cuda-arch-list    "${TORCH_CUDA_ARCH_LIST}" \
+            --cuda-version      "${CUDA_VERSION}" \
+            --python-version    "${PYTHON_VERSION}" \
+            --max-jobs          "${MAX_JOBS}"
+
+      # Native PowerShell equivalent. BUILD_TEST stays off (the test job builds
+      # the C++ test binaries) and MKL is skipped because the runner image
+      # already ships it - this keeps parity with the Git Bash driver above.
+      # MAGMA is picked up automatically from the image's MAGMA_HOME if set.
+      - name: Build PyTorch wheel (PowerShell)
+        if: ${{ inputs.use-powershell-build }}
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Stop"
+          & oot\tools\pytorch-build\Build-PyTorchWindows.ps1 `
+            "$env:GITHUB_WORKSPACE\pytorch" `
+            -CudaArchList $env:TORCH_CUDA_ARCH_LIST `
+            -Jobs ([int]$env:MAX_JOBS) `
+            -NoBuildTest `
+            -NoMkl
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Stage wheel + sha into artifact dir
         shell: bash
         run: |
           set -euo pipefail
-          wheel=$(ls -1 build/dist/*.whl dist/*.whl 2>/dev/null | head -n1)
+          wheel=$(ls -1 pytorch/dist/*.whl 2>/dev/null | head -n1)
           if [ -z "$wheel" ]; then
-            echo "::error::No wheel produced under build/dist or dist." >&2
+            echo "::error::No wheel produced under pytorch/dist." >&2
             exit 1
           fi
           mkdir -p artifact
           cp "$wheel" built_pytorch_sha.txt artifact/
           ls -la artifact
 
-      - name: Publish wheel + sha artifact
+      # Primary artifact path: POST the wheel + SHA to the on-prem
+      # storage server. `continue-on-error` so a temporary outage on the
+      # internal storage box doesn't tank the whole build - the GitHub
+      # artifact fallback below picks up the slack.
+      - name: Publish wheel + sha to internal storage (primary)
+        id: publish-local
+        if: inputs.wheel-artifact != ''
+        continue-on-error: true
+        uses: ./oot/.github/actions/upload-local-artifact
+        with:
+          artifact-name: ${{ inputs.wheel-artifact }}
+          source-dir: artifact
+
+      # Fallback: only runs when the internal storage upload failed.
+      # Keeps the build's artifact discoverable through GitHub's UI
+      # whenever the on-prem path is unhappy.
+      - name: Publish wheel + sha artifact (GitHub fallback)
+        if: inputs.wheel-artifact != '' && steps.publish-local.outcome != 'success'
         uses: actions/upload-artifact@v4
         with:
-          name: pytorch-wheel-${{ inputs.build-environment }}-${{ inputs.python-label }}-${{ inputs.cuda-label }}-${{ github.run_id }}-${{ github.run_attempt }}
-          path: artifact/**
+          name: ${{ inputs.wheel-artifact }}
+          path: artifact
           if-no-files-found: error
           retention-days: 14

@@ -22,6 +22,8 @@ on:
     paths:
       - ".github/**"
   workflow_dispatch:
+  repository_dispatch:
+
 
 concurrency:
   group: internal-validation-${{ github.ref }}
@@ -33,11 +35,7 @@ permissions:
 jobs:
   yaml:
     name: validate workflow YAML
-    runs-on:
-      - self-hosted
-      - Windows
-      - X64
-      - rtx-build
+    runs-on: [rtx-build]
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4

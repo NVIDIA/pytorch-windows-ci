@@ -14,18 +14,59 @@ name: nightly-source-build-test
 # infrastructure; this workflow performs zero work on GitHub-hosted
 # (cloud) runners.
 #
-# Shape (matrix anchored on `build`, re-used by both test jobs):
+# Shape:
 #
-#   build  matrix( python x cuda )            one multi-arch wheel per cell
-#       |   each cell records its built SHA into the wheel artifact
+#   build  matrix( config )                         one multi-arch
+#       |   (4 cells)                               wheel per cell
 #       |
-#       +---> rtx-40x0-test  matrix( python x cuda )   sm89  / Ada
-#       +---> rtx-50x0-test  matrix( python x cuda )   sm120 / Blackwell
+#       +-> test  matrix( config x arch )           1 reusable-workflow
+#                 4 x 2 = 8 cells                   call per cell; each
+#                                                   call internally fans
+#                                                   out 5 shard runners
+#                                                   (40 runners total).
+#
+# `config` is a paired `{python, cuda}` entry rather than independent
+# `python` and `cuda` axes - the runner pool is allocated per (python,
+# cuda) combination (e.g. py312/cu130 and py312/cu132 are different
+# machines), so each config is one explicit pairing. Add or remove
+# pairings by editing the `config:` list directly; no `exclude`
+# gymnastics needed.
+#
+# Sharding is NOT a top-level matrix axis here - it lives inside
+# `_rtx-test.yml`'s own `strategy.matrix.shard`. Each test cell in this
+# orchestrator therefore represents "this wheel x this architecture"
+# (one runner per shard nested under it), matching the upstream
+# `_win-rtx-test.yml` pattern in pytorch/pytorch PR #176678 where the
+# `test-matrix` JSON drives sharding inside the reusable workflow.
+#
+# Cell-name shape mirrors `pytorch/pytorch`'s generated
+# `windows-binary-wheel` nightly:
+#   build cell -> `<build_name>-build`           e.g. `wheel-py312-cu130-build`
+#   test  cell -> `<build_name>-<arch>-test`     e.g. `wheel-py312-cu130-sm89-test`
+# Each `config:` entry carries its own precomputed `build_name` so the
+# job-level `name:` is a one-token reference instead of a multi-piece
+# template, matching upstream's `name: ${{ matrix.build_name }}-build`
+# pattern. GitHub groups cells alphabetically by name, so leading with
+# `wheel-<py>-<cu>` keeps each wheel's two arch tests adjacent.
+# `arch` carries the runner-base label and TORCH_CUDA_ARCH_LIST per cell.
 #
 # Triggers:
-#   - `schedule`            - daily at 12:00 UTC
-#   - `workflow_dispatch`   - manual, with knobs for ref / test subset
+#   - `schedule`            - daily at 12:00 UTC (all cells)
+#   - `workflow_dispatch`   - manual; inputs `python-versions`, `cuda-versions`,
+#                             `test-architectures` (comma-separated subsets,
+#                             default = all) are forwarded verbatim through
+#                             `with:` to the reusable workflows, whose own
+#                             job-level `if:` performs the per-cell match.
+#                             (GitHub forbids `matrix.*` in the `if:` of a
+#                             reusable-workflow-calling job, so the filter
+#                             lives one layer down.)
 #   - `repository_dispatch` - RFC-0050 Relay Server forwards `pytorch-pr-trigger`
+#                             (when enabled, always runs all cells - no filter).
+#                             Currently PARKED behind a `dispatch-gate` guard:
+#                             the inspect-dispatch job still prints the relay
+#                             payload, but build/test are skipped. Grep for
+#                             `dispatch-gate` in `.github/workflows/` to
+#                             re-enable.
 
 on:
   schedule:
@@ -36,6 +77,14 @@ on:
         description: "pytorch/pytorch ref to build (branch / tag / SHA)."
         required: false
         default: "nightly"
+      python-versions:
+        description: "Comma-separated subset of 3.12,3.13 to build/test."
+        required: false
+        default: "3.12,3.13"
+      cuda-versions:
+        description: "Comma-separated subset of 13.0,13.2 to build/test."
+        required: false
+        default: "13.0,13.2"
       test-architectures:
         description: "Comma-separated subset of sm89,sm120 to test (build is always multi-arch)."
         required: false
@@ -52,58 +101,108 @@ permissions:
   actions: read
 
 jobs:
+  # ===========================================================================
+  # Once-per-dispatch observability hook. Renders the relay payload (table
+  # + full event JSON) into the run's step summary so the matrix fanout
+  # below doesn't have to. Lives in the orchestrator on purpose - putting
+  # it inside `_rtx-build.yml` / `_rtx-test.yml` would replay the summary
+  # for every (config x arch x shard) cell. Gated to `repository_dispatch`
+  # so schedule / workflow_dispatch runs don't waste a runner on it.
+  #
+  # TODO(dispatch-gate): repository_dispatch handling for this workflow is
+  # currently parked - the build / test jobs below carry a matching
+  # `dispatch-gate` guard. Remove the guards together to re-enable a real
+  # PR-driven source build + test.
+  # ===========================================================================
+  inspect-dispatch:
+    name: inspect relay dispatch (parked)
+    if: github.event_name == 'repository_dispatch'
+    runs-on: [rtx-build]
+    timeout-minutes: 5
+    steps:
+      - name: Checkout pytorch-oot-internal (for composite actions)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          show-progress: false
+
+      - name: Inspect repository_dispatch event
+        uses: ./.github/actions/inspect-dispatch-event
+
+      - name: Note parked state
+        shell: bash
+        run: |
+          echo "::notice title=dispatch-gate::repository_dispatch event acknowledged; source build + test fanout is paused. Remove the dispatch-gate guards in .github/workflows/ to re-enable."
+
   build:
-    name: build (multi-arch / ${{ matrix.python.label }} / ${{ matrix.cuda.label }})
+    name: ${{ matrix.config.build_name }}-build
+    # TODO(dispatch-gate): remove this guard once relay-driven source
+    # builds are ready to run. Currently scheduled / manual runs only.
+    if: github.event_name != 'repository_dispatch'
     strategy:
       fail-fast: false
-      matrix: &matrix
-        python:
-          - { version: "3.12", label: "py312" }
-          - { version: "3.13", label: "py313" }
-        cuda:
-          - { version: "13.0", label: "cu130" }
-          - { version: "13.2", label: "cu132" }
+      matrix:
+        # One entry per actual runner pairing. Add a new line to
+        # introduce a new (python, cuda) combination, delete a line
+        # to drop one. The build job needs a machine labelled
+        # `[rtx-build, <python.label>, <cuda.label>]` for each entry.
+        # `build_name` is the canonical cell identity - the build
+        # job renders as `<build_name>-build`, the test job as
+        # `<build_name>-<arch>-test` (with the shard fanout nested
+        # underneath inside `_rtx-test.yml`), and the wheel artifact
+        # key derives from it as well.
+        config: &config
+          - { python: { version: "3.12", label: "py312" }, cuda: { version: "13.0", label: "cu130" }, build_name: "wheel-py312-cu130" }
+          - { python: { version: "3.12", label: "py312" }, cuda: { version: "13.2", label: "cu132" }, build_name: "wheel-py312-cu132" }
+          - { python: { version: "3.13", label: "py313" }, cuda: { version: "13.0", label: "cu130" }, build_name: "wheel-py313-cu130" }
+          - { python: { version: "3.13", label: "py313" }, cuda: { version: "13.2", label: "cu132" }, build_name: "wheel-py313-cu132" }
     uses: ./.github/workflows/_rtx-build.yml
     with:
       runner-base: rtx-build
-      python-version: ${{ matrix.python.version }}
-      python-label: ${{ matrix.python.label }}
-      cuda-version: ${{ matrix.cuda.version }}
-      cuda-label: ${{ matrix.cuda.label }}
+      python-version: ${{ matrix.config.python.version }}
+      python-label: ${{ matrix.config.python.label }}
+      cuda-version: ${{ matrix.config.cuda.version }}
+      cuda-label: ${{ matrix.config.cuda.label }}
       cuda-arch-list: "8.9;12.0"
       build-environment: win-rtx-cuda
       pytorch-ref: ${{ inputs.pytorch-ref || 'nightly' }}
+      # Must match the `wheel-artifact:` value passed to the paired test
+      # call below so the test job picks up exactly this build's wheel.
+      wheel-artifact: ${{ matrix.config.build_name }}-${{ github.run_id }}-${{ github.run_attempt }}
+      # Forward the dispatcher's subset filters; the reusable workflow's
+      # job-level `if:` evaluates them. Empty string = no filter.
+      python-versions: ${{ inputs.python-versions }}
+      cuda-versions: ${{ inputs.cuda-versions }}
 
-  rtx-40x0-test:
-    name: test sm89 / RTX 40x0 (${{ matrix.python.label }} / ${{ matrix.cuda.label }})
+  test:
+    name: ${{ matrix.config.build_name }}-${{ matrix.arch.name }}-test
     needs: build
-    if: contains(inputs.test-architectures || 'sm89,sm120', 'sm89') || github.event_name != 'workflow_dispatch'
+    # TODO(dispatch-gate): remove this guard once relay-driven testing is
+    # ready. With `needs: build` the test job would already inherit the
+    # skip via the build gate, but stating the gate explicitly makes the
+    # intent obvious at the job level.
+    if: github.event_name != 'repository_dispatch'
     strategy:
       fail-fast: false
-      matrix: *matrix
+      matrix:
+        config: *config
+        arch:
+          - { name: sm89,  runner: rtx-40x0-test, arch_list: "8.9"  }
+          - { name: sm120, runner: rtx-50x0-test, arch_list: "12.0" }
     uses: ./.github/workflows/_rtx-test.yml
     with:
-      runner-base: rtx-40x0-test
-      python-version: ${{ matrix.python.version }}
-      python-label: ${{ matrix.python.label }}
-      cuda-version: ${{ matrix.cuda.version }}
-      cuda-label: ${{ matrix.cuda.label }}
-      build-environment: win-rtx-sm89
-      wheel-artifact: pytorch-wheel-win-rtx-cuda-${{ matrix.python.label }}-${{ matrix.cuda.label }}-${{ github.run_id }}-${{ github.run_attempt }}
-
-  rtx-50x0-test:
-    name: test sm120 / RTX 50x0 (${{ matrix.python.label }} / ${{ matrix.cuda.label }})
-    needs: build
-    if: contains(inputs.test-architectures || 'sm89,sm120', 'sm120') || github.event_name != 'workflow_dispatch'
-    strategy:
-      fail-fast: false
-      matrix: *matrix
-    uses: ./.github/workflows/_rtx-test.yml
-    with:
-      runner-base: rtx-50x0-test
-      python-version: ${{ matrix.python.version }}
-      python-label: ${{ matrix.python.label }}
-      cuda-version: ${{ matrix.cuda.version }}
-      cuda-label: ${{ matrix.cuda.label }}
-      build-environment: win-rtx-sm120
-      wheel-artifact: pytorch-wheel-win-rtx-cuda-${{ matrix.python.label }}-${{ matrix.cuda.label }}-${{ github.run_id }}-${{ github.run_attempt }}
+      runner-base: ${{ matrix.arch.runner }}
+      python-version: ${{ matrix.config.python.version }}
+      python-label: ${{ matrix.config.python.label }}
+      cuda-version: ${{ matrix.config.cuda.version }}
+      cuda-label: ${{ matrix.config.cuda.label }}
+      cuda-arch-list: ${{ matrix.arch.arch_list }}
+      arch-name: ${{ matrix.arch.name }}
+      build-environment: win-rtx-${{ matrix.arch.name }}
+      test-config: "default"
+      wheel-artifact: ${{ matrix.config.build_name }}-${{ github.run_id }}-${{ github.run_attempt }}
+      # Forward the dispatcher's subset filters; the reusable workflow's
+      # job-level `if:` evaluates them. Empty string = no filter.
+      python-versions: ${{ inputs.python-versions }}
+      cuda-versions: ${{ inputs.cuda-versions }}
+      test-architectures: ${{ inputs.test-architectures }}

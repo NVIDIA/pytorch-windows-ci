@@ -28,7 +28,7 @@ runs:
   steps:
     - name: Spawn background monitor
       id: spawn
-      shell: pwsh
+      shell: powershell
       env:
         INPUT_OUTPUT_DIR: ${{ inputs.output-dir }}
         INTERVAL: ${{ inputs.interval-seconds }}
@@ -44,8 +44,8 @@ runs:
         # script lives at <repo>/scripts/runner-diagnostics/monitor.ps1.
         $repoRoot = (Resolve-Path (Join-Path $env:GITHUB_ACTION_PATH "..\..\..")).Path
         $script   = Join-Path $repoRoot "scripts\runner-diagnostics\monitor.ps1"
-        $proc = Start-Process pwsh `
-          -ArgumentList "-NoLogo","-NoProfile","-File",$script,"-OutputDir",$outDir,"-IntervalSeconds",$env:INTERVAL `
+        $proc = Start-Process powershell `
+          -ArgumentList "-NoLogo","-NoProfile","-ExecutionPolicy","Bypass","-File",$script,"-OutputDir",$outDir,"-IntervalSeconds",$env:INTERVAL `
           -PassThru -WindowStyle Hidden
         $proc.Id | Out-File -FilePath (Join-Path $outDir ".pid") -Encoding utf8
         Write-Host "Diagnostics monitor PID=$($proc.Id) interval=${env:INTERVAL}s output=$outDir"

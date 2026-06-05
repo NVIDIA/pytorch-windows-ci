@@ -1,0 +1,43 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: MIT
+
+name: "Inspect repository_dispatch event"
+description: >
+  Render a markdown summary of the incoming repository_dispatch event,
+  matching the payload shape used by pytorch/crcr-test's
+  `crcr-dispatch-receiver.yml` (client_payload.event_type +
+  client_payload.payload.*), with a fallback rendering for the legacy
+  RFC-0050 flat schema (client_payload.pr_number / head_sha / base_ref).
+  Writes a table + the full event JSON to the job step summary and
+  echoes the parsed fields into the live log. No-op for non-dispatch
+  events - the action.yml's own `if:` guard skips them.
+
+runs:
+  using: "composite"
+  steps:
+    - name: Render dispatch summary
+      if: github.event_name == 'repository_dispatch'
+      shell: bash
+      env:
+        # ---- new schema (pytorch/crcr-test) -----------------------------
+        DISPATCH_ACTION:   ${{ github.event.action }}
+        CLIENT_EVENT_TYPE: ${{ github.event.client_payload.event_type }}
+        UPSTREAM_REPO:     ${{ github.event.client_payload.payload.repository.full_name }}
+        PR_NUMBER:         ${{ github.event.client_payload.payload.pull_request.number }}
+        PR_ACTION:         ${{ github.event.client_payload.payload.action }}
+        PR_TITLE:          ${{ github.event.client_payload.payload.pull_request.title }}
+        PR_HEAD_SHA:       ${{ github.event.client_payload.payload.pull_request.head.sha }}
+        PR_HEAD_REPO:      ${{ github.event.client_payload.payload.pull_request.head.repo.full_name }}
+        PUSH_REF:          ${{ github.event.client_payload.payload.ref }}
+        PUSH_AFTER:        ${{ github.event.client_payload.payload.after }}
+        PUSH_BASE_REF:     ${{ github.event.client_payload.payload.base_ref }}
+        PUSH_DELETED:      ${{ github.event.client_payload.payload.deleted }}
+        # ---- legacy RFC-0050 flat schema --------------------------------
+        LEGACY_PR_NUMBER:  ${{ github.event.client_payload.pr_number }}
+        LEGACY_HEAD_SHA:   ${{ github.event.client_payload.head_sha }}
+        LEGACY_BASE_REF:   ${{ github.event.client_payload.base_ref }}
+      run: |
+        # Action lives at <repo>/.github/actions/inspect-dispatch-event/,
+        # script lives at <repo>/scripts/dispatch-event/.
+        script_dir="$(cd -- "$GITHUB_ACTION_PATH/../../../scripts/dispatch-event" && pwd -P)"
+        bash "$script_dir/print_dispatch_summary.sh"

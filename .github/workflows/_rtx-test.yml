@@ -28,6 +28,17 @@ name: pytorch-wheel-test
 # Exactly one path must be selected per call: set `wheel-artifact`
 # (path A) or `pytorch-ref` (path B).
 #
+# Each invocation is one (config x arch) test cell. Sharding is an
+# internal fanout: `strategy.matrix.shard` below spawns 5 parallel
+# runners under this single workflow call, and the test step exports
+# `SHARD_NUMBER` (per-cell) / `NUM_TEST_SHARDS` (constant 5) /
+# `TEST_CONFIG` so `.ci/pytorch/win-test.sh` (which delegates to
+# `test/run_test.py`) runs only its slice. The orchestrator therefore
+# sees one cell per (config x arch), not one cell per shard - matching
+# the upstream `_win-rtx-test.yml` pattern in pytorch/pytorch PR
+# #176678 where the test job's `test-matrix` JSON carries the shard
+# fanout internally.
+#
 # A lightweight runner-diagnostics monitor samples host + GPU metrics
 # in the background while the test step runs in the foreground, so OOT
 # failures can be triaged against an accurate picture of the machine.
@@ -55,10 +66,36 @@ on:
         description: "CUDA label used in runner labels (e.g. cu130)."
         type: string
         required: true
+      cuda-arch-list:
+        description: >
+          Target SM for TORCH_CUDA_ARCH_LIST in the test step (e.g. '8.9'
+          for sm89 / RTX 40x0, '12.0' for sm120 / RTX 50x0). The wheel
+          itself may be multi-arch; this just tells the test runner which
+          arch to exercise.
+        type: string
+        required: true
+      arch-name:
+        description: "Architecture token (e.g. 'sm89', 'sm120'); used for the test-architectures filter."
+        type: string
+        required: true
       build-environment:
         description: "Logical name passed through as BUILD_ENVIRONMENT."
         type: string
         required: true
+
+      # ---- Sharding (matches pytorch/pytorch PR #176678) --------------
+      # The shard fanout is internal to this workflow: each invocation
+      # spawns 5 parallel shard runners via `strategy.matrix.shard`
+      # below. The caller does NOT see shards in its own matrix - one
+      # call to this reusable workflow == one (config x arch) test
+      # cell, period. To change the shard count, edit both the
+      # `shard:` list under `strategy.matrix` and the `NUM_TEST_SHARDS`
+      # env in the test step.
+      test-config:
+        description: "Test-config name forwarded as TEST_CONFIG (e.g. 'default')."
+        type: string
+        required: false
+        default: "default"
 
       # ---- Path A: artifact-driven (source build) ---------------------
       wheel-artifact:
@@ -79,25 +116,67 @@ on:
         required: false
         default: "https://download.pytorch.org/whl/nightly/torch/"
 
+      # ---- workflow_dispatch matrix filters ---------------------------
+      # The caller cannot reference `matrix.*` in its own job-level
+      # `if:` (GitHub Actions restricts that context for reusable-
+      # workflow-calling jobs), so the per-cell filter is evaluated
+      # here instead, against this invocation's own `python-version` /
+      # `cuda-version` / `arch-name` inputs. Empty string disables the
+      # corresponding filter dimension.
+      python-versions:
+        description: "Comma-separated allowlist of python versions; empty = no filter."
+        type: string
+        required: false
+        default: ""
+      cuda-versions:
+        description: "Comma-separated allowlist of CUDA toolkit versions; empty = no filter."
+        type: string
+        required: false
+        default: ""
+      test-architectures:
+        description: "Comma-separated allowlist of arch tokens (e.g. 'sm89,sm120'); empty = no filter."
+        type: string
+        required: false
+        default: ""
+
 permissions:
   contents: read
   actions: read
 
 jobs:
   test:
-    name: test
+    name: test (shard ${{ matrix.shard }}/5)
+    if: >
+      (inputs.python-versions == '' || contains(inputs.python-versions, inputs.python-version))
+      && (inputs.cuda-versions == '' || contains(inputs.cuda-versions, inputs.cuda-version))
+      && (inputs.test-architectures == '' || contains(inputs.test-architectures, inputs.arch-name))
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4, 5]
     runs-on:
-      - self-hosted
-      - Windows
-      - X64
       - ${{ inputs.runner-base }}
       - ${{ inputs.python-label }}
       - ${{ inputs.cuda-label }}
-    timeout-minutes: 480
+    timeout-minutes: 210
     env:
+      # ---- carried from the matrix cell -------------------------------
       BUILD_ENVIRONMENT: ${{ inputs.build-environment }}
       PYTHON_VERSION: ${{ inputs.python-version }}
       CUDA_VERSION: ${{ inputs.cuda-version }}
+      TORCH_CUDA_ARCH_LIST: ${{ inputs.cuda-arch-list }}
+      # ---- pytorch CI knobs (subset of pytorch/pytorch PR #176678) ----
+      USE_CUDA: "1"
+      # Runner image already carries the Windows SDK and VS BuildTools;
+      # tell win-test.sh not to re-install them.
+      INSTALL_WINDOWS_SDK: "0"
+      # Don't stop the whole shard on the first test failure - we want
+      # the full pass/fail picture per shard.
+      CONTINUE_THROUGH_ERROR: "1"
+      VC_PRODUCT: "BuildTools"
+      VC_YEAR: "2022"
+      VS_VERSION: "17.4.1"
+      VC_VERSION: ""
       PYTORCH_TEST_WITH_SLOW: "0"
       CI: "1"
     steps:
@@ -122,8 +201,21 @@ jobs:
           path: oot
           show-progress: false
 
-      - name: Download wheel artifact
+      # Primary artifact path: pull the wheel + SHA from the on-prem
+      # storage server. The composite action defaults dest-dir to
+      # $GITHUB_WORKSPACE so files land at `artifact/...` - the same
+      # layout `actions/download-artifact` produces with `path: artifact`.
+      - name: Download wheel artifact from internal storage (primary)
+        id: download-local
         if: inputs.wheel-artifact != ''
+        continue-on-error: true
+        uses: ./oot/.github/actions/download-local-artifact
+        with:
+          artifact-name: ${{ inputs.wheel-artifact }}
+
+      # Fallback: only runs when the internal storage download failed.
+      - name: Download wheel artifact (GitHub fallback)
+        if: inputs.wheel-artifact != '' && steps.download-local.outcome != 'success'
         uses: actions/download-artifact@v4
         with:
           name: ${{ inputs.wheel-artifact }}
@@ -154,7 +246,7 @@ jobs:
           path: pytorch
           submodules: recursive
           fetch-depth: 1
-          show-progress: false
+          show-progress: true
 
       - name: Record pytorch HEAD (SHA + commit date)
         id: head
@@ -191,6 +283,7 @@ jobs:
           HEAD_DATE: ${{ steps.head.outputs.date_ymd }}
         run: |
           set -euo pipefail
+          # TODO: Add a sleep timer to check & pull the wheel with max timeout of 6 hours
           py_short="${PY_VERSION//./}"
           # PEP 503 simple-index hrefs encode '+' as '%2B':
           #   torch-<ver>.dev<YYYYMMDD>%2B<cu>-cp<py>-cp<py>-win_amd64.whl
@@ -234,6 +327,24 @@ jobs:
       - name: Run PyTorch Windows test suite
         shell: bash
         working-directory: pytorch
+        env:
+          # ---- sharding (consumed by .ci/pytorch/win-test.sh -> test/run_test.py)
+          SHARD_NUMBER: ${{ matrix.shard }}
+          NUM_TEST_SHARDS: "5"
+          TEST_CONFIG: ${{ inputs.test-config }}
+          # ---- where the wheel lives on this runner (path A) or
+          # ----   a placeholder dir for path B (pip-index install
+          # ----   already happened in `Install PyTorch`).
+          PYTORCH_FINAL_PACKAGE_DIR: ${{ github.workspace }}/artifact
+          # ---- GH context useful for log correlation + stats hooks
+          PR_NUMBER: ${{ github.event.pull_request.number || github.event.client_payload.pr_number || '' }}
+          SHA1: ${{ github.event.pull_request.head.sha || github.event.client_payload.head_sha || github.sha }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          GITHUB_WORKFLOW: ${{ github.workflow }}
+          GITHUB_JOB: ${{ github.job }}
+          GITHUB_RUN_ID: ${{ github.run_id }}
+          GITHUB_RUN_NUMBER: ${{ github.run_number }}
+          GITHUB_RUN_ATTEMPT: ${{ github.run_attempt }}
         run: bash .ci/pytorch/win-test.sh
 
       - name: Stop runner diagnostics
@@ -242,20 +353,24 @@ jobs:
         with:
           output-dir: ${{ steps.diag.outputs.output-dir }}
 
+      # DISABLED: GitHub Actions artifact upload. Re-enable by restoring
+      # the original `if: always()` condition below.
       - name: Upload runner diagnostics
-        if: always()
+        if: false
         uses: actions/upload-artifact@v4
         with:
-          name: runner-diagnostics-${{ inputs.build-environment }}-${{ inputs.python-label }}-${{ inputs.cuda-label }}-${{ github.run_id }}-${{ github.run_attempt }}
+          name: runner-diagnostics-${{ inputs.build-environment }}-${{ inputs.python-label }}-${{ inputs.cuda-label }}-shard${{ matrix.shard }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ steps.diag.outputs.output-dir }}/**
           if-no-files-found: warn
           retention-days: 14
 
+      # DISABLED: GitHub Actions artifact upload. Re-enable by restoring
+      # the original `if: always()` condition below.
       - name: Upload test reports
-        if: always()
+        if: false
         uses: actions/upload-artifact@v4
         with:
-          name: pytorch-test-reports-${{ inputs.build-environment }}-${{ inputs.python-label }}-${{ inputs.cuda-label }}-${{ github.run_id }}-${{ github.run_attempt }}
+          name: pytorch-test-reports-${{ inputs.build-environment }}-${{ inputs.python-label }}-${{ inputs.cuda-label }}-shard${{ matrix.shard }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
             pytorch/test/**/*.xml
             pytorch/test/test-reports/**

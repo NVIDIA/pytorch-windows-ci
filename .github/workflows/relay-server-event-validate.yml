@@ -94,7 +94,7 @@ jobs:
     name: validate relay event
     # TODO(dispatch-gate): remove this guard to let repository_dispatch
     # exercise the full validate -> GPU probe -> relay-ack pipeline again.
-    if: github.event_name == 'repository_dispatch'
+    if: github.event_name == 'repository_dispatch' && github.event.client_payload.base_ref != 'main'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:

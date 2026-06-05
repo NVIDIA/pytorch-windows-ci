@@ -39,7 +39,9 @@ on:
         required: false
         default: "0000000000000000000000000000000000000000"
   repository_dispatch:
-    types: [pytorch-pr-trigger, pytorch-ping]
+    types:
+      - pull_request
+      - push
 
 concurrency:
   group: relay-validate-${{ github.event.client_payload.pr_number || github.run_id }}

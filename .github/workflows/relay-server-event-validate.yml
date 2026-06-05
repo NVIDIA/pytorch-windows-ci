@@ -13,8 +13,9 @@ name: relay-server-event-validate
 # `pytorch/actions/report-ci-result@v1`.
 #
 # Intentionally lightweight - no pytorch source checkout, no build, no
-# install. Just a fast handshake on a self-hosted runner so the round-
-# trip latency reflects real CI plumbing without burning compute.
+# install. Runs on the GitHub-hosted `ubuntu-latest` runner so the
+# handshake doesn't occupy the self-hosted RTX pool; the GPU probe step
+# is best-effort and simply no-ops when nvidia-smi is absent.
 #
 # Triggers:
 #   - `repository_dispatch: pytorch-pr-trigger` - real PR-time event from the relay
@@ -61,7 +62,7 @@ jobs:
   inspect-dispatch:
     name: inspect relay dispatch (parked)
     if: github.event_name == 'repository_dispatch'
-    runs-on: [rtx-build]
+    runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
       # Checkout needed so `uses: ./.github/actions/...` can resolve.
@@ -92,12 +93,12 @@ jobs:
     # TODO(dispatch-gate): remove this guard to let repository_dispatch
     # exercise the full validate -> GPU probe -> relay-ack pipeline again.
     if: github.event_name != 'repository_dispatch'
-    runs-on: [rtx-build]
+    runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
       - name: Extract and validate payload
         id: payload
-        shell: powershell
+        shell: pwsh
         env:
           EVENT_NAME:    ${{ github.event_name }}
           EVENT_ACTION:  ${{ github.event.action }}
@@ -114,7 +115,7 @@ jobs:
             head_sha     = $env:HEAD_SHA
             base_ref     = $env:BASE_REF
             received_at  = (Get-Date).ToString("o")
-            runner       = $env:COMPUTERNAME
+            runner       = $env:RUNNER_NAME
             run_url      = "$env:GITHUB_SERVER_URL/$env:GITHUB_REPOSITORY/actions/runs/$env:GITHUB_RUN_ID"
           }
           $json = $payload | ConvertTo-Json
@@ -138,7 +139,7 @@ jobs:
           Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value $summary
 
       - name: Quick GPU + driver probe
-        shell: powershell
+        shell: pwsh
         run: |
           $ErrorActionPreference = "Continue"
           $smi = Get-Command nvidia-smi -ErrorAction SilentlyContinue
@@ -148,7 +149,7 @@ jobs:
           Write-Host "::endgroup::"
 
       - name: Acknowledge to relay (stub)
-        shell: powershell
+        shell: pwsh
         env:
           PR_NUMBER: ${{ github.event.client_payload.pr_number || inputs.pr-number }}
           HEAD_SHA:  ${{ github.event.client_payload.head_sha  || inputs.head-sha }}

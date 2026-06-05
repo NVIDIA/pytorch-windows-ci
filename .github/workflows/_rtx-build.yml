@@ -81,6 +81,16 @@ on:
         type: string
         required: false
         default: ""
+      use-powershell-build:
+        description: >
+          Drive the build with the native PowerShell script
+          `tools/pytorch-build/Build-PyTorchWindows.ps1` instead of the
+          Git Bash `build_pytorch_windows.sh`. Both produce the same wheel
+          under `pytorch/dist`; the PowerShell path is a clean-build,
+          no-Git-Bash equivalent. Default false preserves the bash driver.
+        type: boolean
+        required: false
+        default: false
 
       # ---- workflow_dispatch matrix filters ---------------------------
       # The caller cannot reference `matrix.*` in its own job-level
@@ -158,7 +168,8 @@ jobs:
           echo "$sha" > built_pytorch_sha.txt
           echo "Built from pytorch/pytorch @ $sha"
 
-      - name: Build PyTorch wheel
+      - name: Build PyTorch wheel (Git Bash)
+        if: ${{ !inputs.use-powershell-build }}
         shell: bash
         run: |
           set -euo pipefail
@@ -169,6 +180,23 @@ jobs:
             --cuda-version      "${CUDA_VERSION}" \
             --python-version    "${PYTHON_VERSION}" \
             --max-jobs          "${MAX_JOBS}"
+
+      # Native PowerShell equivalent. BUILD_TEST stays off (the test job builds
+      # the C++ test binaries) and MKL is skipped because the runner image
+      # already ships it - this keeps parity with the Git Bash driver above.
+      # MAGMA is picked up automatically from the image's MAGMA_HOME if set.
+      - name: Build PyTorch wheel (PowerShell)
+        if: ${{ inputs.use-powershell-build }}
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Stop"
+          & oot\tools\pytorch-build\Build-PyTorchWindows.ps1 `
+            "$env:GITHUB_WORKSPACE\pytorch" `
+            -CudaArchList $env:TORCH_CUDA_ARCH_LIST `
+            -Jobs ([int]$env:MAX_JOBS) `
+            -NoBuildTest `
+            -NoMkl
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Stage wheel + sha into artifact dir
         shell: bash

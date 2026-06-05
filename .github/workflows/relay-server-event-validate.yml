@@ -28,16 +28,6 @@ name: relay-server-event-validate
 # in `.github/workflows/` to re-enable.
 
 on:
-  workflow_dispatch:
-    inputs:
-      pr-number:
-        description: "Synthetic upstream PR number (manual probe only)."
-        required: false
-        default: "0"
-      head-sha:
-        description: "Synthetic upstream head SHA (manual probe only)."
-        required: false
-        default: "0000000000000000000000000000000000000000"
   repository_dispatch:
     types:
       - pull_request
@@ -51,15 +41,6 @@ permissions:
   actions: read
 
 jobs:
-  # ===========================================================================
-  # repository_dispatch arm - currently parked.
-  #
-  # TODO(dispatch-gate): re-enable real validation on repository_dispatch by
-  # removing this job's `if:` guard AND lifting the matching guard on the
-  # `validate` job below. Until then this job just acknowledges the
-  # dispatch and prints the payload so the upstream relay can confirm
-  # wiring without us running validation / GPU probe / ack work.
-  # ===========================================================================
   inspect-dispatch:
     name: inspect relay dispatch (parked)
     if: github.event_name == 'repository_dispatch'

@@ -170,6 +170,25 @@ Describe "Initialize-MagmaEnvironment" {
     }
 }
 
+Describe "Enable-CondaEnvironment" {
+    It "is a no-op when the env name is empty" {
+        { Enable-CondaEnvironment -EnvName "" } | Should Not Throw
+    }
+    It "returns without re-activating when the env is already active" {
+        $prev = $env:CONDA_DEFAULT_ENV
+        $env:CONDA_DEFAULT_ENV = "py_tmp"
+        try {
+            { Enable-CondaEnvironment -EnvName "py_tmp" } | Should Not Throw
+        } finally {
+            if ($null -eq $prev) {
+                Remove-Item Env:CONDA_DEFAULT_ENV -ErrorAction SilentlyContinue
+            } else {
+                $env:CONDA_DEFAULT_ENV = $prev
+            }
+        }
+    }
+}
+
 Describe "Format-Duration" {
     It "formats sub-hour durations as M:SS" {
         Format-Duration ([TimeSpan]::FromSeconds(125)) | Should Be "2:05"

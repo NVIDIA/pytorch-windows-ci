@@ -48,7 +48,7 @@ jobs:
   # dispatched.
   # ===========================================================================
   inspect-dispatch:
-    # if: github.event_name == 'repository_dispatch'
+    if: github.event_name == 'repository_dispatch'
     name: inspect upstream PR dispatch
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -79,6 +79,7 @@ jobs:
       runner-base: rtx-build
       python-version: "3.12"
       python-label: py312
+      pytorch-ref: main
       cuda-version: "13.2"
       cuda-label: cu132
       cuda-arch-list: "8.9;12.0"

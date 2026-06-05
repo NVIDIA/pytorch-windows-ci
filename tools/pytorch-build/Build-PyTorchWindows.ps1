@@ -10,7 +10,10 @@
 #
 # Options:
 #   PytorchRoot        PyTorch source root (required positional; must hold setup.py)
-#   -PythonExe PATH    Python to use (default: PYTORCH_PYTHON, then `python` on PATH)
+#   -PythonExe PATH    Python to use (skips conda activation; default: the
+#                      activated -CondaEnv, then PYTORCH_PYTHON, then `python`)
+#   -CondaEnv NAME     Conda env to activate before building (default: py_tmp;
+#                      pass '' to skip activation)
 #   -CudaArchList LIST Semicolon list of CUDA SM arches (default: 8.9;12.0)
 #   -OutputDir DIR     Copy the produced wheel here (default: leave in dist\)
 #   -MagmaHome DIR     MAGMA install root for GPU LAPACK (default: $env:MAGMA_HOME)
@@ -41,6 +44,7 @@ param(
     [string]$PytorchRoot = "",
 
     [string]$PythonExe = "",
+    [string]$CondaEnv = "py_tmp",
     [string]$CudaArchList = "",
     [string]$OutputDir = "",
     [string]$MagmaHome = "",
@@ -76,7 +80,8 @@ Required:
   PytorchRoot        PyTorch source root (must contain setup.py)
 
 Options:
-  -PythonExe PATH    Python to use (default: PYTORCH_PYTHON, then python on PATH)
+  -PythonExe PATH    Python to use (skips conda activation)
+  -CondaEnv NAME     Conda env to activate before building (default: py_tmp; '' skips)
   -CudaArchList LIST Semicolon list of CUDA SM arches (default: $script:DefaultCudaArchList)
   -OutputDir DIR     Copy the produced wheel here (default: leave in dist\)
   -MagmaHome DIR     MAGMA install root for GPU LAPACK (default: MAGMA_HOME)
@@ -157,11 +162,46 @@ function Resolve-PythonExe {
     if ($env:PYTORCH_PYTHON -and (Test-Path $env:PYTORCH_PYTHON)) {
         return (Resolve-Path $env:PYTORCH_PYTHON).Path
     }
+    # Prefer the activated conda env's interpreter when one is active.
+    if ($env:CONDA_PREFIX) {
+        $condaPython = Join-Path $env:CONDA_PREFIX "python.exe"
+        if (Test-Path $condaPython) {
+            return (Resolve-Path $condaPython).Path
+        }
+    }
     $found = Get-Command python -ErrorAction SilentlyContinue
     if ($found) {
         return $found.Source
     }
     throw "Could not find python. Pass -PythonExe C:\path\to\python.exe or add python to PATH."
+}
+
+# Activate a conda env in-session (mirrors upstream build_pytorch.bat, which
+# activates miniconda before vcvars) so python/pip and the build's child
+# processes inherit the env's PATH, libraries, and CONDA_PREFIX. No-op when
+# -PythonExe is given or the env is already active.
+function Enable-CondaEnvironment {
+    param([string]$EnvName)
+    if (-not $EnvName) { return }
+    if ($env:CONDA_DEFAULT_ENV -eq $EnvName) {
+        Write-Host "==> Conda env already active: $EnvName"
+        return
+    }
+    $conda = Get-Command conda -ErrorAction SilentlyContinue
+    if (-not $conda) {
+        throw "conda not found on PATH; cannot activate env '$EnvName'. Pass -PythonExe, or use -CondaEnv '' to skip activation."
+    }
+    # Load the PowerShell hook so `conda activate` works in a non-interactive session.
+    $hook = & $conda.Source "shell.powershell" "hook" 2>$null | Out-String
+    if (-not $hook) {
+        throw "Failed to load conda PowerShell hook for env '$EnvName'."
+    }
+    Invoke-Expression $hook
+    conda activate $EnvName
+    if ($env:CONDA_DEFAULT_ENV -ne $EnvName) {
+        throw "Failed to activate conda env '$EnvName' (CONDA_DEFAULT_ENV='$($env:CONDA_DEFAULT_ENV)')."
+    }
+    Write-Host "==> Activated conda env: $EnvName (prefix: $($env:CONDA_PREFIX))"
 }
 
 function Resolve-MaxJobs {
@@ -363,9 +403,21 @@ function Set-PytorchBuildEnvironment {
 }
 
 function Install-BuildDependencies {
-    param([string]$Python, [bool]$WithMkl)
-    & $Python -m pip install --upgrade pip build wheel
+    param([string]$Python, [string]$Root, [bool]$WithMkl)
+    # Install the build frontend only; leave pip itself at whatever the
+    # (conda) env ships so we don't silently change the interpreter's pip.
+    & $Python -m pip install build wheel
     if ($LASTEXITCODE -ne 0) { throw "pip install of build deps failed ($LASTEXITCODE)." }
+
+    $requirements = Join-Path $Root ".ci\docker\requirements-ci.txt"
+    if (Test-Path $requirements) {
+        Write-Host "==> Installing CI requirements: $requirements"
+        & $Python -m pip install -r $requirements
+        if ($LASTEXITCODE -ne 0) { throw "pip install of requirements-ci.txt failed ($LASTEXITCODE)." }
+    } else {
+        Write-Host "==> CI requirements not found (skipped): $requirements"
+    }
+
     if ($WithMkl) {
         Write-Host "==> Installing MKL build deps (mkl / mkl-static / mkl-include)"
         & $Python -m pip install mkl==2024.2.0 mkl-static==2024.2.0 mkl-include==2024.2.0
@@ -423,6 +475,11 @@ function Invoke-Main {
     $endLabel = "End"
     try {
         $resolvedRoot = Resolve-PytorchRoot -Path $PytorchRoot
+        # Activate the conda env first so python/pip resolution and the build
+        # inherit it. An explicit -PythonExe takes precedence and skips this.
+        if (-not $PythonExe) {
+            Enable-CondaEnvironment -EnvName $CondaEnv
+        }
         $resolvedPython = Resolve-PythonExe -Explicit $PythonExe
         $maxJobs = Resolve-MaxJobs -Requested $Jobs
         $archList = if ($CudaArchList) { $CudaArchList } else { $script:DefaultCudaArchList }
@@ -460,7 +517,7 @@ function Invoke-Main {
 
         Set-PytorchBuildEnvironment -ArchList $archList -MaxJobs $maxJobs `
             -UseCuda (-not $NoCuda) -WithBuildTest (-not $NoBuildTest) -CudaVersion $cudaVersion
-        Install-BuildDependencies -Python $resolvedPython -WithMkl (-not $NoMkl)
+        Install-BuildDependencies -Python $resolvedPython -Root $resolvedRoot -WithMkl (-not $NoMkl)
 
         $mode = Get-BuildCommand -IsDevelop ([bool]$Develop)
         $buildStart = if ($script:DiagnosticsEnabled) { Get-Date } else { $null }

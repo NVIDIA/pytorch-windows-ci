@@ -29,6 +29,7 @@ name: upstream-pr-build-test
 on:
   repository_dispatch:
     types: [pytorch-pr-trigger]
+  workflow_dispatch:
 
 # One run per PR; newer pushes to the same PR cancel any in-flight run
 # so we always validate the latest head.

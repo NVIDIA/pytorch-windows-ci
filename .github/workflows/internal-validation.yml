@@ -22,7 +22,7 @@ on:
     paths:
       - ".github/**"
   workflow_dispatch:
-  repository_dispatch:
+  # repository_dispatch:
 
 
 concurrency:
@@ -35,7 +35,7 @@ permissions:
 jobs:
   yaml:
     name: validate workflow YAML
-    runs-on: [rtx-build]
+    runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4

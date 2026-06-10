@@ -1,0 +1,178 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: MIT
+
+name: manual-build-test
+
+# Manual sandbox for the build + test pipeline. Same chain as
+# `upstream-pr-build-test.yml` (build a Windows CUDA wheel via
+# `_rtx-build.yml`, test it via `_rtx-test.yml`, then summarise failures)
+# but driven entirely by `workflow_dispatch` so you can exercise build /
+# test workflow changes on demand against an arbitrary pytorch ref and a
+# single chosen config - no relay event required.
+#
+# One config per run (no matrix). A tiny `prep` job derives the
+# `py<ver>` / `cu<ver>` labels, the test runner pool, and the per-arch
+# TORCH_CUDA_ARCH_LIST from the dispatch inputs, so you only pick the
+# python / cuda / arch you want.
+
+on:
+  workflow_dispatch:
+    inputs:
+      pytorch-ref:
+        description: "pytorch/pytorch ref to build + test (branch, tag, or SHA)."
+        required: false
+        default: "main"
+      python-version:
+        description: "Python version."
+        type: choice
+        options: ["3.12", "3.13"]
+        default: "3.12"
+      cuda-version:
+        description: "CUDA toolkit version."
+        type: choice
+        options: ["13.0", "13.2"]
+        default: "13.2"
+      arch:
+        description: "Target architecture / test runner pool."
+        type: choice
+        options: ["sm120", "sm89"]
+        default: "sm120"
+      use-powershell-build:
+        description: "Use the native PowerShell clean-build driver."
+        type: boolean
+        default: true
+
+# Each manual run is independent; never cancel an in-flight build/test.
+concurrency:
+  group: manual-build-test-${{ github.run_id }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  # ===========================================================================
+  # Resolve the dispatch inputs into the concrete labels / runner / arch-list
+  # the reusable workflows expect, and mint the shared wheel-artifact name.
+  # ===========================================================================
+  prep:
+    name: resolve config
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      python-label: ${{ steps.cfg.outputs.python-label }}
+      cuda-label: ${{ steps.cfg.outputs.cuda-label }}
+      test-runner: ${{ steps.cfg.outputs.test-runner }}
+      test-arch-list: ${{ steps.cfg.outputs.test-arch-list }}
+      wheel-artifact: ${{ steps.cfg.outputs.wheel-artifact }}
+    steps:
+      - name: Derive config
+        id: cfg
+        shell: bash
+        env:
+          PV: ${{ inputs.python-version }}
+          CV: ${{ inputs.cuda-version }}
+          ARCH: ${{ inputs.arch }}
+        run: |
+          set -euo pipefail
+          py_label="py${PV//./}"
+          cu_label="cu${CV//./}"
+          case "$ARCH" in
+            sm120) runner="rtx-50x0-test"; arch_list="12.0" ;;
+            sm89)  runner="rtx-40x0-test"; arch_list="8.9"  ;;
+            *) echo "::error::Unknown arch: $ARCH" >&2; exit 1 ;;
+          esac
+          wheel="wheel-${py_label}-${cu_label}-${{ github.run_id }}-${{ github.run_attempt }}"
+          {
+            echo "python-label=$py_label"
+            echo "cuda-label=$cu_label"
+            echo "test-runner=$runner"
+            echo "test-arch-list=$arch_list"
+            echo "wheel-artifact=$wheel"
+          } >> "$GITHUB_OUTPUT"
+          {
+            echo "## manual-build-test config"
+            echo ""
+            echo "| field | value |"
+            echo "| --- | --- |"
+            echo "| pytorch-ref | \`${{ inputs.pytorch-ref }}\` |"
+            echo "| python | ${PV} (\`${py_label}\`) |"
+            echo "| cuda | ${CV} (\`${cu_label}\`) |"
+            echo "| arch | ${ARCH} (runner \`${runner}\`, arch-list \`${arch_list}\`) |"
+            echo "| powershell-build | ${{ inputs.use-powershell-build }} |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # ===========================================================================
+  # Build one multi-arch wheel (sm89 + sm120) for the chosen python / cuda.
+  # ===========================================================================
+  build:
+    name: ${{ needs.prep.outputs.wheel-artifact }}-build
+    needs: prep
+    uses: ./.github/workflows/_rtx-build.yml
+    with:
+      runner-base: rtx-build
+      python-version: ${{ inputs.python-version }}
+      python-label: ${{ needs.prep.outputs.python-label }}
+      cuda-version: ${{ inputs.cuda-version }}
+      cuda-label: ${{ needs.prep.outputs.cuda-label }}
+      cuda-arch-list: "8.9;12.0"
+      build-environment: win-rtx-manual
+      pytorch-ref: ${{ inputs.pytorch-ref }}
+      use-powershell-build: ${{ inputs.use-powershell-build }}
+      wheel-artifact: ${{ needs.prep.outputs.wheel-artifact }}
+
+  # ===========================================================================
+  # Test the just-built wheel on the chosen arch's runner pool.
+  # ===========================================================================
+  test:
+    name: test-${{ inputs.arch }}
+    needs: [prep, build]
+    uses: ./.github/workflows/_rtx-test.yml
+    with:
+      runner-base: ${{ needs.prep.outputs.test-runner }}
+      python-version: ${{ inputs.python-version }}
+      python-label: ${{ needs.prep.outputs.python-label }}
+      cuda-version: ${{ inputs.cuda-version }}
+      cuda-label: ${{ needs.prep.outputs.cuda-label }}
+      cuda-arch-list: ${{ needs.prep.outputs.test-arch-list }}
+      arch-name: ${{ inputs.arch }}
+      build-environment: win-rtx-manual-${{ inputs.arch }}
+      test-config: "default"
+      # Must match the build's `wheel-artifact` exactly.
+      wheel-artifact: ${{ needs.prep.outputs.wheel-artifact }}
+
+  # ===========================================================================
+  # Post-test rollup. Runs once after the test shards settle and renders a
+  # consolidated table of the test jobs that failed (with direct log links)
+  # into the run's step summary. Per-test-name detail lives in each shard's
+  # own summary (see `_rtx-test.yml`). Informational only: `if: always()`
+  # so it runs even when tests fail, and it never reports a non-zero status
+  # of its own - the test job already carries red/green.
+  # ===========================================================================
+  test-summary:
+    name: test-summary
+    needs: test
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout pytorch-oot-internal (for summary script)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          show-progress: false
+
+      - name: Aggregate failed test jobs
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh api --paginate \
+            "repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/attempts/${{ github.run_attempt }}/jobs" \
+            -q '.jobs[]' | jq -s '.' > jobs.json
+          python3 scripts/test-summary/aggregate_failures.py \
+            --jobs-json jobs.json \
+            --title "PyTorch test summary (run ${{ github.run_id }})" \
+            >> "$GITHUB_STEP_SUMMARY"

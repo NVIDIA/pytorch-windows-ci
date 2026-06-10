@@ -353,6 +353,22 @@ jobs:
         with:
           output-dir: ${{ steps.diag.outputs.output-dir }}
 
+      # Parse this shard's JUnit reports and render the failing test names
+      # straight into the shard's own step summary. Read-only and best-
+      # effort: it never changes the shard's pass/fail status (the test
+      # step above already owns that), so it runs even when the test step
+      # errored. The orchestrator-level `test-summary` job aggregates which
+      # cells/shards failed; this gives the per-shard test-name detail.
+      - name: Summarize failed tests (this shard)
+        if: always()
+        shell: bash
+        working-directory: pytorch
+        run: |
+          python ../oot/scripts/test-summary/parse_failures.py \
+            --reports-dir test \
+            --title "Failed tests - ${{ inputs.build-environment }} - ${{ inputs.python-label }}/${{ inputs.cuda-label }} - ${{ inputs.arch-name }} - shard ${{ matrix.shard }}/5" \
+            >> "$GITHUB_STEP_SUMMARY"
+
       # DISABLED: GitHub Actions artifact upload. Re-enable by restoring
       # the original `if: always()` condition below.
       - name: Upload runner diagnostics

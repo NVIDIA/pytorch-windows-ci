@@ -79,7 +79,7 @@ jobs:
       runner-base: rtx-build
       python-version: "3.12"
       python-label: py312
-      pytorch-ref: main
+      pytorch-ref: ${{ github.event.client_payload.payload.pull_request.head.sha || 'main' }}
       cuda-version: "13.2"
       cuda-label: cu132
       cuda-arch-list: "8.9;12.0"
@@ -103,9 +103,45 @@ jobs:
       python-label: py312
       cuda-version: "13.2"
       cuda-label: cu132
+      pytorch-ref: ${{ github.event.client_payload.payload.pull_request.head.sha || 'main' }}
       cuda-arch-list: "12.0"
       arch-name: sm120
       build-environment: win-rtx-pr-sm120
       test-config: "default"
       # Must match the build's `wheel-artifact` exactly.
       wheel-artifact: wheel-py312-cu132-${{ github.run_id }}-${{ github.run_attempt }}
+
+  # ===========================================================================
+  # Post-test rollup. Runs once after the test shards settle and renders a
+  # consolidated table of the test jobs that failed (with direct log links)
+  # into the run's step summary. Per-test-name detail lives in each shard's
+  # own summary (see `_rtx-test.yml`). Informational only: `if: always()`
+  # so it runs even when tests fail, and it never reports a non-zero status
+  # of its own - the test job already carries red/green.
+  # ===========================================================================
+  test-summary:
+    name: test-summary
+    needs: test
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout pytorch-oot-internal (for summary script)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          show-progress: false
+
+      - name: Aggregate failed test jobs
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh api --paginate \
+            "repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/attempts/${{ github.run_attempt }}/jobs" \
+            -q '.jobs[]' | jq -s '.' > jobs.json
+          python3 scripts/test-summary/aggregate_failures.py \
+            --jobs-json jobs.json \
+            --title "PyTorch test summary (run ${{ github.run_id }})" \
+            >> "$GITHUB_STEP_SUMMARY"

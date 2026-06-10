@@ -69,8 +69,8 @@ name: nightly-source-build-test
 #                             re-enable.
 
 on:
-  schedule:
-    - cron: "0 12 * * *"
+  # schedule:
+  #   - cron: "0 12 * * *"
   workflow_dispatch:
     inputs:
       pytorch-ref:
@@ -89,8 +89,7 @@ on:
         description: "Comma-separated subset of sm89,sm120 to test (build is always multi-arch)."
         required: false
         default: "sm89,sm120"
-  repository_dispatch:
-    types: [pytorch-pr-trigger]
+
 
 concurrency:
   group: nightly-source-build-test-${{ github.event.client_payload.pr_number || github.run_id }}
@@ -206,3 +205,39 @@ jobs:
       python-versions: ${{ inputs.python-versions }}
       cuda-versions: ${{ inputs.cuda-versions }}
       test-architectures: ${{ inputs.test-architectures }}
+
+  # ===========================================================================
+  # Post-test rollup. Runs once after every test cell/shard settles and
+  # renders a consolidated table of the test jobs that failed (with direct
+  # log links) into the run's step summary. Per-test-name detail lives in
+  # each shard's own summary (see `_rtx-test.yml`). Informational only:
+  # `if: always()` so it runs even when tests fail, and it never reports a
+  # non-zero status of its own - the test cells already carry red/green.
+  # Skipped under the parked repository_dispatch gate to match build/test.
+  # ===========================================================================
+  test-summary:
+    name: test-summary
+    needs: test
+    if: always() && github.event_name != 'repository_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout pytorch-oot-internal (for summary script)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          show-progress: false
+
+      - name: Aggregate failed test jobs
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh api --paginate \
+            "repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/attempts/${{ github.run_attempt }}/jobs" \
+            -q '.jobs[]' | jq -s '.' > jobs.json
+          python3 scripts/test-summary/aggregate_failures.py \
+            --jobs-json jobs.json \
+            --title "PyTorch test summary (run ${{ github.run_id }})" \
+            >> "$GITHUB_STEP_SUMMARY"

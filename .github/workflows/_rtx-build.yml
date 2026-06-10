@@ -128,8 +128,10 @@ jobs:
       TORCH_CUDA_ARCH_LIST: ${{ inputs.cuda-arch-list }}
       PYTHON_VERSION: ${{ inputs.python-version }}
       CUDA_VERSION: ${{ inputs.cuda-version }}
-      # Test binaries are built by the test job, not here.
-      BUILD_TEST: "0"
+      # BUILD_TEST is always on across every build config - the C++ test
+      # binaries are built unconditionally and must never be disabled.
+      # Both build drivers also hardwire this internally.
+      BUILD_TEST: "1"
       # MSVC env hint and machine-specific parallelism tuning.
       DISTUTILS_USE_SDK: "1"
       MAX_JOBS: "8"
@@ -181,10 +183,11 @@ jobs:
             --python-version    "${PYTHON_VERSION}" \
             --max-jobs          "${MAX_JOBS}"
 
-      # Native PowerShell equivalent. BUILD_TEST stays off (the test job builds
-      # the C++ test binaries) and MKL is skipped because the runner image
-      # already ships it - this keeps parity with the Git Bash driver above.
-      # MAGMA is picked up automatically from the image's MAGMA_HOME if set.
+      # Native PowerShell equivalent. BUILD_TEST is hardwired on, so the C++
+      # test binaries are always built. MKL is installed (upstream
+      # build_pytorch.bat always does) so the wheel ships full CPU BLAS/LAPACK
+      # regardless of image state. MAGMA is picked up automatically from the
+      # image's MAGMA_HOME if set.
       - name: Build PyTorch wheel (PowerShell)
         if: ${{ inputs.use-powershell-build }}
         shell: powershell
@@ -194,8 +197,6 @@ jobs:
             "$env:GITHUB_WORKSPACE\pytorch" `
             -CudaArchList $env:TORCH_CUDA_ARCH_LIST `
             -Jobs ([int]$env:MAX_JOBS) `
-            -NoBuildTest `
-            -NoMkl
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Stage wheel + sha into artifact dir

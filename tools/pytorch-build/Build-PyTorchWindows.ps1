@@ -21,7 +21,6 @@
 #   -Develop           setup.py develop (in-place, no wheel)
 #   -InstallWheel      pip install the produced wheel (no-deps, no-index)
 #   -NoMkl             Skip mkl / mkl-static / mkl-include (installed by default)
-#   -NoBuildTest       BUILD_TEST=0 (BUILD_TEST is on by default)
 #   -NoCuda            USE_CUDA=0 (CPU-only build)
 #   -KeepArtifacts     Skip the clean step (incremental build)
 #   -Diagnostics       Print start/end timestamps and elapsed time
@@ -52,7 +51,6 @@ param(
     [switch]$Develop,
     [switch]$InstallWheel,
     [switch]$NoMkl,
-    [switch]$NoBuildTest,
     [switch]$NoCuda,
     [switch]$KeepArtifacts,
     [switch]$Diagnostics,
@@ -89,7 +87,6 @@ Options:
   -Develop           setup.py develop (in-place)
   -InstallWheel      pip install the produced wheel
   -NoMkl             Skip mkl / mkl-static / mkl-include (installed by default)
-  -NoBuildTest       BUILD_TEST=0 (BUILD_TEST is on by default)
   -NoCuda            USE_CUDA=0
   -KeepArtifacts     Skip the clean step (incremental build)
   -Diagnostics       Print start/end timestamps and elapsed time
@@ -383,7 +380,6 @@ function Set-PytorchBuildEnvironment {
         [string]$ArchList,
         [int]$MaxJobs,
         [bool]$UseCuda,
-        [bool]$WithBuildTest,
         [string]$CudaVersion
     )
     $env:DISTUTILS_USE_SDK = "1"
@@ -391,7 +387,9 @@ function Set-PytorchBuildEnvironment {
     $env:TORCH_CUDA_ARCH_LIST = $ArchList
     $env:MAX_JOBS = "$MaxJobs"
     $env:USE_CUDA = if ($UseCuda) { "1" } else { "0" }
-    $env:BUILD_TEST = if ($WithBuildTest) { "1" } else { "0" }
+    # BUILD_TEST is hardwired on: the C++ test binaries are always built
+    # and there is no switch to turn this off.
+    $env:BUILD_TEST = "1"
     if ($CudaVersion) { $env:CUDA_VERSION = $CudaVersion }
 
     Write-Host "==> CMAKE_GENERATOR      = $($env:CMAKE_GENERATOR)"
@@ -516,7 +514,7 @@ function Invoke-Main {
         }
 
         Set-PytorchBuildEnvironment -ArchList $archList -MaxJobs $maxJobs `
-            -UseCuda (-not $NoCuda) -WithBuildTest (-not $NoBuildTest) -CudaVersion $cudaVersion
+            -UseCuda (-not $NoCuda) -CudaVersion $cudaVersion
         Install-BuildDependencies -Python $resolvedPython -Root $resolvedRoot -WithMkl (-not $NoMkl)
 
         $mode = Get-BuildCommand -IsDevelop ([bool]$Develop)

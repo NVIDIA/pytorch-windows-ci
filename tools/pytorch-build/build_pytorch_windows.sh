@@ -8,8 +8,11 @@
 # Usage:
 #   ./build_pytorch_windows.sh /c/pytorch
 #   ./build_pytorch_windows.sh /e/pytorch --cuda-arch-list "8.9;12.0" --install-wheel
-#   ./build_pytorch_windows.sh /c/pytorch --develop --build-test
+#   ./build_pytorch_windows.sh /c/pytorch --develop
 #   ./build_pytorch_windows.sh --help
+#
+# BUILD_TEST is always 1: the C++ test binaries are built unconditionally
+# and there is intentionally no switch to disable them.
 #
 # Required:
 #   PYTORCH_ROOT           PyTorch source root (positional, must contain setup.py)
@@ -26,7 +29,6 @@
 #   --install-wheel        pip install the produced wheel (no-isolation, no-index, no-deps)
 #   --install-mkl          pip install mkl / mkl-static / mkl-include (build deps)
 #   --use-sccache          enable sccache (requires sccache.exe on PATH)
-#   --build-test           BUILD_TEST=1
 #   --rebuild              REBUILD=1
 #   --debug-build          BUILD_TYPE=debug
 #   --no-cuda              USE_CUDA=0 (CPU-only build)
@@ -67,7 +69,6 @@ opt_develop=0
 opt_install_wheel=0
 opt_install_mkl=0
 opt_use_sccache=0
-opt_build_test=0
 opt_rebuild=0
 opt_debug_build=0
 opt_no_cuda=0
@@ -94,7 +95,7 @@ Build PyTorch on Windows x64 from source (no S3 dependencies).
 Usage:
   ./$self /c/pytorch
   ./$self /e/pytorch --cuda-arch-list "8.9;12.0" --install-wheel
-  ./$self /c/pytorch --develop --build-test
+  ./$self /c/pytorch --develop
   ./$self --help
 
 Required:
@@ -112,7 +113,6 @@ Mode switches:
   --install-wheel        pip install the produced wheel
   --install-mkl          pip install mkl / mkl-static / mkl-include
   --use-sccache          enable sccache (requires sccache.exe on PATH)
-  --build-test           BUILD_TEST=1
   --rebuild              REBUILD=1
   --debug-build          BUILD_TYPE=debug
   --no-cuda              USE_CUDA=0
@@ -397,11 +397,9 @@ set_pytorch_build_environment() {
     else
         export USE_CUDA=1
     fi
-    if [[ "$opt_build_test" == "1" ]]; then
-        export BUILD_TEST=1
-    else
-        export BUILD_TEST=0
-    fi
+    # BUILD_TEST is always on: the C++ test binaries are built
+    # unconditionally and there is no switch to turn this off.
+    export BUILD_TEST=1
     if [[ "$opt_rebuild" == "1" ]]; then
         export REBUILD=1
     fi
@@ -518,7 +516,6 @@ parse_args() {
             --install-wheel)      opt_install_wheel=1 ;;
             --install-mkl)        opt_install_mkl=1 ;;
             --use-sccache)        opt_use_sccache=1 ;;
-            --build-test)         opt_build_test=1 ;;
             --rebuild)            opt_rebuild=1 ;;
             --debug-build)        opt_debug_build=1 ;;
             --no-cuda)            opt_no_cuda=1 ;;

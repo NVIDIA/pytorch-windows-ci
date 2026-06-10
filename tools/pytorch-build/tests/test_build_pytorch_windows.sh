@@ -301,7 +301,6 @@ test_set_build_env_baseline() {
     python_version="3.12"
     max_jobs=8
     opt_no_cuda=0
-    opt_build_test=0
     opt_rebuild=0
     opt_debug_build=0
 
@@ -313,7 +312,7 @@ test_set_build_env_baseline() {
     assert_eq "$TORCH_CUDA_ARCH_LIST" "8.9"                   "TORCH_CUDA_ARCH_LIST"
     assert_eq "$MAX_JOBS"             "8"                     "MAX_JOBS"
     assert_eq "$USE_CUDA"             "1"                     "USE_CUDA"
-    assert_eq "$BUILD_TEST"           "0"                     "BUILD_TEST"
+    assert_eq "$BUILD_TEST"           "1"                     "BUILD_TEST"
     assert_eq "$BUILD_TYPE"           "release"               "BUILD_TYPE"
     assert_eq "$CUDA_VERSION"         "13.0"                  "CUDA_VERSION"
     assert_eq "$PYTHON_VERSION"       "3.12"                  "PYTHON_VERSION"
@@ -347,22 +346,22 @@ test_set_build_env_no_cuda() {
     restore_env
 }
 
-test_set_build_env_rebuild_debug_buildtest() {
+test_set_build_env_rebuild_debug() {
     snapshot_env
     cuda_arch_list="8.9"
     max_jobs=2
     opt_no_cuda=0
     opt_rebuild=1
     opt_debug_build=1
-    opt_build_test=1
 
     set_pytorch_build_environment >/dev/null
     assert_eq "$REBUILD"    "1"     "REBUILD"
     assert_eq "$DEBUG"      "1"     "DEBUG"
     assert_eq "$BUILD_TYPE" "debug" "BUILD_TYPE"
+    # BUILD_TEST is hardwired on regardless of other switches.
     assert_eq "$BUILD_TEST" "1"     "BUILD_TEST"
 
-    opt_rebuild=0; opt_debug_build=0; opt_build_test=0
+    opt_rebuild=0; opt_debug_build=0
     restore_env
 }
 
@@ -468,7 +467,7 @@ describe "set_pytorch_build_environment"
 run_test "baseline release + CUDA"            test_set_build_env_baseline
 run_test "defaults arch list when empty"      test_set_build_env_default_arch_list
 run_test "wires CPU-only mode"                test_set_build_env_no_cuda
-run_test "sets REBUILD/DEBUG/BUILD_TEST"      test_set_build_env_rebuild_debug_buildtest
+run_test "sets REBUILD/DEBUG"                 test_set_build_env_rebuild_debug
 
 describe "find_latest_wheel"
 run_test "no dist/ yields empty"              test_find_latest_wheel_missing_dist

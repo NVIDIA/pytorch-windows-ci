@@ -196,7 +196,7 @@ jobs:
           & oot\tools\pytorch-build\Build-PyTorchWindows.ps1 `
             "$env:GITHUB_WORKSPACE\pytorch" `
             -CudaArchList $env:TORCH_CUDA_ARCH_LIST `
-            -Jobs ([int]$env:MAX_JOBS) `
+            -Jobs ([int]$env:MAX_JOBS)
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Stage wheel + sha into artifact dir

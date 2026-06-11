@@ -88,9 +88,20 @@ on:
           Git Bash `build_pytorch_windows.sh`. Both produce the same wheel
           under `pytorch/dist`; the PowerShell path is a clean-build,
           no-Git-Bash equivalent. Default false preserves the bash driver.
+          Ignored when `build-driver` is set to 'winbuild'.
         type: boolean
         required: false
         default: false
+      build-driver:
+        description: >
+          Build driver selector. Empty (default) chooses between the two OOT
+          drivers via `use-powershell-build`. Set to 'winbuild' to instead run
+          the upstream-faithful `tools/pytorch-build/win-build.sh` flow
+          (win-build.sh -> build_pytorch.bat -> install_*/activate helpers),
+          which is env-driven and mirrors pytorch/pytorch's in-tree build.
+        type: string
+        required: false
+        default: ""
 
       # ---- workflow_dispatch matrix filters ---------------------------
       # The caller cannot reference `matrix.*` in its own job-level
@@ -171,11 +182,11 @@ jobs:
           echo "Built from pytorch/pytorch @ $sha"
 
       - name: Build PyTorch wheel (Git Bash)
-        if: ${{ !inputs.use-powershell-build }}
+        if: ${{ inputs.build-driver != 'winbuild' && !inputs.use-powershell-build }}
         shell: bash
         run: |
           set -euo pipefail
-          bash oot/tools/pytorch-build/build_pytorch_windows.sh \
+          bash "${GITHUB_WORKSPACE}/oot/tools/pytorch-build/build_pytorch_windows.sh" \
             "${GITHUB_WORKSPACE}/pytorch" \
             --build-environment "${BUILD_ENVIRONMENT}" \
             --cuda-arch-list    "${TORCH_CUDA_ARCH_LIST}" \
@@ -189,15 +200,33 @@ jobs:
       # regardless of image state. MAGMA is picked up automatically from the
       # image's MAGMA_HOME if set.
       - name: Build PyTorch wheel (PowerShell)
-        if: ${{ inputs.use-powershell-build }}
+        if: ${{ inputs.build-driver != 'winbuild' && inputs.use-powershell-build }}
         shell: powershell
         run: |
           $ErrorActionPreference = "Stop"
-          & oot\tools\pytorch-build\Build-PyTorchWindows.ps1 `
+          & "$env:GITHUB_WORKSPACE\oot\tools\pytorch-build\Build-PyTorchWindows.ps1" `
             "$env:GITHUB_WORKSPACE\pytorch" `
             -CudaArchList $env:TORCH_CUDA_ARCH_LIST `
             -Jobs ([int]$env:MAX_JOBS)
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      # Upstream-faithful flow: tools/pytorch-build/win-build.sh -> build_pytorch.bat
+      # -> install_magma / install_sccache / activate_miniconda3. It is env-driven
+      # (no CLI args) and must run from the pytorch root, so VC tooling and CUDA
+      # selection are supplied via env here. Mirrors pytorch/pytorch's in-tree
+      # .ci/pytorch/win-build.sh.
+      - name: Build PyTorch wheel (win-build.sh upstream flow)
+        if: ${{ inputs.build-driver == 'winbuild' }}
+        shell: bash
+        working-directory: pytorch
+        env:
+          USE_CUDA: "1"
+          VC_PRODUCT: "BuildTools"
+          VC_YEAR: "2022"
+          VC_VERSION: ""
+        run: |
+          set -euo pipefail
+          bash "${GITHUB_WORKSPACE}/oot/tools/pytorch-build/win-build.sh"
 
       - name: Stage wheel + sha into artifact dir
         shell: bash
@@ -212,24 +241,10 @@ jobs:
           cp "$wheel" built_pytorch_sha.txt artifact/
           ls -la artifact
 
-      # Primary artifact path: POST the wheel + SHA to the on-prem
-      # storage server. `continue-on-error` so a temporary outage on the
-      # internal storage box doesn't tank the whole build - the GitHub
-      # artifact fallback below picks up the slack.
-      - name: Publish wheel + sha to internal storage (primary)
-        id: publish-local
+      # Publish the wheel + SHA as a GitHub Actions artifact so the paired
+      # test job can download exactly this build's output.
+      - name: Publish wheel + sha artifact
         if: inputs.wheel-artifact != ''
-        continue-on-error: true
-        uses: ./oot/.github/actions/upload-local-artifact
-        with:
-          artifact-name: ${{ inputs.wheel-artifact }}
-          source-dir: artifact
-
-      # Fallback: only runs when the internal storage upload failed.
-      # Keeps the build's artifact discoverable through GitHub's UI
-      # whenever the on-prem path is unhappy.
-      - name: Publish wheel + sha artifact (GitHub fallback)
-        if: inputs.wheel-artifact != '' && steps.publish-local.outcome != 'success'
         uses: actions/upload-artifact@v4
         with:
           name: ${{ inputs.wheel-artifact }}

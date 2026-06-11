@@ -37,10 +37,13 @@ on:
         type: choice
         options: ["sm120", "sm89"]
         default: "sm120"
-      use-powershell-build:
-        description: "Use the native PowerShell clean-build driver."
-        type: boolean
-        default: true
+      build-driver:
+        description: >
+          Build driver: 'powershell' / 'bash' OOT drivers, or 'winbuild' for
+          the upstream-faithful tools/pytorch-build/win-build.sh flow.
+        type: choice
+        options: ["powershell", "bash", "winbuild"]
+        default: "powershell"
 
 # Each manual run is independent; never cancel an in-flight build/test.
 concurrency:
@@ -100,7 +103,7 @@ jobs:
             echo "| python | ${PV} (\`${py_label}\`) |"
             echo "| cuda | ${CV} (\`${cu_label}\`) |"
             echo "| arch | ${ARCH} (runner \`${runner}\`, arch-list \`${arch_list}\`) |"
-            echo "| powershell-build | ${{ inputs.use-powershell-build }} |"
+            echo "| build-driver | ${{ inputs.build-driver }} |"
           } >> "$GITHUB_STEP_SUMMARY"
 
   # ===========================================================================
@@ -119,7 +122,8 @@ jobs:
       cuda-arch-list: "8.9;12.0"
       build-environment: win-rtx-manual
       pytorch-ref: ${{ inputs.pytorch-ref }}
-      use-powershell-build: ${{ inputs.use-powershell-build }}
+      use-powershell-build: ${{ inputs.build-driver == 'powershell' }}
+      build-driver: ${{ inputs.build-driver }}
       wheel-artifact: ${{ needs.prep.outputs.wheel-artifact }}
 
   # ===========================================================================

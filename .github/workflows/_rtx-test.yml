@@ -201,21 +201,10 @@ jobs:
           path: oot
           show-progress: false
 
-      # Primary artifact path: pull the wheel + SHA from the on-prem
-      # storage server. The composite action defaults dest-dir to
-      # $GITHUB_WORKSPACE so files land at `artifact/...` - the same
-      # layout `actions/download-artifact` produces with `path: artifact`.
-      - name: Download wheel artifact from internal storage (primary)
-        id: download-local
+      # Pull the wheel + SHA produced by the paired build job from GitHub
+      # Actions artifact storage. Lands files under `artifact/...`.
+      - name: Download wheel artifact
         if: inputs.wheel-artifact != ''
-        continue-on-error: true
-        uses: ./oot/.github/actions/download-local-artifact
-        with:
-          artifact-name: ${{ inputs.wheel-artifact }}
-
-      # Fallback: only runs when the internal storage download failed.
-      - name: Download wheel artifact (GitHub fallback)
-        if: inputs.wheel-artifact != '' && steps.download-local.outcome != 'success'
         uses: actions/download-artifact@v4
         with:
           name: ${{ inputs.wheel-artifact }}
@@ -320,6 +309,17 @@ jobs:
           fi
           python -c "import torch; print('torch', torch.__version__, 'cuda', torch.version.cuda); assert torch.cuda.is_available()"
 
+      # Seed our own test-time stats into pytorch's .additional_ci_files so
+      # run_test.py shards deterministically from data we control instead of
+      # downloading test-infra stats (or falling back to round-robin). All 5
+      # shards read the same committed JSON, so the sharding is consistent.
+      - name: Seed test-time stats (deterministic sharding)
+        shell: bash
+        run: |
+          set -euo pipefail
+          python "${GITHUB_WORKSPACE}/oot/scripts/test-stats/seed_test_stats.py" \
+            --pytorch-root "${GITHUB_WORKSPACE}/pytorch"
+
       - name: Start runner diagnostics
         id: diag
         uses: ./oot/.github/actions/start-runner-diagnostics
@@ -362,10 +362,9 @@ jobs:
       - name: Summarize failed tests (this shard)
         if: always()
         shell: bash
-        working-directory: pytorch
         run: |
-          python ../oot/scripts/test-summary/parse_failures.py \
-            --reports-dir test \
+          python "${GITHUB_WORKSPACE}/oot/scripts/test-summary/parse_failures.py" \
+            --reports-dir "${GITHUB_WORKSPACE}/pytorch/test" \
             --title "Failed tests - ${{ inputs.build-environment }} - ${{ inputs.python-label }}/${{ inputs.cuda-label }} - ${{ inputs.arch-name }} - shard ${{ matrix.shard }}/5" \
             >> "$GITHUB_STEP_SUMMARY"
 

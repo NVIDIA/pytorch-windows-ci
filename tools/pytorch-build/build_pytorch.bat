@@ -106,6 +106,15 @@ if "%USE_CUDA%"=="1" (
   set CMAKE_CUDA_COMPILER_LAUNCHER=%TMP_DIR%/bin/randomtemp.exe;%TMP_DIR%\bin\sccache.exe
 )
 
+:: MKL is auto-detected by PyTorch's cmake, but detection silently falls back
+:: when it can't find the headers/libs. Force the BLAS vendor and point cmake
+:: straight at the active conda env's MKL (installed above via pip mkl-static /
+:: mkl-include) so the wheel always ships MKL CPU BLAS/LAPACK.
+set BLAS=MKL
+set USE_MKL=1
+set CMAKE_INCLUDE_PATH=%CONDA_PREFIX%\Library\include
+set CMAKE_LIBRARY_PATH=%CONDA_PREFIX%\Library\lib
+
 :: Print all existing environment variable for debugging
 set
 

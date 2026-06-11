@@ -43,7 +43,7 @@ on:
           the upstream-faithful tools/pytorch-build/win-build.sh flow.
         type: choice
         options: ["powershell", "bash", "winbuild"]
-        default: "powershell"
+        default: "winbuild"
 
 # Each manual run is independent; never cancel an in-flight build/test.
 concurrency:

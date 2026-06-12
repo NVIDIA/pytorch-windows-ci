@@ -6,8 +6,8 @@ name: pytorch-wheel-build
 # Reusable Windows RTX build workflow. Mirrors the role of
 # pytorch/pytorch's `_win-build.yml` (see PR #176678) but kept standalone
 # in this repo so it works before that PR lands upstream. The actual
-# build is driven by THIS repo's `tools/pytorch-build/build_pytorch_windows.sh`
-# (a slimmer, no-S3 replacement for upstream `.ci/pytorch/win-build.sh`).
+# build is driven by THIS repo's `tools/pytorch-build/win-build.sh` flow
+# (an upstream-faithful, no-S3 replica of `.ci/pytorch/win-build.sh`).
 #
 # Each invocation builds ONE multi-architecture CUDA wheel (one wheel that
 # serves sm89, sm120, ... whatever `cuda-arch-list` covers). The caller
@@ -81,27 +81,6 @@ on:
         type: string
         required: false
         default: ""
-      use-powershell-build:
-        description: >
-          Drive the build with the native PowerShell script
-          `tools/pytorch-build/Build-PyTorchWindows.ps1` instead of the
-          Git Bash `build_pytorch_windows.sh`. Both produce the same wheel
-          under `pytorch/dist`; the PowerShell path is a clean-build,
-          no-Git-Bash equivalent. Default false preserves the bash driver.
-          Ignored when `build-driver` is set to 'winbuild'.
-        type: boolean
-        required: false
-        default: false
-      build-driver:
-        description: >
-          Build driver selector. Empty (default) chooses between the two OOT
-          drivers via `use-powershell-build`. Set to 'winbuild' to instead run
-          the upstream-faithful `tools/pytorch-build/win-build.sh` flow
-          (win-build.sh -> build_pytorch.bat -> install_*/activate helpers),
-          which is env-driven and mirrors pytorch/pytorch's in-tree build.
-        type: string
-        required: false
-        default: ""
 
       # ---- workflow_dispatch matrix filters ---------------------------
       # The caller cannot reference `matrix.*` in its own job-level
@@ -141,15 +120,14 @@ jobs:
       CUDA_VERSION: ${{ inputs.cuda-version }}
       # BUILD_TEST is always on across every build config - the C++ test
       # binaries are built unconditionally and must never be disabled.
-      # Both build drivers also hardwire this internally.
       BUILD_TEST: "1"
       # MSVC env hint and machine-specific parallelism tuning.
       DISTUTILS_USE_SDK: "1"
       MAX_JOBS: "8"
     steps:
-      # This (OOT) repo carries `tools/pytorch-build/build_pytorch_windows.sh`,
-      # which replaces upstream `.ci/pytorch/win-build.sh`. Keep it in `oot/`
-      # so the parallel pytorch checkout below doesn't trample it.
+      # This (OOT) repo carries `tools/pytorch-build/win-build.sh` and its
+      # helpers (the upstream-faithful build flow). Keep it in `oot/` so the
+      # parallel pytorch checkout below doesn't trample it.
       - name: Checkout OOT tooling repo
         uses: actions/checkout@v4
         with:
@@ -181,42 +159,13 @@ jobs:
           echo "$sha" > built_pytorch_sha.txt
           echo "Built from pytorch/pytorch @ $sha"
 
-      - name: Build PyTorch wheel (Git Bash)
-        if: ${{ inputs.build-driver != 'winbuild' && !inputs.use-powershell-build }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          bash "${GITHUB_WORKSPACE}/oot/tools/pytorch-build/build_pytorch_windows.sh" \
-            "${GITHUB_WORKSPACE}/pytorch" \
-            --build-environment "${BUILD_ENVIRONMENT}" \
-            --cuda-arch-list    "${TORCH_CUDA_ARCH_LIST}" \
-            --cuda-version      "${CUDA_VERSION}" \
-            --python-version    "${PYTHON_VERSION}" \
-            --max-jobs          "${MAX_JOBS}"
-
-      # Native PowerShell equivalent. BUILD_TEST is hardwired on, so the C++
-      # test binaries are always built. MKL is installed (upstream
-      # build_pytorch.bat always does) so the wheel ships full CPU BLAS/LAPACK
-      # regardless of image state. MAGMA is picked up automatically from the
-      # image's MAGMA_HOME if set.
-      - name: Build PyTorch wheel (PowerShell)
-        if: ${{ inputs.build-driver != 'winbuild' && inputs.use-powershell-build }}
-        shell: powershell
-        run: |
-          $ErrorActionPreference = "Stop"
-          & "$env:GITHUB_WORKSPACE\oot\tools\pytorch-build\Build-PyTorchWindows.ps1" `
-            "$env:GITHUB_WORKSPACE\pytorch" `
-            -CudaArchList $env:TORCH_CUDA_ARCH_LIST `
-            -Jobs ([int]$env:MAX_JOBS)
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-
       # Upstream-faithful flow: tools/pytorch-build/win-build.sh -> build_pytorch.bat
       # -> install_magma / install_sccache / activate_miniconda3. It is env-driven
       # (no CLI args) and must run from the pytorch root, so VC tooling and CUDA
       # selection are supplied via env here. Mirrors pytorch/pytorch's in-tree
-      # .ci/pytorch/win-build.sh.
+      # .ci/pytorch/win-build.sh. BUILD_TEST is on (job env), so the C++ test
+      # binaries are always built.
       - name: Build PyTorch wheel (win-build.sh upstream flow)
-        if: ${{ inputs.build-driver == 'winbuild' }}
         shell: bash
         working-directory: pytorch
         env:

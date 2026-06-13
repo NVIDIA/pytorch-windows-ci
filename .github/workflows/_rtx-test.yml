@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: MIT
 
-name: pytorch-wheel-test
+name: _rtx-test
 
 # Reusable Windows RTX test workflow. Two install paths, one set of
 # downstream steps:
@@ -9,7 +9,7 @@ name: pytorch-wheel-test
 #   A) artifact path  - the wheel is a producer-uploaded artifact from
 #                       `_rtx-build.yml`; SHA travels alongside the
 #                       wheel in `built_pytorch_sha.txt`. Used by
-#                       `nightly-source-build-test.yml`.
+#                       `windows-rtx-build-test.yml`.
 #   B) pip-index path - the wheel is already on a public pip index
 #                       (download.pytorch.org/whl/nightly/torch/). The
 #                       orchestrator passes a `pytorch-ref` (typically
@@ -23,7 +23,7 @@ name: pytorch-wheel-test
 #                       if the index has no wheel for that date
 #                       (i.e. the wheel for the source we just checked
 #                       out is not yet published). Used by
-#                       `nightly-wheel-test.yml`.
+#                       `windows-rtx-wheel-test.yml`.
 #
 # Exactly one path must be selected per call: set `wheel-artifact`
 # (path A) or `pytorch-ref` (path B).

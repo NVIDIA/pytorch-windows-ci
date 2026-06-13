@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: MIT
 
-name: upstream-pr-build-test
+name: upstream-pull
 
 # PR validation pipeline. Triggered by the upstream Relay Server every
 # time a `pytorch/pytorch` PR is opened, synchronised, or reopened:
@@ -24,7 +24,7 @@ name: upstream-pr-build-test
 # Single fixed config (no matrix): py312 + cu132, tested on sm120 /
 # RTX 50x0 runners. This is deliberately a smoke configuration - if/when
 # wider PR coverage is needed, mirror the nightly orchestrator's matrix
-# shape from `nightly-source-build-test.yml`.
+# shape from `windows-rtx-build-test.yml`.
 
 on:
   repository_dispatch:

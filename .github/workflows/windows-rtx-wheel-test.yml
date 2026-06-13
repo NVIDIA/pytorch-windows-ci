@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: MIT
 
-name: nightly-wheel-test
+name: windows-rtx-wheel-test
 
 # Daily smoke of the *published* pytorch nightly wheel on self-hosted
 # Windows NVIDIA RTX runners. No source build, no preflight, no
@@ -18,14 +18,14 @@ name: nightly-wheel-test
 # same day.
 #
 # Counterparts:
-#   - relay-server-event-validate.yml  -> RFC-0050 handshake (no compute)
-#   - nightly-source-build-test.yml    -> full source build + test
+#   - relay-handshake.yml              -> RFC-0050 handshake (no compute, off)
+#   - windows-rtx-build-test.yml           -> full source build + test (scheduled + manual)
 #
 # Shape - one test job, 2-D matrix:
 #
 #   test  matrix( config x arch )       1 reusable-workflow call per cell;
-#         4 x 2 = 8 cells                each call internally fans out 5
-#                                        shard runners (40 runners total).
+#         3 x 2 = 6 cells                each call internally fans out 5
+#                                        shard runners (30 runners total).
 #
 # `config` is a paired `{python, cuda}` entry rather than independent
 # `python` and `cuda` axes - the runner pool is allocated per (python,
@@ -54,7 +54,7 @@ name: nightly-wheel-test
 
 on:
   schedule:
-    - cron: "0 16 * * *"
+    - cron: "0 17 * * *"
   workflow_dispatch:
     inputs:
       pytorch-ref:
@@ -79,7 +79,7 @@ on:
         default: ""
 
 concurrency:
-  group: nightly-wheel-test-${{ github.run_id }}
+  group: windows-rtx-wheel-test-${{ github.run_id }}
   cancel-in-progress: false
 
 permissions:
@@ -98,14 +98,13 @@ jobs:
         # `build_name` is the canonical cell identity - the test job
         # renders as `<build_name>-<arch>-test`, matching the source-
         # build orchestrator's naming so a wheel-test row and its
-        # source-build-test counterpart sort adjacent in cross-
+        # windows-rtx-build-test counterpart sort adjacent in cross-
         # workflow dashboards. Sharding is internal to `_rtx-test.yml`
         # (its own `strategy.matrix.shard` fans out 5 runners per
         # cell), so it deliberately does NOT appear in this matrix.
         config:
           - { python: { version: "3.12", label: "py312" }, cuda: { version: "13.0", label: "cu130" }, build_name: "wheel-py312-cu130" }
           - { python: { version: "3.12", label: "py312" }, cuda: { version: "13.2", label: "cu132" }, build_name: "wheel-py312-cu132" }
-          - { python: { version: "3.13", label: "py313" }, cuda: { version: "13.0", label: "cu130" }, build_name: "wheel-py313-cu130" }
           - { python: { version: "3.13", label: "py313" }, cuda: { version: "13.2", label: "cu132" }, build_name: "wheel-py313-cu132" }
         arch:
           - { name: sm89,  runner: rtx-40x0-test, arch_list: "8.9"  }

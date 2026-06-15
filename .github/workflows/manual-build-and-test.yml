@@ -5,7 +5,7 @@ name: manual-build-and-test
 
 # Manual sandbox for the build + test pipeline. Same chain as
 # `upstream-pr-build-test.yml` (build a Windows CUDA wheel via
-# `_rtx-build.yml`, test it via `_rtx-test.yml`, then summarise failures)
+# `manual_rtx_build.yml`, test it via `_rtx-test.yml`, then summarise failures)
 # but driven entirely by `workflow_dispatch` so you can exercise build /
 # test workflow changes on demand against an arbitrary pytorch ref and a
 # single chosen config - no relay event required.
@@ -109,7 +109,7 @@ jobs:
   build:
     name: ${{ needs.prep.outputs.wheel-artifact }}-build
     needs: prep
-    uses: ./.github/workflows/_rtx-build.yml
+    uses: ./.github/workflows/manual_rtx_build.yml
     with:
       runner-base: rtx-build
       python-version: ${{ inputs.python-version }}

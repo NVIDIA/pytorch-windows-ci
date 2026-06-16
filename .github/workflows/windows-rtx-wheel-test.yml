@@ -53,8 +53,8 @@ name: windows-rtx-wheel-test
 # RTX 40x0 (sm89) and RTX 50x0 (sm120).
 
 on:
-  schedule:
-    - cron: "0 17 * * *"
+  # schedule:
+  #   - cron: "0 17 * * *"
   workflow_dispatch:
     inputs:
       pytorch-ref:
@@ -64,7 +64,7 @@ on:
       python-versions:
         description: "Comma-separated subset of 3.12,3.13 to test."
         required: false
-        default: "3.12,3.13"
+        default: "3.12"
       cuda-versions:
         description: "Comma-separated subset of 13.0,13.2 to test."
         required: false
@@ -105,7 +105,6 @@ jobs:
         config:
           - { python: { version: "3.12", label: "py312" }, cuda: { version: "13.0", label: "cu130" }, build_name: "wheel-py312-cu130" }
           - { python: { version: "3.12", label: "py312" }, cuda: { version: "13.2", label: "cu132" }, build_name: "wheel-py312-cu132" }
-          - { python: { version: "3.13", label: "py313" }, cuda: { version: "13.2", label: "cu132" }, build_name: "wheel-py313-cu132" }
         arch:
           - { name: sm89,  runner: rtx-40x0-test, arch_list: "8.9"  }
           - { name: sm120, runner: rtx-50x0-test, arch_list: "12.0" }

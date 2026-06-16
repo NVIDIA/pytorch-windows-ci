@@ -61,9 +61,9 @@ on:
         required: false
         default: "nightly"
       python-versions:
-        description: "Comma-separated subset of 3.12,3.13 to build/test."
+        description: "Comma-separated subset of 3.12 to build/test."
         required: false
-        default: "3.12,3.13"
+        default: "3.12"
       cuda-versions:
         description: "Comma-separated subset of 13.0,13.2 to build/test."
         required: false
@@ -135,6 +135,9 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           PR: ${{ inputs.pytorch-pr }}
           FALLBACK_REF: ${{ inputs.pytorch-ref || 'nightly' }}
+          PYTHON_VERSIONS: ${{ inputs.python-versions }}
+          CUDA_VERSIONS: ${{ inputs.cuda-versions }}
+          TEST_ARCHITECTURES: ${{ inputs.test-architectures }}
         run: |
           set -euo pipefail
           if [ -n "${PR}" ]; then
@@ -161,11 +164,11 @@ jobs:
             echo "| field | value |"
             echo "| --- | --- |"
             echo "| trigger | \`${{ github.event_name }}\` |"
-            echo "| pytorch-pr | \`${{ inputs.pytorch-pr || '(none)' }}\` |"
+            echo "| pytorch-pr | \`${PR:-(none)}\` |"
             echo "| pytorch-ref (resolved) | \`${ref}\` |"
-            echo "| python-versions | \`${{ inputs.python-versions || '(all)' }}\` |"
-            echo "| cuda-versions | \`${{ inputs.cuda-versions || '(all)' }}\` |"
-            echo "| test-architectures | \`${{ inputs.test-architectures || '(all)' }}\` |"
+            echo "| python-versions | \`${PYTHON_VERSIONS:-(all)}\` |"
+            echo "| cuda-versions | \`${CUDA_VERSIONS:-(all)}\` |"
+            echo "| test-architectures | \`${TEST_ARCHITECTURES:-(all)}\` |"
           } >> "$GITHUB_STEP_SUMMARY"
 
   build:
@@ -183,7 +186,7 @@ jobs:
         config: &config
           - { python: { version: "3.12", label: "py312" }, cuda: { version: "13.0", label: "cu130" }, build_name: "wheel-py312-cu130" }
           - { python: { version: "3.12", label: "py312" }, cuda: { version: "13.2", label: "cu132" }, build_name: "wheel-py312-cu132" }
-          - { python: { version: "3.13", label: "py313" }, cuda: { version: "13.2", label: "cu132" }, build_name: "wheel-py313-cu132" }
+          # TODO: re-add Python 3.13 (py313 / cu132) to the matrix in the future.
     uses: ./.github/workflows/_rtx-build.yml
     with:
       runner-base: rtx-build

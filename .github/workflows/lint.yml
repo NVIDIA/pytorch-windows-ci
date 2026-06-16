@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: MIT
 
-name: internal-validation
+name: lint
 
 # Cheap PR-time check: ensures every workflow YAML in `.github/workflows` is
 # syntactically valid and matches the GitHub Actions schema. Catches broken
@@ -26,7 +26,7 @@ on:
 
 
 concurrency:
-  group: internal-validation-${{ github.ref }}
+  group: lint-${{ github.ref }}
   cancel-in-progress: true
 
 permissions:

@@ -1,13 +1,13 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: MIT
 
-name: pytorch-wheel-build
+name: _rtx-build
 
 # Reusable Windows RTX build workflow. Mirrors the role of
 # pytorch/pytorch's `_win-build.yml` (see PR #176678) but kept standalone
 # in this repo so it works before that PR lands upstream. The actual
-# build is driven by THIS repo's `tools/pytorch-build/build_pytorch_windows.sh`
-# (a slimmer, no-S3 replacement for upstream `.ci/pytorch/win-build.sh`).
+# build is driven by THIS repo's `tools/pytorch-build/win-build.sh` flow
+# (an upstream-faithful, no-S3 replica of `.ci/pytorch/win-build.sh`).
 #
 # Each invocation builds ONE multi-architecture CUDA wheel (one wheel that
 # serves sm89, sm120, ... whatever `cuda-arch-list` covers). The caller
@@ -81,16 +81,6 @@ on:
         type: string
         required: false
         default: ""
-      use-powershell-build:
-        description: >
-          Drive the build with the native PowerShell script
-          `tools/pytorch-build/Build-PyTorchWindows.ps1` instead of the
-          Git Bash `build_pytorch_windows.sh`. Both produce the same wheel
-          under `pytorch/dist`; the PowerShell path is a clean-build,
-          no-Git-Bash equivalent. Default false preserves the bash driver.
-        type: boolean
-        required: false
-        default: false
 
       # ---- workflow_dispatch matrix filters ---------------------------
       # The caller cannot reference `matrix.*` in its own job-level
@@ -128,26 +118,20 @@ jobs:
       TORCH_CUDA_ARCH_LIST: ${{ inputs.cuda-arch-list }}
       PYTHON_VERSION: ${{ inputs.python-version }}
       CUDA_VERSION: ${{ inputs.cuda-version }}
-      # Test binaries are built by the test job, not here.
-      BUILD_TEST: "0"
+      # BUILD_TEST is always on across every build config - the C++ test
+      # binaries are built unconditionally and must never be disabled.
+      BUILD_TEST: "1"
       # MSVC env hint and machine-specific parallelism tuning.
       DISTUTILS_USE_SDK: "1"
       MAX_JOBS: "8"
     steps:
-      # This (OOT) repo carries `tools/pytorch-build/build_pytorch_windows.sh`,
-      # which replaces upstream `.ci/pytorch/win-build.sh`. Keep it in `oot/`
-      # so the parallel pytorch checkout below doesn't trample it.
+      # This (OOT) repo carries `tools/pytorch-build/win-build.sh` and its
+      # helpers (the upstream-faithful build flow). Keep it in `oot/` so the
+      # parallel pytorch checkout below doesn't trample it.
       - name: Checkout OOT tooling repo
         uses: actions/checkout@v4
         with:
           path: oot
-
-      - name: Checkout PyTorch PR (relay-driven)
-        if: github.event_name == 'repository_dispatch'
-        uses: pytorch/actions/checkout-pr@v1
-        with:
-          head-sha: ${{ github.event.client_payload.head_sha }}
-          path: pytorch
 
       - name: Checkout pytorch/pytorch (scheduled / manual)
         if: github.event_name != 'repository_dispatch'
@@ -168,35 +152,23 @@ jobs:
           echo "$sha" > built_pytorch_sha.txt
           echo "Built from pytorch/pytorch @ $sha"
 
-      - name: Build PyTorch wheel (Git Bash)
-        if: ${{ !inputs.use-powershell-build }}
+      # Upstream-faithful flow: tools/pytorch-build/win-build.sh -> build_pytorch.bat
+      # -> install_magma / install_sccache / activate_miniconda3. It is env-driven
+      # (no CLI args) and must run from the pytorch root, so VC tooling and CUDA
+      # selection are supplied via env here. Mirrors pytorch/pytorch's in-tree
+      # .ci/pytorch/win-build.sh. BUILD_TEST is on (job env), so the C++ test
+      # binaries are always built.
+      - name: Build PyTorch wheel (win-build.sh upstream flow)
         shell: bash
+        working-directory: pytorch
+        env:
+          USE_CUDA: "1"
+          VC_PRODUCT: "BuildTools"
+          VC_YEAR: "2022"
+          VC_VERSION: ""
         run: |
           set -euo pipefail
-          bash oot/tools/pytorch-build/build_pytorch_windows.sh \
-            "${GITHUB_WORKSPACE}/pytorch" \
-            --build-environment "${BUILD_ENVIRONMENT}" \
-            --cuda-arch-list    "${TORCH_CUDA_ARCH_LIST}" \
-            --cuda-version      "${CUDA_VERSION}" \
-            --python-version    "${PYTHON_VERSION}" \
-            --max-jobs          "${MAX_JOBS}"
-
-      # Native PowerShell equivalent. BUILD_TEST stays off (the test job builds
-      # the C++ test binaries) and MKL is skipped because the runner image
-      # already ships it - this keeps parity with the Git Bash driver above.
-      # MAGMA is picked up automatically from the image's MAGMA_HOME if set.
-      - name: Build PyTorch wheel (PowerShell)
-        if: ${{ inputs.use-powershell-build }}
-        shell: powershell
-        run: |
-          $ErrorActionPreference = "Stop"
-          & oot\tools\pytorch-build\Build-PyTorchWindows.ps1 `
-            "$env:GITHUB_WORKSPACE\pytorch" `
-            -CudaArchList $env:TORCH_CUDA_ARCH_LIST `
-            -Jobs ([int]$env:MAX_JOBS) `
-            -NoBuildTest `
-            -NoMkl
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          bash "${GITHUB_WORKSPACE}/oot/tools/pytorch-build/win-build.sh"
 
       - name: Stage wheel + sha into artifact dir
         shell: bash
@@ -211,24 +183,10 @@ jobs:
           cp "$wheel" built_pytorch_sha.txt artifact/
           ls -la artifact
 
-      # Primary artifact path: POST the wheel + SHA to the on-prem
-      # storage server. `continue-on-error` so a temporary outage on the
-      # internal storage box doesn't tank the whole build - the GitHub
-      # artifact fallback below picks up the slack.
-      - name: Publish wheel + sha to internal storage (primary)
-        id: publish-local
+      # Publish the wheel + SHA as a GitHub Actions artifact so the paired
+      # test job can download exactly this build's output.
+      - name: Publish wheel + sha artifact
         if: inputs.wheel-artifact != ''
-        continue-on-error: true
-        uses: ./oot/.github/actions/upload-local-artifact
-        with:
-          artifact-name: ${{ inputs.wheel-artifact }}
-          source-dir: artifact
-
-      # Fallback: only runs when the internal storage upload failed.
-      # Keeps the build's artifact discoverable through GitHub's UI
-      # whenever the on-prem path is unhappy.
-      - name: Publish wheel + sha artifact (GitHub fallback)
-        if: inputs.wheel-artifact != '' && steps.publish-local.outcome != 'success'
         uses: actions/upload-artifact@v4
         with:
           name: ${{ inputs.wheel-artifact }}

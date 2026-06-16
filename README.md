@@ -31,9 +31,9 @@ third-party OSS notices.
 
 | Workflow | Purpose | Triggers | Compute |
 | --- | --- | --- | --- |
-| `relay-server-event-validate.yml`  | RFC-0050 handshake. Confirms relay events arrive, validates payload, will round-trip an ack via `report-ci-result@v1` once published. | `repository_dispatch:[pytorch-pr-trigger, pytorch-ping]`, `workflow_dispatch` | One lightweight self-hosted runner; no pytorch checkout, no build, no install. |
-| `nightly-wheel-test.yml`           | Each test cell checks out `pytorch/pytorch` at `pytorch-ref` (default `nightly`) via `actions/checkout@v4` (which resolves the branch to a concrete commit), records the actual HEAD SHA + commit date into the cell's job summary, then greps `download.pytorch.org/whl/nightly/torch/` for the wheel whose filename carries that exact `devYYYYMMDD` tag together with the matrix `cu<label>` / `cp<pyshort>` tags and `pip install`s the resolved absolute URL before running `.ci/pytorch/win-test.sh`. Fails fast if no matching wheel exists, so the wheel under test always shares its commit date with the pytorch source on disk. No preflight job, no artifact transit. | `schedule` (`0 14 * * *`), `workflow_dispatch` | `_rtx-test.yml` (sm89 + sm120 in one matrix) |
-| `nightly-source-build-test.yml`    | Full source build (multi-arch wheel) + test. The path that handles real RFC-0050 PR-time events. | `schedule` (`0 12 * * *`), `workflow_dispatch`, `repository_dispatch:[pytorch-pr-trigger]` | `_rtx-build.yml` -> `_rtx-test.yml` (sm89 + sm120 in one matrix) |
+| `relay-handshake.yml`  | RFC-0050 handshake. Confirms relay events arrive, validates payload, will round-trip an ack via `report-ci-result@v1` once published. **Currently OFF**: the `repository_dispatch` arm is commented out; only a no-op `workflow_dispatch` remains. | `workflow_dispatch` (no-op); `repository_dispatch:[pytorch-pr-trigger, pytorch-ping]` commented out | One lightweight `ubuntu-latest` runner; no pytorch checkout, no build, no install. |
+| `windows-rtx-wheel-test.yml`           | Each test cell checks out `pytorch/pytorch` at `pytorch-ref` (default `nightly`) via `actions/checkout@v4` (which resolves the branch to a concrete commit), records the actual HEAD SHA + commit date into the cell's job summary, then greps `download.pytorch.org/whl/nightly/torch/` for the wheel whose filename carries that exact `devYYYYMMDD` tag together with the matrix `cu<label>` / `cp<pyshort>` tags and `pip install`s the resolved absolute URL before running `.ci/pytorch/win-test.sh`. Fails fast if no matching wheel exists, so the wheel under test always shares its commit date with the pytorch source on disk. No preflight job, no artifact transit. | `schedule` (`0 17 * * *` = 22:30 IST), `workflow_dispatch` | `_rtx-test.yml` (sm89 + sm120 in one matrix) |
+| `windows-rtx-build-test.yml`            | Full source build (multi-arch wheel) + test, scheduled nightly and on-demand. Manual runs can narrow the matrix via subset filters (single value = one cell) and target a `pytorch-ref` or `pytorch-pr` (head SHA resolved automatically). Also the parked path for real RFC-0050 PR-time events. | `schedule` (`0 3 * * *` = 08:30 IST), `workflow_dispatch`, `repository_dispatch:[pytorch-pr-trigger]` (parked) | `prep` -> `_rtx-build.yml` -> `_rtx-test.yml` (sm89 + sm120 in one matrix) |
 
 Both nightly workflows fan out across `(config)` for builds and
 `(config x arch)` for tests. **Sharding is not a top-level axis on
@@ -65,7 +65,7 @@ upstream's `name: ${{ matrix.build_name }}-build`:
 
 GitHub groups matrix cells alphabetically by name, so leading with
 `wheel-<py>-<cu>` keeps each wheel's two arch fanouts adjacent and
-also lines up a wheel-test row alongside its source-build-test
+also lines up a wheel-test row alongside its windows-rtx-build-test
 counterpart in cross-workflow dashboards.
 
 `.ci/pytorch/win-test.sh` (via `test/run_test.py`) honours the
@@ -73,18 +73,18 @@ counterpart in cross-workflow dashboards.
 inside `_rtx-test.yml` to run just its slice.
 
 ```
-nightly-source-build-test.yml:                  nightly-wheel-test.yml:
+windows-rtx-build-test.yml:                          windows-rtx-wheel-test.yml:
 
   build  matrix( config )                         (no preflight job)
-      |   (4 cells)                                test  matrix( config x arch )
-      |   multi-arch wheel + SHA sidecar                  (4 x 2 = 8 cells)
+      |   (3 cells)                                test  matrix( config x arch )
+      |   multi-arch wheel + SHA sidecar                  (3 x 2 = 6 cells)
       |   (artifact upload currently disabled)
       |                                                  each cell calls
       +-> test  matrix( config x arch )                  _rtx-test.yml, which
-                (4 x 2 = 8 cells)                        internally fans out
+                (3 x 2 = 6 cells)                        internally fans out
                   each cell calls _rtx-test.yml,         5 shard runners.
                   which internally fans out 5
-                  shard runners (40 runners total).      Inside each runner:
+                  shard runners (30 runners total).      Inside each runner:
                                                            - checkout pytorch@nightly
                   Inside each runner:                      - grep public index for the
                     - pip install the build's wheel          matching devYYYYMMDD wheel
@@ -92,10 +92,10 @@ nightly-source-build-test.yml:                  nightly-wheel-test.yml:
                     - run shard N of 5                     - run shard N of 5
 
 UI grouping in both workflows (orchestrator level):
-  wheel-py312-cu130-build                  (source-build-test only)
+  wheel-py312-cu130-build                  (windows-rtx-build-test only)
   wheel-py312-cu130-sm89-test              ... drill in for 5 shard cells
   wheel-py312-cu130-sm120-test             ... drill in for 5 shard cells
-  wheel-py312-cu132-build                  (source-build-test only)
+  wheel-py312-cu132-build                  (windows-rtx-build-test only)
   wheel-py312-cu132-sm89-test
   ...
 ```
@@ -131,7 +131,6 @@ runner; add/remove entries to match the runner pool):
 | --- | --- | --- | --- |
 | 3.12 | 13.0 | `py312` | `cu130` |
 | 3.12 | 13.2 | `py312` | `cu132` |
-| 3.13 | 13.0 | `py313` | `cu130` |
 | 3.13 | 13.2 | `py313` | `cu132` |
 
 Plus `arch: [sm89, sm120]` on the orchestrator's test job, with the
@@ -139,11 +138,11 @@ Plus `arch: [sm89, sm120]` on the orchestrator's test job, with the
 (`strategy.matrix.shard: [1, 2, 3, 4, 5]`, `NUM_TEST_SHARDS: "5"`),
 matching PR #176678.
 
-Per source-build run that's **4 build jobs + 8 orchestrator-level
-test cells** (4 configs x 2 archs); each test cell expands to 5
-nested shard runners, so the actual runner count is `4 + 8 * 5 = 44`
-GH Actions runner jobs. The nightly-wheel run is **8 orchestrator-
-level test cells** (40 runners after the internal shard fanout) - no
+Per source-build run that's **3 build jobs + 6 orchestrator-level
+test cells** (3 configs x 2 archs); each test cell expands to 5
+nested shard runners, so the actual runner count is `3 + 6 * 5 = 33`
+GH Actions runner jobs. The wheel-test run is **6 orchestrator-
+level test cells** (30 runners after the internal shard fanout) - no
 preflight, no per-cell wheel producer.
 
 `TORCH_CUDA_ARCH_LIST` is set per `arch` matrix entry (`8.9` for sm89,
@@ -164,8 +163,8 @@ routed to its image via the runner-label set:
 | `build` (source-build wheel producer)           | `[rtx-build, <python-label>, <cuda-label>]` |
 | `test` cells where `matrix.arch.name == sm89`   | `[rtx-40x0-test, <python-label>, <cuda-label>]` |
 | `test` cells where `matrix.arch.name == sm120`  | `[rtx-50x0-test, <python-label>, <cuda-label>]` |
-| `relay-server-event-validate`                   | `[rtx-build]` (any free build runner) |
-| `internal-validation` (PR-time YAML lint)       | `[rtx-build]` (any free build runner) |
+| `relay-handshake`                   | `[rtx-build]` (any free build runner) |
+| `lint` (PR-time YAML lint)       | `[rtx-build]` (any free build runner) |
 
 The narrow labels (`rtx-build`, `rtx-40x0-test`, `rtx-50x0-test`,
 `py3xx`, `cu1xx`) are unique to our self-hosted Windows pool, so the
@@ -195,7 +194,7 @@ PyTorch CI scripts (`.ci/pytorch/win-build.sh`, `.ci/pytorch/win-test.sh`,
   current pin set)
 - `nvidia-smi` on `PATH`
 - Windows PowerShell 5.1 (the in-box `powershell.exe`) is sufficient
-  for the runner-diagnostics composite actions and the relay-validate
+  for the runner-diagnostics composite actions and the relay-handshake
   workflow. PowerShell 7+ (`pwsh`) is NOT required - every script in
   this repo sticks to cmdlets and language features available in 5.1.
 
@@ -208,12 +207,12 @@ install, and test end-to-end.
 ```
 .github/
   workflows/
-    relay-server-event-validate.yml  # RFC-0050 handshake (no compute)
-    nightly-wheel-test.yml           # nightly published-wheel smoke
-    nightly-source-build-test.yml    # full source build + test (PR-trigger path)
+    relay-handshake.yml  # RFC-0050 handshake (no compute)
+    windows-rtx-wheel-test.yml           # nightly published-wheel smoke
+    windows-rtx-build-test.yml            # full source build + test (scheduled + manual/PR)
     _rtx-build.yml                   # reusable: build source (.ci/pytorch/win-build.sh), uploads wheel artifact
     _rtx-test.yml                    # reusable: test a wheel (artifact OR pip-index install path)
-    internal-validation.yml          # PR-time YAML lint (self-hosted)
+    lint.yml          # PR-time YAML lint (self-hosted)
   actions/
     start-runner-diagnostics/
       action.yml                     # composite: spawn monitor.ps1 in background
@@ -231,7 +230,7 @@ orchestrator's test matrix is 2-dimensional (`config x arch`); the
 shard fanout lives one layer down in `_rtx-test.yml`:
 
 ```yaml
-# Orchestrator (nightly-source-build-test.yml / nightly-wheel-test.yml)
+# Orchestrator (windows-rtx-build-test.yml / windows-rtx-wheel-test.yml)
 matrix:
   config:                      # paired {python, cuda} entries; each one
     - { python: { version: "3.12", label: "py312" },  #   corresponds to an actual allocated
@@ -251,9 +250,9 @@ strategy:
     shard: [1, 2, 3, 4, 5]     # 5 shards per (config, arch); NUM_TEST_SHARDS env is "5"
 ```
 
-In `nightly-source-build-test.yml`, the `config` list is declared on
+In `windows-rtx-build-test.yml`, the `config` list is declared on
 the `build` job (`&config` anchor) and re-used on the `test` job
-(`*config`). In `nightly-wheel-test.yml` the list lives directly on
+(`*config`). In `windows-rtx-wheel-test.yml` the list lives directly on
 the `test` job since there is no build to share it with.
 
 To add or remove cells:
@@ -337,11 +336,11 @@ failure. To tune the interval or relocate the output dir, edit the
 
 | RFC concept | This repo |
 | --- | --- |
-| Handshake workflow that proves the downstream is wired | `relay-server-event-validate.yml` (listens for `pytorch-pr-trigger` and the heartbeat-only `pytorch-ping`) |
-| Downstream CI on real PR-time events | `nightly-source-build-test.yml` (also subscribes to `pytorch-pr-trigger`) |
+| Handshake workflow that proves the downstream is wired | `relay-handshake.yml` (listens for `pytorch-pr-trigger` and the heartbeat-only `pytorch-ping`) |
+| Downstream CI on real PR-time events | `windows-rtx-build-test.yml` (also subscribes to `pytorch-pr-trigger`) |
 | `concurrency: upstream-pr-<pr_number>` | Both workflows above key `concurrency.group` on `client_payload.pr_number` when present |
 | `pytorch/actions/checkout-pr@v1` (RFC Action #1) | Used as-is in `_rtx-build.yml` for `repository_dispatch`; falls back to `actions/checkout@v4` against `pytorch/pytorch@<ref>` for schedule / manual runs |
-| `pytorch/actions/report-ci-result@v1` (RFC Action #2) | Stubbed in `relay-server-event-validate.yml` (acknowledgement step is a placeholder); we will swap in the upstream action once published |
+| `pytorch/actions/report-ci-result@v1` (RFC Action #2) | Stubbed in `relay-handshake.yml` (acknowledgement step is a placeholder); we will swap in the upstream action once published |
 
 ## Local workflow validation
 
@@ -350,4 +349,4 @@ python -m pip install "PyYAML>=6" "check-jsonschema>=0.29"
 check-jsonschema --builtin-schema vendor.github-workflows .github/workflows/*.yml
 ```
 
-The same checks run automatically in `internal-validation.yml` on every PR.
+The same checks run automatically in `lint.yml` on every PR.

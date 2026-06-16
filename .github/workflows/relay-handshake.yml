@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: MIT
 
-name: relay-server-event-validate
+name: relay-handshake
 
 # RFC-0050 handshake workflow.
 #
@@ -17,23 +17,31 @@ name: relay-server-event-validate
 # handshake doesn't occupy the self-hosted RTX pool; the GPU probe step
 # is best-effort and simply no-ops when nvidia-smi is absent.
 #
-# Triggers:
-#   - `repository_dispatch: pytorch-pr-trigger` - real PR-time event from the relay
-#   - `repository_dispatch: pytorch-ping`       - relay-only heartbeat (no PR involved)
-#   - `workflow_dispatch`                       - manual probe (operator-driven)
+# Triggers (currently TURNED OFF):
+#   - `repository_dispatch: pytorch-pr-trigger` - real PR-time event from the relay (commented out)
+#   - `repository_dispatch: pytorch-ping`       - relay-only heartbeat (commented out)
+#   - `workflow_dispatch`                       - manual probe; kept only to keep the file valid (no-op)
 #
-# NOTE: the repository_dispatch arm is currently parked behind a
-# `dispatch-gate` guard - it only acknowledges + logs the payload, no
-# validate / GPU probe / relay-ack work runs. Grep for `dispatch-gate`
-# in `.github/workflows/` to re-enable.
+# NOTE: this workflow is OFF for now - the repository_dispatch arm is
+# commented out, so no relay events are processed. Both jobs are also
+# gated to `repository_dispatch`, so the manual trigger does nothing.
+# Re-enable by uncommenting the repository_dispatch arm in `on:` (and
+# removing the `dispatch-gate` guards if you want the full
+# validate -> GPU probe -> relay-ack pipeline).
 
 on:
-  repository_dispatch:
-    types:
-      - pull_request
+  # Turned off for now: the relay handshake arm is parked, so we don't
+  # listen for relay events. Both jobs below are gated to
+  # `repository_dispatch`, so the manual `workflow_dispatch` trigger kept
+  # here is a deliberate no-op that just keeps the workflow file valid and
+  # re-enableable. To bring it back, uncomment the repository_dispatch arm.
+  # repository_dispatch:
+  #   types:
+  #     - pull_request
+  workflow_dispatch:
 
 concurrency:
-  group: relay-validate-${{ github.event.client_payload.pr_number || github.run_id }}
+  group: relay-handshake-${{ github.event.client_payload.pr_number || github.run_id }}
   cancel-in-progress: true
 
 permissions:

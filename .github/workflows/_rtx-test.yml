@@ -345,7 +345,15 @@ jobs:
           GITHUB_RUN_ID: ${{ github.run_id }}
           GITHUB_RUN_NUMBER: ${{ github.run_number }}
           GITHUB_RUN_ATTEMPT: ${{ github.run_attempt }}
-        run: bash .ci/pytorch/win-test.sh
+        # Tee the harness output into the test-reports tree so the summary
+        # parser can recover failures that never make it into JUnit XML
+        # (hard crashes, collection/import errors, whole-file aborts). The
+        # log rides along in the uploaded test-reports artifact too.
+        # `pipefail` keeps the test step's real exit code despite the pipe.
+        run: |
+          set -o pipefail
+          bash .ci/pytorch/win-test.sh 2>&1 \
+            | tee "test/test-reports/run_test_shard${SHARD_NUMBER}.log"
 
       - name: Stop runner diagnostics
         if: always()
@@ -379,16 +387,16 @@ jobs:
           if-no-files-found: warn
           retention-days: 14
 
-      # DISABLED: GitHub Actions artifact upload. Re-enable by restoring
-      # the original `if: always()` condition below.
-      - name: Upload test reports
-        if: false
+      # Archive the raw test-reports tree (JUnit XML plus any crash / log
+      # files the harness drops there). upload-artifact@v4 stores the folder
+      # and serves it as a single `<name>.zip` on download. The name is unique
+      # per cell+shard+run+attempt so the 5 parallel shards never collide
+      # (v4 forbids two jobs uploading the same artifact name).
+      - name: Upload test-reports archive
+        if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: pytorch-test-reports-${{ inputs.build-environment }}-${{ inputs.python-label }}-${{ inputs.cuda-label }}-shard${{ matrix.shard }}-${{ github.run_id }}-${{ github.run_attempt }}
-          path: |
-            pytorch/test/**/*.xml
-            pytorch/test/test-reports/**
-            pytorch/test/**/test-reports/**
+          name: test-reports-${{ inputs.build-environment }}-${{ inputs.python-label }}-${{ inputs.cuda-label }}-${{ inputs.arch-name }}-shard${{ matrix.shard }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: pytorch/test/test-reports/**
           if-no-files-found: warn
           retention-days: 14

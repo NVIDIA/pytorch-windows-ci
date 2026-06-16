@@ -146,11 +146,71 @@ def test_resolve_imports_pytorch_constants(tmp_path):
     assert folder == ".additional_ci_files"
     assert times == "test-times.json"
     assert class_times == "test-class-times.json"
-    # Importing must not leave the checkout lingering on sys.path.
+    # Reading constants must not leave the checkout lingering on sys.path.
     assert str(root) not in sys.path
     sys.modules.pop("tools.stats.import_test_stats", None)
     sys.modules.pop("tools.stats", None)
     sys.modules.pop("tools", None)
+
+
+def test_resolve_does_not_execute_untrusted_module(tmp_path):
+    """The checkout is untrusted: constants are parsed, never executed."""
+    root = tmp_path / "pytorch"
+    root.mkdir()
+    (root / "setup.py").write_text("# stub\n", encoding="utf-8")
+    mod = root / "tools" / "stats" / "import_test_stats.py"
+    mod.parent.mkdir(parents=True, exist_ok=True)
+    marker = tmp_path / "pwned.txt"
+    # If this module were imported/exec'd, the marker would be written and the
+    # SystemExit would abort the run. Static parsing ignores both.
+    mod.write_text(
+        "from pathlib import Path\n"
+        f"Path(r'{marker}').write_text('pwned')\n"
+        "import sys; sys.exit('should never run')\n"
+        'ADDITIONAL_CI_FILES_FOLDER = Path(".additional_ci_files")\n'
+        'TEST_TIMES_FILE = "test-times.json"\n'
+        'TEST_CLASS_TIMES_FILE = "test-class-times.json"\n',
+        encoding="utf-8",
+    )
+
+    folder, times, class_times = seed_mod.resolve_pytorch_constants(root)
+
+    assert (folder, times, class_times) == (
+        ".additional_ci_files",
+        "test-times.json",
+        "test-class-times.json",
+    )
+    assert not marker.exists()
+
+
+def test_resolve_falls_back_on_unparsable_module(tmp_path):
+    root = _make_pytorch_root(tmp_path, with_import_stats=False)
+    mod = root / "tools" / "stats" / "import_test_stats.py"
+    mod.parent.mkdir(parents=True, exist_ok=True)
+    mod.write_text("this is = not valid python (\n", encoding="utf-8")
+
+    folder, times, class_times = seed_mod.resolve_pytorch_constants(root)
+
+    assert (folder, times, class_times) == (
+        ".additional_ci_files",
+        "test-times.json",
+        "test-class-times.json",
+    )
+
+
+def test_resolve_falls_back_when_constants_missing(tmp_path):
+    root = _make_pytorch_root(tmp_path, with_import_stats=False)
+    mod = root / "tools" / "stats" / "import_test_stats.py"
+    mod.parent.mkdir(parents=True, exist_ok=True)
+    mod.write_text('TEST_TIMES_FILE = "test-times.json"\n', encoding="utf-8")
+
+    folder, times, class_times = seed_mod.resolve_pytorch_constants(root)
+
+    assert (folder, times, class_times) == (
+        ".additional_ci_files",
+        "test-times.json",
+        "test-class-times.json",
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -180,7 +240,7 @@ def test_seed_rejects_non_pytorch_root(tmp_path, valid_times, valid_class_times)
     data_dir = _make_data_dir(tmp_path, valid_times, valid_class_times)
     not_pytorch = tmp_path / "empty"
     not_pytorch.mkdir()
-    with pytest.raises(seed_mod.SeedError, match="setup.py"):
+    with pytest.raises(seed_mod.SeedError, match=r"setup\.py"):
         seed_mod.seed(not_pytorch, data_dir, quiet=True)
 
 

@@ -10,9 +10,9 @@ Upstream those files are produced by ``tools/stats/export_test_times.py``, which
 files, at the same location, from JSON we keep in this repo.
 
 The destination folder/filenames are taken from pytorch's own
-``tools.stats.import_test_stats`` constants when the checkout is importable, so
-we never drift if upstream renames them; otherwise we fall back to the documented
-literals.
+``tools/stats/import_test_stats.py`` constants, read by static parsing (never by
+importing the untrusted checkout), so we never drift if upstream renames them;
+otherwise we fall back to the documented literals.
 
 Expected JSON structure (identical to test-infra's generated stats):
 
@@ -30,6 +30,7 @@ to be hit regardless of ``JOB_NAME`` / ``BUILD_ENVIRONMENT`` / ``TEST_CONFIG``.
 from __future__ import annotations
 
 import argparse
+import ast
 import json
 import shutil
 import sys
@@ -48,49 +49,84 @@ class SeedError(Exception):
     """Raised for any user-actionable failure (bad path, bad JSON, bad shape)."""
 
 
+def _string_from_node(node: ast.AST) -> str | None:
+    """Best-effort string value of a node.
+
+    Handles a bare string literal (``"x"``) and a single-arg call wrapper such
+    as ``Path("x")`` / ``os.path.join("x")``-style assignments by reading the
+    first string argument. Returns ``None`` for anything else.
+    """
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return node.value
+    if isinstance(node, ast.Call) and node.args:
+        first = node.args[0]
+        if isinstance(first, ast.Constant) and isinstance(first.value, str):
+            return first.value
+    return None
+
+
 def resolve_pytorch_constants(
     pytorch_root: Path,
 ) -> tuple[str, str, str]:
     """Return ``(folder, test_times_name, test_class_times_name)``.
 
     Prefers pytorch's own ``import_test_stats`` constants so the destination
-    tracks upstream; falls back to the documented literals when the module can't
-    be imported (e.g. a partial checkout). ``import_test_stats`` only imports the
-    stdlib at module load, so importing it does not require torch to be built.
+    tracks upstream; falls back to the documented literals when the module is
+    absent or cannot be parsed (e.g. a partial checkout).
+
+    The module lives in the untrusted ``--pytorch-root`` checkout, so it is
+    parsed statically with :mod:`ast` rather than imported - reading these
+    constants must never execute code from that tree.
     """
+    fallback = (
+        _FALLBACK_FOLDER,
+        _FALLBACK_TEST_TIMES,
+        _FALLBACK_TEST_CLASS_TIMES,
+    )
     module_path = pytorch_root / "tools" / "stats" / "import_test_stats.py"
     if not module_path.is_file():
-        return _FALLBACK_FOLDER, _FALLBACK_TEST_TIMES, _FALLBACK_TEST_CLASS_TIMES
+        return fallback
 
-    root_str = str(pytorch_root)
-    inserted = root_str not in sys.path
-    if inserted:
-        sys.path.insert(0, root_str)
     try:
-        from tools.stats.import_test_stats import (  # type: ignore[import-not-found]
-            ADDITIONAL_CI_FILES_FOLDER,
-            TEST_CLASS_TIMES_FILE,
-            TEST_TIMES_FILE,
-        )
-
-        return (
-            str(ADDITIONAL_CI_FILES_FOLDER),
-            str(TEST_TIMES_FILE),
-            str(TEST_CLASS_TIMES_FILE),
-        )
-    except Exception as exc:  # noqa: BLE001 - any import failure -> safe fallback
+        tree = ast.parse(module_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, SyntaxError) as exc:
         print(
-            f"warning: could not import pytorch import_test_stats ({exc}); "
+            f"warning: could not parse {module_path} ({exc}); "
             "using built-in path constants.",
             file=sys.stderr,
         )
-        return _FALLBACK_FOLDER, _FALLBACK_TEST_TIMES, _FALLBACK_TEST_CLASS_TIMES
-    finally:
-        if inserted:
-            try:
-                sys.path.remove(root_str)
-            except ValueError:
-                pass
+        return fallback
+
+    wanted = (
+        "ADDITIONAL_CI_FILES_FOLDER",
+        "TEST_TIMES_FILE",
+        "TEST_CLASS_TIMES_FILE",
+    )
+    found: dict[str, str] = {}
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Assign):
+            continue
+        value = _string_from_node(node.value)
+        if value is None:
+            continue
+        for target in node.targets:
+            if isinstance(target, ast.Name) and target.id in wanted:
+                found.setdefault(target.id, value)
+
+    missing = [name for name in wanted if name not in found]
+    if missing:
+        print(
+            f"warning: {module_path} is missing constant(s) "
+            f"{', '.join(missing)}; using built-in path constants.",
+            file=sys.stderr,
+        )
+        return fallback
+
+    return (
+        found["ADDITIONAL_CI_FILES_FOLDER"],
+        found["TEST_TIMES_FILE"],
+        found["TEST_CLASS_TIMES_FILE"],
+    )
 
 
 def load_stats(path: Path) -> dict[str, Any]:
@@ -171,6 +207,7 @@ def seed(
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    """Parse command-line arguments for the stats-seeding CLI."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--pytorch-root",
@@ -194,6 +231,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 
 def main(argv: list[str] | None = None) -> int:
+    """Run the seeding CLI; return 0 on success or 1 on a ``SeedError``."""
     args = parse_args(argv)
     try:
         seed(args.pytorch_root, args.data_dir, quiet=args.quiet)

@@ -35,6 +35,18 @@ FAILING_REPORT = """<?xml version="1.0" encoding="utf-8"?>
 """
 
 
+AOTI_REPORT = """<?xml version="1.0" encoding="utf-8"?>
+<testsuites>
+  <testsuite name="suite" tests="1">
+    <testcase classname="TestTorchbindAOTI" file="inductor/test_torchbind.py"
+              name="test_custom_objs_empty_when_no_torchbind" time="0.3">
+      <failure message="boom">tb</failure>
+    </testcase>
+  </testsuite>
+</testsuites>
+"""
+
+
 def _write(directory: Path, name: str, content: str) -> Path:
     path = directory / name
     path.write_text(content, encoding="utf-8")
@@ -91,6 +103,42 @@ def test_collect_failures_skips_unparsable(tmp_path):
     assert scanned == 2
     assert unparsable == 1
     assert len(failures) == 2
+
+
+def test_module_from_file_attribute(tmp_path):
+    _write(tmp_path, "aoti.xml", AOTI_REPORT)
+
+    failures, _, _ = pf.collect_failures(tmp_path)
+
+    assert len(failures) == 1
+    failure = failures[0]
+    assert failure.module == "test_torchbind"
+    assert failure.qualified_name == (
+        "test_torchbind::TestTorchbindAOTI::"
+        "test_custom_objs_empty_when_no_torchbind"
+    )
+
+
+def test_module_from_dotted_classname():
+    failure = pf.Failure("test_mod.TestX", "test_a", "failure", "")
+    assert failure.module == "test_mod"
+    # Module already embedded in classname; not duplicated.
+    assert failure.qualified_name == "test_mod.TestX::test_a"
+
+
+def test_module_absent_when_no_file_or_dot():
+    failure = pf.Failure("TestX", "test_a", "failure", "")
+    assert failure.module == ""
+    assert failure.qualified_name == "TestX::test_a"
+
+
+def test_render_markdown_includes_module(tmp_path):
+    _write(tmp_path, "aoti.xml", AOTI_REPORT)
+    failures, scanned, unparsable = pf.collect_failures(tmp_path)
+
+    out = pf.render_markdown(failures, scanned, unparsable, "Title", 200)
+
+    assert "test_torchbind::TestTorchbindAOTI" in out
 
 
 def test_first_line_truncates():

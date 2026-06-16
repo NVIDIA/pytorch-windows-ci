@@ -133,13 +133,6 @@ jobs:
         with:
           path: oot
 
-      # - name: Checkout PyTorch PR (relay-driven)
-      #   if: github.event_name == 'repository_dispatch'
-      #   uses: pytorch/actions/checkout-pr@v1
-      #   with:
-      #     head-sha: ${{ github.event.client_payload.head_sha }}
-      #     path: pytorch
-
       - name: Checkout pytorch/pytorch (scheduled / manual)
         if: github.event_name != 'repository_dispatch'
         uses: actions/checkout@v4

@@ -40,6 +40,11 @@ def _coerce_jobs(payload: object) -> list[dict]:
 
 
 def load_jobs(path: Path | None) -> list[dict]:
+    """Load job objects from ``path`` (or stdin), tolerating JSON-lines input.
+
+    Accepts a single JSON document (API object or bare array) and falls back to
+    parsing one JSON object per line, as emitted by ``gh api --paginate``.
+    """
     raw = path.read_text(encoding="utf-8") if path else sys.stdin.read()
     raw = raw.strip()
     if not raw:
@@ -62,6 +67,7 @@ def select_jobs(
     include: re.Pattern[str],
     exclude: re.Pattern[str] | None,
 ) -> list[Job]:
+    """Return the jobs whose name matches ``include`` and not ``exclude``."""
     selected: list[Job] = []
     for job in jobs:
         name = job.get("name", "")
@@ -80,6 +86,11 @@ def select_jobs(
 
 
 def render_markdown(jobs: list[Job], title: str) -> str:
+    """Render the selected jobs as a Markdown summary.
+
+    Emits a heading and either a "no jobs" notice, an "all passed" line, or a
+    table of the failed jobs with links to their logs.
+    """
     lines = [f"## {title}", ""]
 
     if not jobs:
@@ -104,6 +115,7 @@ def render_markdown(jobs: list[Job], title: str) -> str:
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    """Parse command-line arguments for the job-aggregation CLI."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--jobs-json",
@@ -136,6 +148,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 
 def main(argv: list[str] | None = None) -> int:
+    """Select test jobs, render the summary, and write it to the output sink.
+
+    Always returns 0: this is an informational step that must not change a
+    run's pass/fail status.
+    """
     args = parse_args(argv)
 
     include = re.compile(args.include_pattern)

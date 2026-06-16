@@ -25,10 +25,30 @@ class Failure:
     name: str
     kind: str
     message: str
+    file: str = ""
+
+    @property
+    def module(self) -> str:
+        """Best-effort test module (e.g. ``test_torchbind``).
+
+        Prefers the JUnit ``file`` attribute; falls back to the dotted
+        prefix of ``classname`` (``a.b.TestX`` -> ``a.b``).
+        """
+        if self.file:
+            return Path(self.file.replace("\\", "/")).stem
+        if "." in self.classname:
+            return self.classname.rsplit(".", 1)[0]
+        return ""
 
     @property
     def qualified_name(self) -> str:
-        return f"{self.classname}::{self.name}" if self.classname else self.name
+        base = f"{self.classname}::{self.name}" if self.classname else self.name
+        module = self.module
+        # Only prepend the module when it is not already part of classname
+        # (pytest-style ``test_mod.TestX`` already embeds it).
+        if module and not self.classname.startswith(module):
+            return f"{module}::{base}"
+        return base
 
 
 def _first_line(text: str | None, limit: int = 200) -> str:
@@ -71,8 +91,9 @@ def collect_failures(reports_dir: Path) -> tuple[list[Failure], int, int]:
                     name=case.get("name", ""),
                     kind=kind,
                     message=_first_line(child.get("message") or child.text),
+                    file=case.get("file", ""),
                 )
-                key = (failure.classname, failure.name)
+                key = (failure.file, failure.classname, failure.name)
                 # `error` is listed first in FAIL_KINDS, so an existing
                 # error wins; only overwrite when nothing is recorded yet.
                 seen.setdefault(key, failure)
@@ -88,6 +109,11 @@ def render_markdown(
     title: str,
     max_rows: int,
 ) -> str:
+    """Render the collected failures as a Markdown section.
+
+    Produces a heading plus, depending on state, a "no reports" notice, an
+    "all passed" line, or a table of failing tests (truncated at ``max_rows``).
+    """
     lines = [f"## {title}", ""]
 
     if scanned == 0:
@@ -107,7 +133,7 @@ def render_markdown(
     lines.append("| # | Kind | Test | Message |")
     lines.append("| --- | --- | --- | --- |")
 
-    ordered = sorted(failures, key=lambda f: (f.classname, f.name))
+    ordered = sorted(failures, key=lambda f: (f.module, f.classname, f.name))
     for idx, failure in enumerate(ordered[:max_rows], start=1):
         message = failure.message.replace("|", "\\|") or "-"
         lines.append(
@@ -122,6 +148,7 @@ def render_markdown(
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    """Parse command-line arguments for the failure-summary CLI."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--reports-dir",
@@ -150,6 +177,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 
 def main(argv: list[str] | None = None) -> int:
+    """Collect failures and write the Markdown summary to the output sink.
+
+    Always returns 0: this is an informational step that must not change a
+    job's pass/fail status.
+    """
     args = parse_args(argv)
 
     reports_dir = args.reports_dir

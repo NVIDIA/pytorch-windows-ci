@@ -53,6 +53,10 @@ _LOG_SUMMARY = re.compile(
 _LOG_INLINE = re.compile(
     r"(?P<nodeid>\S+\.py(?:::\S+)?)\s+(?P<kind>FAILED|ERROR)\b"
 )
+# pytest inline-progress *pass* line: ``test/foo.py::TestX::test_y PASSED``.
+# Only used to reconcile flaky reruns (fail on one attempt, pass on a later
+# one); it never adds a failure.
+_LOG_PASSED = re.compile(r"(?P<nodeid>\S+\.py(?:::\S+)?)\s+PASSED\b")
 # run_test.py per-file marker: ``test_foo failed!`` (the ``test`` guard in
 # the caller keeps this from matching generic ``... failed`` prose).
 _LOG_RUNTEST = re.compile(r"^(?P<file>[\w./\\-]+)\s+failed!?\s*$")
@@ -221,8 +225,79 @@ def _failure_from_nodeid(nodeid: str, kind: str, msg: str | None) -> Failure:
     )
 
 
-def _collect_xml(reports_dir: Path, result: ScanResult, sink: _FailureSink) -> None:
-    """Scan JUnit XML, recording cases, suite-level errors, and crashes."""
+def _passed_key_from_log_line(line: str) -> tuple[str, str, str] | None:
+    """Dedup key for a pytest ``... PASSED`` progress line, else ``None``.
+
+    The key is computed the same way as a failure's :attr:`Failure.dedup_key`
+    so a passing rerun line reconciles against the matching failing record
+    regardless of whether that failure came from XML or a log.
+    """
+    match = _LOG_PASSED.search(line)
+    if match is None:
+        return None
+    file, classname, name = _parse_nodeid(match.group("nodeid"))
+    if not name:
+        name = Path(file.replace("\\", "/")).stem
+    return Failure(
+        classname=classname,
+        name=name,
+        kind="passed",
+        message="",
+        file=file,
+        source="log",
+    ).dedup_key
+
+
+def _failure_from_testcase(case: ET.Element) -> Failure | None:
+    """Build a ``Failure`` from a ``<testcase>`` that failed or errored.
+
+    Returns ``None`` for a pass, a ``<skipped>`` case, or a bare rerun
+    record, so the caller can tell failing attempts apart from clean ones.
+    ``error`` is preferred over ``failure`` when both are present.
+    """
+    for kind in FAIL_KINDS:
+        child = case.find(kind)
+        if child is None:
+            continue
+        return Failure(
+            classname=case.get("classname", ""),
+            name=case.get("name", ""),
+            kind=kind,
+            message=_first_line(child.get("message") or child.text),
+            file=case.get("file", ""),
+            source="xml",
+        )
+    return None
+
+
+def _case_passed(case: ET.Element) -> bool:
+    """True when a ``<testcase>`` is a clean pass (no failure/error/skip)."""
+    return all(case.find(kind) is None for kind in (*FAIL_KINDS, "skipped"))
+
+
+def _testcase_key(case: ET.Element) -> tuple[str, str, str]:
+    """Dedup key for a ``<testcase>`` (see :attr:`Failure.dedup_key`)."""
+    return Failure(
+        classname=case.get("classname", ""),
+        name=case.get("name", ""),
+        kind="passed",
+        message="",
+        file=case.get("file", ""),
+        source="xml",
+    ).dedup_key
+
+
+def _collect_xml(
+    reports_dir: Path,
+    result: ScanResult,
+    sink: _FailureSink,
+    passed: set[tuple[str, str, str]],
+) -> None:
+    """Scan JUnit XML, recording cases, suite-level errors, and crashes.
+
+    Passing ``<testcase>`` keys are added to ``passed`` so flaky reruns
+    (fail on one attempt, pass on a later one) can be reconciled later.
+    """
     for xml_path in sorted(reports_dir.rglob("*.xml")):
         result.xml_scanned += 1
         try:
@@ -249,23 +324,12 @@ def _collect_xml(reports_dir: Path, result: ScanResult, sink: _FailureSink) -> N
                     pass
 
         for case in root.iter("testcase"):
-            for kind in FAIL_KINDS:
-                child = case.find(kind)
-                if child is None:
-                    continue
+            failure = _failure_from_testcase(case)
+            if failure is not None:
                 result.xml_itemized += 1
-                sink.add(
-                    Failure(
-                        classname=case.get("classname", ""),
-                        name=case.get("name", ""),
-                        kind=kind,
-                        message=_first_line(child.get("message") or child.text),
-                        file=case.get("file", ""),
-                        source="xml",
-                    ),
-                    prefer_error=True,
-                )
-                break
+                sink.add(failure, prefer_error=True)
+            elif _case_passed(case):
+                passed.add(_testcase_key(case))
 
         # Collection / import errors are emitted as direct children of
         # ``<testsuite>`` (not wrapped in a ``<testcase>``).
@@ -288,8 +352,17 @@ def _collect_xml(reports_dir: Path, result: ScanResult, sink: _FailureSink) -> N
                 break
 
 
-def _collect_logs(reports_dir: Path, result: ScanResult, sink: _FailureSink) -> None:
-    """Scan ``*.log`` / ``*.txt`` for failures not captured in XML."""
+def _collect_logs(
+    reports_dir: Path,
+    result: ScanResult,
+    sink: _FailureSink,
+    passed: set[tuple[str, str, str]],
+) -> None:
+    """Scan ``*.log`` / ``*.txt`` for failures not captured in XML.
+
+    ``PASSED`` progress lines are recorded in ``passed`` so a rerun that
+    eventually passed cancels an earlier failing line for the same test.
+    """
     log_paths = sorted(
         {*reports_dir.rglob("*.log"), *reports_dir.rglob("*.txt")}
     )
@@ -300,9 +373,14 @@ def _collect_logs(reports_dir: Path, result: ScanResult, sink: _FailureSink) -> 
         except OSError:
             continue
         for raw in text.splitlines():
-            failure = _failure_from_log_line(_ANSI.sub("", raw).rstrip())
+            clean = _ANSI.sub("", raw).rstrip()
+            failure = _failure_from_log_line(clean)
             if failure is not None:
                 sink.add(failure)
+                continue
+            passed_key = _passed_key_from_log_line(clean)
+            if passed_key is not None:
+                passed.add(passed_key)
 
 
 class _FailureSink:
@@ -334,13 +412,24 @@ class _FailureSink:
 
 
 def collect(reports_dir: Path, *, parse_logs: bool = True) -> ScanResult:
-    """Scan ``reports_dir`` for failures across JUnit XML and run logs."""
+    """Scan ``reports_dir`` for failures across JUnit XML and run logs.
+
+    Flaky reruns are reconciled away: PyTorch's ``run_test.py`` retries a
+    failing test (pytest ``--reruns`` with ``--junit-xml-reruns`` records
+    each attempt in one report, and whole-process stepcurrent retries write a
+    fresh report while leaving the failing one behind), so a test that fails
+    an early attempt but passes a later one appears as *both* a failing and a
+    passing record for the same ``(module, class, name)``. CI scores such a
+    test as a pass, so any failure whose test was also seen passing - in any
+    report or log - is dropped.
+    """
     result = ScanResult()
     sink = _FailureSink()
-    _collect_xml(reports_dir, result, sink)
+    passed: set[tuple[str, str, str]] = set()
+    _collect_xml(reports_dir, result, sink, passed)
     if parse_logs:
-        _collect_logs(reports_dir, result, sink)
-    result.failures = sink.values()
+        _collect_logs(reports_dir, result, sink, passed)
+    result.failures = [f for f in sink.values() if f.dedup_key not in passed]
     return result
 
 

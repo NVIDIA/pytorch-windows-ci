@@ -60,6 +60,46 @@ SUITE_LEVEL_ERROR = """<?xml version="1.0" encoding="utf-8"?>
 </testsuite>
 """
 
+# A flaky test under pytest --reruns with --junit-xml-reruns: the first
+# attempt fails and the retry passes, both written as separate <testcase>
+# entries (same file/classname/name) in one report. CI scores it a pass.
+RERUN_THEN_PASS_REPORT = """<?xml version="1.0" encoding="utf-8"?>
+<testsuites>
+  <testsuite name="suite" tests="2" failures="1" errors="0">
+    <testcase classname="test_mod.TestX" name="test_flaky" time="0.5">
+      <failure message="deadlock">flaky failure on first attempt</failure>
+    </testcase>
+    <testcase classname="test_mod.TestX" name="test_flaky" time="0.4"/>
+  </testsuite>
+</testsuites>
+"""
+
+# Whole-process stepcurrent retry: the passing rerun lands in its own report
+# while the original failing report is left behind. Matches ``test_fail`` from
+# FAILING_REPORT (same empty file / classname / name).
+RERUN_PASS_OTHER_FILE = """<?xml version="1.0" encoding="utf-8"?>
+<testsuite name="suite" tests="1" failures="0" errors="0">
+  <testcase classname="test_mod.TestX" name="test_fail" time="0.1"/>
+</testsuite>
+"""
+
+# Every rerun attempt failed and no passing <testcase> exists.
+CONSISTENT_FAIL_WITH_RERUNS = """<?xml version="1.0" encoding="utf-8"?>
+<testsuites>
+  <testsuite name="suite" tests="3" failures="3" errors="0">
+    <testcase classname="test_x.TestX" name="test_always_fails" time="0.1">
+      <failure message="boom 1">attempt 1</failure>
+    </testcase>
+    <testcase classname="test_x.TestX" name="test_always_fails" time="0.1">
+      <failure message="boom 2">attempt 2</failure>
+    </testcase>
+    <testcase classname="test_x.TestX" name="test_always_fails" time="0.1">
+      <failure message="boom 3">attempt 3</failure>
+    </testcase>
+  </testsuite>
+</testsuites>
+"""
+
 
 def _write(directory: Path, name: str, content: str) -> Path:
     path = directory / name
@@ -307,6 +347,85 @@ def test_log_function_style_matches_xml_module_classname(tmp_path):
 
     assert len(result.failures) == 1
     assert result.failures[0].source == "xml"
+
+
+# --------------------------------------------------------------------------
+# Flaky-rerun reconciliation (fail on one attempt, pass on a later one)
+# --------------------------------------------------------------------------
+def test_rerun_pass_same_report_not_reported(tmp_path):
+    # Failing + passing <testcase> for the same test in one report
+    # (pytest --junit-xml-reruns). It passed, so it must not be reported.
+    _write(tmp_path, "rerun.xml", RERUN_THEN_PASS_REPORT)
+
+    result = pf.collect(tmp_path)
+
+    assert result.xml_scanned == 1
+    assert result.failures == []
+
+
+def test_rerun_pass_across_reports_not_reported(tmp_path):
+    # The passing retry is in a separate report; the earlier failing report
+    # is left behind (whole-process stepcurrent retry).
+    _write(tmp_path, "attempt1.xml", FAILING_REPORT)
+    _write(tmp_path, "attempt2.xml", RERUN_PASS_OTHER_FILE)
+
+    result = pf.collect(tmp_path)
+
+    names = {f.name for f in result.failures}
+    # ``test_fail`` passed on rerun and is reconciled away; the genuinely
+    # erroring ``test_err`` (never passed) remains.
+    assert names == {"test_err"}
+
+
+def test_consistent_failures_kept(tmp_path):
+    # No passing <testcase> anywhere, so the failure stands.
+    _write(tmp_path, "fail.xml", CONSISTENT_FAIL_WITH_RERUNS)
+
+    result = pf.collect(tmp_path)
+
+    assert len(result.failures) == 1
+    assert result.failures[0].name == "test_always_fails"
+
+
+def test_log_pass_reconciles_xml_failure(tmp_path):
+    # XML records a failing attempt; a later PASSED progress line in the log
+    # cancels it (rerun passed, but only the log captured the success).
+    _write(tmp_path, "report.xml", AOTI_REPORT)
+    _write(
+        tmp_path,
+        "run.log",
+        "inductor/test_torchbind.py::TestTorchbindAOTI::"
+        "test_custom_objs_empty_when_no_torchbind PASSED [ 42%]\n",
+    )
+
+    result = pf.collect(tmp_path)
+
+    assert result.failures == []
+
+
+def test_log_pass_reconciles_log_failure(tmp_path):
+    # A flaky test seen only in logs: FAILED on the first attempt, PASSED on
+    # the retry. The pass wins.
+    _write(
+        tmp_path,
+        "run.log",
+        "FAILED test/test_foo.py::TestX::test_bar - transient\n"
+        "test/test_foo.py::TestX::test_bar PASSED [ 99%]\n",
+    )
+
+    result = pf.collect(tmp_path)
+
+    assert result.failures == []
+
+
+def test_skipped_rerun_does_not_cancel_failure(tmp_path):
+    # A <skipped> case is not a pass and must not mask a real failure.
+    _write(tmp_path, "fail.xml", FAILING_REPORT)
+
+    result = pf.collect(tmp_path)
+
+    names = {f.name for f in result.failures}
+    assert names == {"test_fail", "test_err"}
 
 
 # --------------------------------------------------------------------------

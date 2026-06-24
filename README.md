@@ -3,16 +3,15 @@ SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All 
 SPDX-License-Identifier: MIT
 -->
 
-# pytorch-oot-internal
+# Pytorch-OOT
 
-Internal staging ground for the NVIDIA PyTorch out-of-tree (OOT) CI on
+Staging ground for the NVIDIA PyTorch out-of-tree (OOT) CI on
 self-hosted **Windows + NVIDIA RTX** runners. The workflows here implement
 the downstream half of [RFC-0050: Cross-Repository CI Relay for PyTorch
 Out-of-Tree Backends](https://github.com/pytorch/rfcs/blob/master/RFC-0050-Cross-Repository-CI-Relay-for-PyTorch-Out-of-Tree-Backends.md)
 and mirror the in-tree shape of `pytorch/pytorch` PR
 [#176678 - \[CI\]\[Windows\] Add NVIDIA RTX workflow](https://github.com/pytorch/pytorch/pull/176678).
-Upstream covers a single configuration (Python 3.12, CUDA 12.8); this
-internal repo deliberately expands the matrix so we can catch regressions
+Upstream covers a single configuration (Python 3.12, CUDA 12.8); this repo deliberately expands the matrix so we can catch regressions
 across multiple Python and CUDA toolkit combinations before they show up
 upstream. Build/test logic itself comes entirely from PyTorch's in-tree
 `.ci/pytorch/*.sh` scripts; this repo holds only the workflow wiring.

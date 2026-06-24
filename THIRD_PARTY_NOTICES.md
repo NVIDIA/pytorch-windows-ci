@@ -9,7 +9,7 @@ This project will require or download and install additional third-party open so
 
 | Component | Use | License | Copyright / attribution | Source |
 | --- | --- | --- | --- | --- |
-| `actions/checkout@v4` | Check out this repository and `pytorch/pytorch` in GitHub Actions workflows. | MIT | Copyright (c) 2018 GitHub, Inc. and contributors | https://github.com/actions/checkout/blob/v4/LICENSE |
+| `actions/checkout@v7` | Check out this repository and `pytorch/pytorch` in GitHub Actions workflows. | MIT | Copyright (c) 2018 GitHub, Inc. and contributors | https://github.com/actions/checkout/blob/v4/LICENSE |
 | `actions/upload-artifact@v4` | Upload wheel, diagnostics, and test-report artifacts. | MIT | Copyright (c) 2018 GitHub, Inc. and contributors | https://github.com/actions/upload-artifact/blob/v4/LICENSE |
 | `actions/download-artifact@v4` | Download wheel artifacts from producer jobs. | MIT | Copyright (c) 2018 GitHub, Inc. and contributors | https://github.com/actions/download-artifact/blob/v4/LICENSE |
 | `electron/github-app-auth-action` | GitHub App authentication component evaluated as a potential dependency; not vendored in this repository. | MIT | Copyright (c) Contributors to the Electron project | https://github.com/electron/github-app-auth-action/blob/main/LICENSE |

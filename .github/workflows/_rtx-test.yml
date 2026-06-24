@@ -13,7 +13,7 @@ name: _rtx-test
 #   B) pip-index path - the wheel is already on a public pip index
 #                       (download.pytorch.org/whl/nightly/torch/). The
 #                       orchestrator passes a `pytorch-ref` (typically
-#                       a branch like `nightly`); `actions/checkout@v4`
+#                       a branch like `nightly`); `actions/checkout@v7`
 #                       resolves it to a concrete commit, this workflow
 #                       reads the commit's UTC date, greps the index
 #                       for a wheel whose filename carries that exact
@@ -196,7 +196,7 @@ jobs:
           fi
 
       - name: Checkout repository (runner-diagnostics actions)
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           path: oot
           show-progress: false
@@ -228,7 +228,7 @@ jobs:
           echo "checkout ref: $ref"
 
       - name: Checkout pytorch/pytorch at the resolved ref
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           repository: pytorch/pytorch
           ref: ${{ steps.ref.outputs.ref }}

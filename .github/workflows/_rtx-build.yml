@@ -138,7 +138,7 @@ jobs:
       # helpers (the upstream-faithful build flow). Keep it in `oot/` so the
       # parallel pytorch checkout below doesn't trample it.
       - name: Checkout OOT tooling repo
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           path: oot
 
@@ -151,7 +151,7 @@ jobs:
 
       - name: Checkout pytorch/pytorch (scheduled / manual)
         if: github.event_name != 'repository_dispatch'
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           repository: pytorch/pytorch
           ref: ${{ inputs.pytorch-ref }}

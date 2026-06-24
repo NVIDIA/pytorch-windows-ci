@@ -1,0 +1,53 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: MIT
+
+name: "Start runner diagnostics"
+description: >
+  Spawn `monitor.ps1` as a hidden background process for the current job.
+  The monitor writes `spec-snapshot.json` at startup and then samples
+  host + GPU metrics into JSONL files in the output directory. Pair with
+  `stop-runner-diagnostics` in an `if: always()` step at end of job.
+
+inputs:
+  output-dir:
+    description: "Diagnostics directory. Default: $RUNNER_TEMP\\runner-diagnostics."
+    required: false
+    default: ""
+  interval-seconds:
+    description: "Sampling interval in seconds."
+    required: false
+    default: "10"
+
+outputs:
+  output-dir:
+    description: "Resolved diagnostics directory; pass to `stop-runner-diagnostics`."
+    value: ${{ steps.spawn.outputs.output-dir }}
+
+runs:
+  using: "composite"
+  steps:
+    - name: Spawn background monitor
+      id: spawn
+      shell: powershell
+      env:
+        INPUT_OUTPUT_DIR: ${{ inputs.output-dir }}
+        INTERVAL: ${{ inputs.interval-seconds }}
+      run: |
+        $ErrorActionPreference = "Stop"
+
+        $outDir = if ($env:INPUT_OUTPUT_DIR) { $env:INPUT_OUTPUT_DIR } else { Join-Path $env:RUNNER_TEMP "runner-diagnostics" }
+        New-Item -ItemType Directory -Force -Path $outDir | Out-Null
+        Remove-Item (Join-Path $outDir ".stop") -Force -ErrorAction SilentlyContinue
+        Remove-Item (Join-Path $outDir ".pid")  -Force -ErrorAction SilentlyContinue
+
+        # Action lives at <repo>/.github/actions/start-runner-diagnostics/,
+        # script lives at <repo>/scripts/runner-diagnostics/monitor.ps1.
+        $repoRoot = (Resolve-Path (Join-Path $env:GITHUB_ACTION_PATH "..\..\..")).Path
+        $script   = Join-Path $repoRoot "scripts\runner-diagnostics\monitor.ps1"
+        $proc = Start-Process powershell `
+          -ArgumentList "-NoLogo","-NoProfile","-ExecutionPolicy","Bypass","-File",$script,"-OutputDir",$outDir,"-IntervalSeconds",$env:INTERVAL `
+          -PassThru -WindowStyle Hidden
+        $proc.Id | Out-File -FilePath (Join-Path $outDir ".pid") -Encoding utf8
+        Write-Host "Diagnostics monitor PID=$($proc.Id) interval=${env:INTERVAL}s output=$outDir"
+
+        "output-dir=$outDir" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8

@@ -1,0 +1,394 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: MIT
+
+name: _rtx-test
+
+# Reusable Windows RTX test workflow. Two install paths, one set of
+# downstream steps:
+#
+#   A) artifact path  - the wheel is a producer-uploaded artifact from
+#                       `_rtx-build.yml`; SHA travels alongside the
+#                       wheel in `built_pytorch_sha.txt`. Used by
+#                       `windows-rtx-build-test.yml`.
+#   B) pip-index path - the wheel is already on a public pip index
+#                       (download.pytorch.org/whl/nightly/torch/). The
+#                       orchestrator passes a `pytorch-ref` (typically
+#                       a branch like `nightly`); `actions/checkout@v4`
+#                       resolves it to a concrete commit, this workflow
+#                       reads the commit's UTC date, greps the index
+#                       for a wheel whose filename carries that exact
+#                       `devYYYYMMDD` tag together with the matrix
+#                       `cu<label>` / `cp<pyshort>` tags, and installs
+#                       the resolved URL directly. The job fails fast
+#                       if the index has no wheel for that date
+#                       (i.e. the wheel for the source we just checked
+#                       out is not yet published). Used by
+#                       `windows-rtx-wheel-test.yml`.
+#
+# Exactly one path must be selected per call: set `wheel-artifact`
+# (path A) or `pytorch-ref` (path B).
+#
+# Each invocation is one (config x arch) test cell. Sharding is an
+# internal fanout: `strategy.matrix.shard` below spawns 5 parallel
+# runners under this single workflow call, and the test step exports
+# `SHARD_NUMBER` (per-cell) / `NUM_TEST_SHARDS` (constant 5) /
+# `TEST_CONFIG` so `.ci/pytorch/win-test.sh` (which delegates to
+# `test/run_test.py`) runs only its slice. The orchestrator therefore
+# sees one cell per (config x arch), not one cell per shard - matching
+# the upstream `_win-rtx-test.yml` pattern in pytorch/pytorch PR
+# #176678 where the test job's `test-matrix` JSON carries the shard
+# fanout internally.
+#
+# A lightweight runner-diagnostics monitor samples host + GPU metrics
+# in the background while the test step runs in the foreground, so OOT
+# failures can be triaged against an accurate picture of the machine.
+
+on:
+  workflow_call:
+    inputs:
+      runner-base:
+        description: "Base runner label for the test pool (e.g. rtx-40x0-test)."
+        type: string
+        required: true
+      python-version:
+        description: "Python version in dotted form (e.g. 3.12)."
+        type: string
+        required: true
+      python-label:
+        description: "Python label used in runner labels (e.g. py312)."
+        type: string
+        required: true
+      cuda-version:
+        description: "CUDA toolkit version in dotted form (e.g. 13.0)."
+        type: string
+        required: true
+      cuda-label:
+        description: "CUDA label used in runner labels (e.g. cu130)."
+        type: string
+        required: true
+      cuda-arch-list:
+        description: >
+          Target SM for TORCH_CUDA_ARCH_LIST in the test step (e.g. '8.9'
+          for sm89 / RTX 40x0, '12.0' for sm120 / RTX 50x0). The wheel
+          itself may be multi-arch; this just tells the test runner which
+          arch to exercise.
+        type: string
+        required: true
+      arch-name:
+        description: "Architecture token (e.g. 'sm89', 'sm120'); used for the test-architectures filter."
+        type: string
+        required: true
+      build-environment:
+        description: "Logical name passed through as BUILD_ENVIRONMENT."
+        type: string
+        required: true
+
+      # ---- Sharding (matches pytorch/pytorch PR #176678) --------------
+      # The shard fanout is internal to this workflow: each invocation
+      # spawns 5 parallel shard runners via `strategy.matrix.shard`
+      # below. The caller does NOT see shards in its own matrix - one
+      # call to this reusable workflow == one (config x arch) test
+      # cell, period. To change the shard count, edit both the
+      # `shard:` list under `strategy.matrix` and the `NUM_TEST_SHARDS`
+      # env in the test step.
+      test-config:
+        description: "Test-config name forwarded as TEST_CONFIG (e.g. 'default')."
+        type: string
+        required: false
+        default: "default"
+
+      # ---- Path A: artifact-driven (source build) ---------------------
+      wheel-artifact:
+        description: "Artifact name carrying wheel + built_pytorch_sha.txt. Mutually exclusive with pytorch-ref."
+        type: string
+        required: false
+        default: ""
+
+      # ---- Path B: pip-index-driven (nightly wheel) -------------------
+      pytorch-ref:
+        description: "pytorch/pytorch ref to checkout (branch, tag, or SHA). Required when wheel-artifact is empty."
+        type: string
+        required: false
+        default: ""
+      wheel-index-url:
+        description: "Nightly wheel index page (PEP 503 simple index). The resolver greps this for a wheel whose filename matches the checked-out commit's date and the matrix cuda + python tags."
+        type: string
+        required: false
+        default: "https://download.pytorch.org/whl/nightly/torch/"
+
+      # ---- workflow_dispatch matrix filters ---------------------------
+      # The caller cannot reference `matrix.*` in its own job-level
+      # `if:` (GitHub Actions restricts that context for reusable-
+      # workflow-calling jobs), so the per-cell filter is evaluated
+      # here instead, against this invocation's own `python-version` /
+      # `cuda-version` / `arch-name` inputs. Empty string disables the
+      # corresponding filter dimension.
+      python-versions:
+        description: "Comma-separated allowlist of python versions; empty = no filter."
+        type: string
+        required: false
+        default: ""
+      cuda-versions:
+        description: "Comma-separated allowlist of CUDA toolkit versions; empty = no filter."
+        type: string
+        required: false
+        default: ""
+      test-architectures:
+        description: "Comma-separated allowlist of arch tokens (e.g. 'sm89,sm120'); empty = no filter."
+        type: string
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  test:
+    name: test (shard ${{ matrix.shard }}/5)
+    if: >
+      (inputs.python-versions == '' || contains(inputs.python-versions, inputs.python-version))
+      && (inputs.cuda-versions == '' || contains(inputs.cuda-versions, inputs.cuda-version))
+      && (inputs.test-architectures == '' || contains(inputs.test-architectures, inputs.arch-name))
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4, 5]
+    runs-on:
+      - ${{ inputs.runner-base }}
+      - ${{ inputs.python-label }}
+      - ${{ inputs.cuda-label }}
+    timeout-minutes: 210
+    env:
+      # ---- carried from the matrix cell -------------------------------
+      BUILD_ENVIRONMENT: ${{ inputs.build-environment }}
+      PYTHON_VERSION: ${{ inputs.python-version }}
+      CUDA_VERSION: ${{ inputs.cuda-version }}
+      TORCH_CUDA_ARCH_LIST: ${{ inputs.cuda-arch-list }}
+      # ---- pytorch CI knobs (subset of pytorch/pytorch PR #176678) ----
+      USE_CUDA: "1"
+      # Runner image already carries the Windows SDK and VS BuildTools;
+      # tell win-test.sh not to re-install them.
+      INSTALL_WINDOWS_SDK: "0"
+      # Don't stop the whole shard on the first test failure - we want
+      # the full pass/fail picture per shard.
+      CONTINUE_THROUGH_ERROR: "1"
+      VC_PRODUCT: "BuildTools"
+      VC_YEAR: "2022"
+      VS_VERSION: "17.4.1"
+      VC_VERSION: ""
+      PYTORCH_TEST_WITH_SLOW: "0"
+      CI: "1"
+    steps:
+      - name: Validate install-path inputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -n "${{ inputs.wheel-artifact }}" ]; then
+            echo "install path: artifact (${{ inputs.wheel-artifact }})"
+          elif [ -n "${{ inputs.pytorch-ref }}" ]; then
+            echo "install path: pip-index"
+            echo "  pytorch-ref:     ${{ inputs.pytorch-ref }}"
+            echo "  wheel-index-url: ${{ inputs.wheel-index-url }}"
+          else
+            echo "::error::Either 'wheel-artifact' or 'pytorch-ref' must be set." >&2
+            exit 1
+          fi
+
+      - name: Checkout pytorch-oot-internal (runner-diagnostics actions)
+        uses: actions/checkout@v4
+        with:
+          path: oot
+          show-progress: false
+
+      # Pull the wheel + SHA produced by the paired build job from GitHub
+      # Actions artifact storage. Lands files under `artifact/...`.
+      - name: Download wheel artifact
+        if: inputs.wheel-artifact != ''
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ inputs.wheel-artifact }}
+          path: artifact
+
+      - name: Resolve pytorch ref to check out
+        id: ref
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -n "${{ inputs.wheel-artifact }}" ]; then
+            ref=$(tr -d '[:space:]' < artifact/built_pytorch_sha.txt)
+            if ! [[ "$ref" =~ ^[0-9a-f]{40}$ ]]; then
+              echo "::error::Invalid SHA in artifact: '$ref'" >&2
+              exit 1
+            fi
+          else
+            ref="${{ inputs.pytorch-ref }}"
+          fi
+          echo "ref=$ref" >> "$GITHUB_OUTPUT"
+          echo "checkout ref: $ref"
+
+      - name: Checkout pytorch/pytorch at the resolved ref
+        uses: actions/checkout@v4
+        with:
+          repository: pytorch/pytorch
+          ref: ${{ steps.ref.outputs.ref }}
+          path: pytorch
+          submodules: recursive
+          fetch-depth: 1
+          show-progress: true
+
+      - name: Record pytorch HEAD (SHA + commit date)
+        id: head
+        shell: bash
+        working-directory: pytorch
+        run: |
+          set -euo pipefail
+          sha=$(git rev-parse HEAD)
+          date_iso=$(git log -1 --format=%cI HEAD)
+          # Force UTC so the YYYYMMDD matches the wheel's `devYYYYMMDD` tag,
+          # which pytorch CI mints from the UTC build date.
+          date_ymd=$(TZ=UTC git log -1 --date=format-local:%Y%m%d --format=%cd HEAD)
+          {
+            echo "## pytorch checkout"
+            echo ""
+            echo "| field      | value |"
+            echo "| ---        | --- |"
+            echo "| input ref  | \`${{ steps.ref.outputs.ref }}\` |"
+            echo "| HEAD sha   | \`$sha\` |"
+            echo "| committed  | \`$date_iso\` |"
+            echo "| dev tag    | \`dev$date_ymd\` |"
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "date_ymd=$date_ymd" >> "$GITHUB_OUTPUT"
+          echo "pytorch HEAD: $sha @ $date_iso (dev$date_ymd)"
+
+      - name: Resolve nightly wheel URL for this cell
+        if: inputs.wheel-artifact == ''
+        id: wheel
+        shell: bash
+        env:
+          CUDA_LABEL: ${{ inputs.cuda-label }}
+          PY_VERSION: ${{ inputs.python-version }}
+          WHEEL_INDEX_URL: ${{ inputs.wheel-index-url }}
+          HEAD_DATE: ${{ steps.head.outputs.date_ymd }}
+        run: |
+          set -euo pipefail
+          # TODO: Add a sleep timer to check & pull the wheel with max timeout of 6 hours
+          py_short="${PY_VERSION//./}"
+          # PEP 503 simple-index hrefs encode '+' as '%2B':
+          #   torch-<ver>.dev<YYYYMMDD>%2B<cu>-cp<py>-cp<py>-win_amd64.whl
+          pattern="torch-[^/\"]+\.dev${HEAD_DATE}%2B${CUDA_LABEL}-cp${py_short}-cp${py_short}-win_amd64\.whl"
+          url=$(curl -fsSL --connect-timeout 30 --max-time 120 "$WHEEL_INDEX_URL" \
+            | grep -oE 'href="[^"]+"' \
+            | sed -E 's/^href="(.+)"$/\1/' \
+            | grep -E "${pattern}(#|$)" \
+            | head -n1 || true)
+          # download.pytorch.org's simple index always emits absolute hrefs,
+          # so no path normalisation is needed - just strip the PEP 503
+          # `#sha256=...` fragment.
+          url="${url%%#*}"
+          if [ -z "$url" ]; then
+            echo "::error::No nightly wheel for date=${HEAD_DATE} cuda=${CUDA_LABEL} cp=${py_short} at ${WHEEL_INDEX_URL}. The wheel for the checked-out pytorch commit is not yet published." >&2
+            exit 1
+          fi
+          echo "url=$url" >> "$GITHUB_OUTPUT"
+          echo "Resolved wheel: $url"
+
+      - name: Install PyTorch
+        shell: bash
+        env:
+          WHEEL_URL: ${{ steps.wheel.outputs.url }}
+        run: |
+          set -euo pipefail
+          if [ -n "$WHEEL_URL" ]; then
+            echo "pip install $WHEEL_URL"
+            python -m pip install "$WHEEL_URL"
+          else
+            wheel=$(ls -1 artifact/*.whl | head -n1)
+            echo "pip install $wheel"
+            python -m pip install "$wheel"
+          fi
+          python -c "import torch; print('torch', torch.__version__, 'cuda', torch.version.cuda); assert torch.cuda.is_available()"
+
+      # Seed our own test-time stats into pytorch's .additional_ci_files so
+      # run_test.py shards deterministically from data we control instead of
+      # downloading test-infra stats (or falling back to round-robin). All 5
+      # shards read the same committed JSON, so the sharding is consistent.
+      - name: Seed test-time stats (deterministic sharding)
+        shell: bash
+        run: |
+          set -euo pipefail
+          python "${GITHUB_WORKSPACE}/oot/scripts/test-stats/seed_test_stats.py" \
+            --pytorch-root "${GITHUB_WORKSPACE}/pytorch"
+
+      - name: Start runner diagnostics
+        id: diag
+        uses: ./oot/.github/actions/start-runner-diagnostics
+
+      - name: Run PyTorch Windows test suite
+        shell: bash
+        working-directory: pytorch
+        env:
+          # ---- sharding (consumed by .ci/pytorch/win-test.sh -> test/run_test.py)
+          SHARD_NUMBER: ${{ matrix.shard }}
+          NUM_TEST_SHARDS: "5"
+          TEST_CONFIG: ${{ inputs.test-config }}
+          # ---- where the wheel lives on this runner (path A) or
+          # ----   a placeholder dir for path B (pip-index install
+          # ----   already happened in `Install PyTorch`).
+          PYTORCH_FINAL_PACKAGE_DIR: ${{ github.workspace }}/artifact
+          # ---- GH context useful for log correlation + stats hooks
+          PR_NUMBER: ${{ github.event.pull_request.number || github.event.client_payload.pr_number || '' }}
+          SHA1: ${{ github.event.pull_request.head.sha || github.event.client_payload.head_sha || github.sha }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          GITHUB_WORKFLOW: ${{ github.workflow }}
+          GITHUB_JOB: ${{ github.job }}
+          GITHUB_RUN_ID: ${{ github.run_id }}
+          GITHUB_RUN_NUMBER: ${{ github.run_number }}
+          GITHUB_RUN_ATTEMPT: ${{ github.run_attempt }}
+        run: bash .ci/pytorch/win-test.sh
+
+      - name: Stop runner diagnostics
+        if: always()
+        uses: ./oot/.github/actions/stop-runner-diagnostics
+        with:
+          output-dir: ${{ steps.diag.outputs.output-dir }}
+
+      # Parse this shard's JUnit reports and render the failing test names
+      # straight into the shard's own step summary. Read-only and best-
+      # effort: it never changes the shard's pass/fail status (the test
+      # step above already owns that), so it runs even when the test step
+      # errored. The orchestrator-level `test-summary` job aggregates which
+      # cells/shards failed; this gives the per-shard test-name detail.
+      - name: Summarize failed tests (this shard)
+        if: always()
+        shell: bash
+        run: |
+          python "${GITHUB_WORKSPACE}/oot/scripts/test-summary/parse_failures.py" \
+            --reports-dir "${GITHUB_WORKSPACE}/pytorch/test" \
+            --title "Failed tests - ${{ inputs.build-environment }} - ${{ inputs.python-label }}/${{ inputs.cuda-label }} - ${{ inputs.arch-name }} - shard ${{ matrix.shard }}/5" \
+            >> "$GITHUB_STEP_SUMMARY"
+
+      # DISABLED: GitHub Actions artifact upload. Re-enable by restoring
+      # the original `if: always()` condition below.
+      - name: Upload runner diagnostics
+        if: false
+        uses: actions/upload-artifact@v4
+        with:
+          name: runner-diagnostics-${{ inputs.build-environment }}-${{ inputs.python-label }}-${{ inputs.cuda-label }}-shard${{ matrix.shard }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ steps.diag.outputs.output-dir }}/**
+          if-no-files-found: warn
+          retention-days: 14
+
+      # DISABLED: GitHub Actions artifact upload. Re-enable by restoring
+      # the original `if: always()` condition below.
+      - name: Upload test reports
+        if: false
+        uses: actions/upload-artifact@v4
+        with:
+          name: pytorch-test-reports-${{ inputs.build-environment }}-${{ inputs.python-label }}-${{ inputs.cuda-label }}-shard${{ matrix.shard }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            pytorch/test/**/*.xml
+            pytorch/test/test-reports/**
+            pytorch/test/**/test-reports/**
+          if-no-files-found: warn
+          retention-days: 14

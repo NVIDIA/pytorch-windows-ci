@@ -1,0 +1,163 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: MIT
+
+name: windows-rtx-wheel-test
+
+# Daily smoke of the *published* pytorch nightly wheel on self-hosted
+# Windows NVIDIA RTX runners. No source build, no preflight, no
+# artifact handoff - each test runner is told `pytorch-ref: nightly`,
+# `actions/checkout@v4` resolves that against `pytorch/pytorch` to a
+# concrete commit, the runner reads that commit's UTC date, then
+# greps `download.pytorch.org/whl/nightly/torch/` for the wheel whose
+# filename carries that exact `devYYYYMMDD` tag together with the
+# matrix `cu<label>` / `cp<pyshort>` tags, and `pip install`s the
+# resolved absolute URL. The job fails fast if the index has no
+# wheel for the checked-out commit's date (i.e. the wheel is not yet
+# published) - that guarantees the wheel under test and the pytorch
+# source checkout used by `.ci/pytorch/win-test.sh` come from the
+# same day.
+#
+# Counterparts:
+#   - relay-handshake.yml              -> RFC-0050 handshake (no compute, off)
+#   - windows-rtx-build-test.yml           -> full source build + test (scheduled + manual)
+#
+# Shape - one test job, 2-D matrix:
+#
+#   test  matrix( config x arch )       1 reusable-workflow call per cell;
+#         3 x 2 = 6 cells                each call internally fans out 5
+#                                        shard runners (30 runners total).
+#
+# `config` is a paired `{python, cuda}` entry rather than independent
+# `python` and `cuda` axes - the runner pool is allocated per (python,
+# cuda) combination (e.g. py312/cu130 and py312/cu132 are different
+# machines), so each config is one explicit pairing. Add or remove
+# pairings by editing the `config:` list directly; no `exclude`
+# gymnastics needed.
+#
+# Sharding is NOT a top-level matrix axis here - it lives inside
+# `_rtx-test.yml`'s own `strategy.matrix.shard`. Each test cell in this
+# orchestrator therefore represents "this wheel x this architecture"
+# (one runner per shard nested under it), matching the upstream
+# `_win-rtx-test.yml` pattern in pytorch/pytorch PR #176678. The
+# SHARD_NUMBER / NUM_TEST_SHARDS / TEST_CONFIG env vars consumed by
+# `.ci/pytorch/win-test.sh` are populated inside the reusable workflow.
+#
+# Cell-name shape mirrors `pytorch/pytorch`'s generated
+# `windows-binary-wheel` nightly:
+#   test cell -> `<build_name>-<arch>-test`   e.g. `wheel-py312-cu130-sm89-test`
+# Each `config:` entry carries its own precomputed `build_name` so the
+# job-level `name:` is a one-token reference instead of a multi-piece
+# template, matching upstream's `name: ${{ matrix.build_name }}-test`
+# pattern. `arch` carries the runner-base label and the
+# TORCH_CUDA_ARCH_LIST value, so a single job declaration drives both
+# RTX 40x0 (sm89) and RTX 50x0 (sm120).
+
+on:
+  # schedule:
+  #   - cron: "0 17 * * *"
+  workflow_dispatch:
+    inputs:
+      pytorch-ref:
+        description: "pytorch/pytorch ref to test against (branch, tag, or SHA). Default: nightly."
+        required: false
+        default: "nightly"
+      python-versions:
+        description: "Comma-separated subset of 3.12,3.13 to test."
+        required: false
+        default: "3.12"
+      cuda-versions:
+        description: "Comma-separated subset of 13.0,13.2 to test."
+        required: false
+        default: "13.0,13.2"
+      test-architectures:
+        description: "Comma-separated subset of sm89,sm120 to test."
+        required: false
+        default: "sm89,sm120"
+      wheel-index-url:
+        description: "Override the nightly wheel index page (default: https://download.pytorch.org/whl/nightly/torch/)."
+        required: false
+        default: ""
+
+concurrency:
+  group: windows-rtx-wheel-test-${{ github.run_id }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  test:
+    name: ${{ matrix.config.build_name }}-${{ matrix.arch.name }}-test
+    strategy:
+      fail-fast: false
+      matrix:
+        # One entry per actual runner pairing. The test job needs a
+        # machine labelled `[<arch.runner>, <config.python.label>,
+        # <config.cuda.label>]` for each (config, arch) combination.
+        # `build_name` is the canonical cell identity - the test job
+        # renders as `<build_name>-<arch>-test`, matching the source-
+        # build orchestrator's naming so a wheel-test row and its
+        # windows-rtx-build-test counterpart sort adjacent in cross-
+        # workflow dashboards. Sharding is internal to `_rtx-test.yml`
+        # (its own `strategy.matrix.shard` fans out 5 runners per
+        # cell), so it deliberately does NOT appear in this matrix.
+        config:
+          - { python: { version: "3.12", label: "py312" }, cuda: { version: "13.0", label: "cu130" }, build_name: "wheel-py312-cu130" }
+          - { python: { version: "3.12", label: "py312" }, cuda: { version: "13.2", label: "cu132" }, build_name: "wheel-py312-cu132" }
+        arch:
+          - { name: sm89,  runner: rtx-40x0-test, arch_list: "8.9"  }
+          - { name: sm120, runner: rtx-50x0-test, arch_list: "12.0" }
+    uses: ./.github/workflows/_rtx-test.yml
+    with:
+      runner-base: ${{ matrix.arch.runner }}
+      python-version: ${{ matrix.config.python.version }}
+      python-label: ${{ matrix.config.python.label }}
+      cuda-version: ${{ matrix.config.cuda.version }}
+      cuda-label: ${{ matrix.config.cuda.label }}
+      cuda-arch-list: ${{ matrix.arch.arch_list }}
+      arch-name: ${{ matrix.arch.name }}
+      build-environment: win-rtx-nightly-wheel-${{ matrix.arch.name }}
+      test-config: "default"
+      pytorch-ref: ${{ inputs.pytorch-ref || 'nightly' }}
+      wheel-index-url: ${{ inputs.wheel-index-url || 'https://download.pytorch.org/whl/nightly/torch/' }}
+      # Forward the dispatcher's subset filters; the reusable workflow's
+      # job-level `if:` evaluates them. Empty string = no filter.
+      python-versions: ${{ inputs.python-versions }}
+      cuda-versions: ${{ inputs.cuda-versions }}
+      test-architectures: ${{ inputs.test-architectures }}
+
+  # ===========================================================================
+  # Post-test rollup. Runs once after every test cell/shard settles and
+  # renders a consolidated table of the test jobs that failed (with direct
+  # log links) into the run's step summary. Per-test-name detail lives in
+  # each shard's own summary (see `_rtx-test.yml`). Informational only:
+  # `if: always()` so it runs even when tests fail, and it never reports a
+  # non-zero status of its own - the test cells already carry red/green.
+  # ===========================================================================
+  test-summary:
+    name: test-summary
+    needs: test
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout pytorch-oot-internal (for summary script)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          show-progress: false
+
+      - name: Aggregate failed test jobs
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh api --paginate \
+            "repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/attempts/${{ github.run_attempt }}/jobs" \
+            -q '.jobs[]' | jq -s '.' > jobs.json
+          python3 scripts/test-summary/aggregate_failures.py \
+            --jobs-json jobs.json \
+            --title "PyTorch test summary (run ${{ github.run_id }})" \
+            >> "$GITHUB_STEP_SUMMARY"

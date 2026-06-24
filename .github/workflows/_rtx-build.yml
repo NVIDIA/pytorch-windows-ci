@@ -32,6 +32,15 @@ name: _rtx-build
 # has the right Python, CUDA toolkit, MSVC, sccache, magma, ninja,
 # cmake, and all PyTorch CI dependencies pre-installed - this workflow
 # performs no in-job environment setup.
+#
+# A lightweight runner-diagnostics monitor samples host + GPU metrics in
+# the background for the whole job (it starts before the long
+# `pytorch/pytorch` checkout), so build-time failures - including a host
+# that disappears mid-job - can be triaged against an accurate picture of
+# the machine. NOTE: on a true runner shutdown the runner skips the
+# `if: always()` cleanup, so the upload won't fire for that case - the
+# host's Windows Event Log remains the source of truth there; this
+# capture covers the soft-failure / timeout / OOM / disk-full cases.
 
 on:
   workflow_call:
@@ -133,6 +142,13 @@ jobs:
         with:
           path: oot
 
+      # Start sampling host + GPU metrics before the heavy checkout/build
+      # steps so the time-series covers the exact window where the runner
+      # has been observed to vanish (mid `pytorch/pytorch` fetch).
+      - name: Start runner diagnostics
+        id: diag
+        uses: ./oot/.github/actions/start-runner-diagnostics
+
       - name: Checkout pytorch/pytorch (scheduled / manual)
         if: github.event_name != 'repository_dispatch'
         uses: actions/checkout@v4
@@ -192,4 +208,24 @@ jobs:
           name: ${{ inputs.wheel-artifact }}
           path: artifact
           if-no-files-found: error
+          retention-days: 14
+
+      - name: Stop runner diagnostics
+        if: always()
+        uses: ./oot/.github/actions/stop-runner-diagnostics
+        with:
+          output-dir: ${{ steps.diag.outputs.output-dir }}
+
+      # Upload is ENABLED here (unlike `_rtx-test.yml`, which disables it):
+      # the build matrix is at most ~3 cells so the artifact volume is
+      # small, and these captures are the whole reason this monitor was
+      # added to the build job. Skipped only when the runner is hard-killed
+      # (runner shutdown bypasses `if: always()`).
+      - name: Upload runner diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: runner-diagnostics-build-${{ inputs.build-environment }}-${{ inputs.python-label }}-${{ inputs.cuda-label }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ steps.diag.outputs.output-dir }}/**
+          if-no-files-found: warn
           retention-days: 14

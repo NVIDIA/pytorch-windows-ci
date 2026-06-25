@@ -23,26 +23,18 @@ comes entirely from PyTorch's in-tree `.ci/pytorch/*.sh` scripts — this repo
 holds only the workflow wiring. Every job runs on a self-hosted NVIDIA runner;
 there are no GitHub-hosted (cloud) runs.
 
-> **Full architecture, matrix, runner model, and customisation guide:**
+> **Full architecture, matrix, and runner model:**
 > [docs/ci-details.md](docs/ci-details.md).
 
 # Getting Started
 
-The two top-level workflows run automatically on a nightly schedule and can also
-be triggered on demand from the GitHub **Actions** tab:
+The two top-level workflows run automatically on a nightly schedule. No action
+is required to run them:
 
-- **`windows-rtx-build-test.yml`** — full source build + test (nightly, plus
-  manual `workflow_dispatch`).
+- **`windows-rtx-build-test.yml`** — full source build + test (nightly).
 - **`windows-rtx-wheel-test.yml`** — nightly published-wheel test.
 
-To run one manually:
-
-```text
-Actions → (select workflow) → Run workflow → (optionally set subset inputs) → Run
-```
-
-Inputs, schedules, and matrix-subset filters are documented in
-[docs/ci-details.md](docs/ci-details.md).
+Schedules are documented in [docs/ci-details.md](docs/ci-details.md).
 
 # Requirements
 
@@ -53,17 +45,16 @@ Inputs, schedules, and matrix-subset filters are documented in
   driver, MSVC build tools, and the PyTorch test runtime — the workflows do zero
   in-job setup. See [docs/ci-details.md](docs/ci-details.md) for the full image
   contents and label routing.
-- For local workflow validation: Python 3 with `PyYAML` and `check-jsonschema`.
 
 # Usage
 
-Trigger a workflow from the Actions tab (manual) or let the nightly schedules
-run. The reusable workflows (`_rtx-build.yml`, `_rtx-test.yml`) are called by the
-two orchestrators and are not run directly.
+The nightly schedules run both top-level workflows automatically. The reusable
+workflows (`_rtx-build.yml`, `_rtx-test.yml`) are called by the two orchestrators
+and are not run directly.
 
-Detailed usage — workflow table, job naming, install paths, default matrix,
-customising the matrix, test environment variables, and runner diagnostics — is
-documented in [docs/ci-details.md](docs/ci-details.md).
+Detailed reference — workflow table, job naming, install paths, default matrix,
+test environment variables, and runner diagnostics — is documented in
+[docs/ci-details.md](docs/ci-details.md).
 
 # Performance
 

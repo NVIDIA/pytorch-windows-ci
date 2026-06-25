@@ -77,14 +77,8 @@ land via pull request to `main`.
 
 # Contribution Guidelines
 
-Contributions are welcome — please read [CONTRIBUTING.md](CONTRIBUTING.md) first.
+Refer to [CONTRIBUTING.md](CONTRIBUTING.md).
 
-Validate workflow YAML locally before opening a pull request:
-
-```bash
-python -m pip install "PyYAML>=6" "check-jsonschema>=0.29"
-check-jsonschema --builtin-schema vendor.github-workflows .github/workflows/*.yml
-```
 
 ## Governance & Maintainers
 

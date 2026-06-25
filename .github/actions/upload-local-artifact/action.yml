@@ -1,0 +1,42 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: MIT
+
+name: "Upload artifact to internal storage"
+description: >
+  Zip the given directory and POST it to the on-prem artifact server
+  that backs the self-hosted Windows pool. Used as the primary
+  artifact transport in `_rtx-build.yml`, with `actions/upload-artifact`
+  kept as an automatic fallback. Pair with `download-local-artifact`
+  on the consumer side.
+
+inputs:
+  artifact-name:
+    description: "Base filename for the zip (`.zip` is appended on upload)."
+    required: true
+  source-dir:
+    description: >
+      Directory to zip and POST. Its basename becomes the zip root, so
+      `source-dir: artifact` produces a zip whose entries are `artifact/...`
+      and unzipping at the workspace root restores the original layout.
+    required: true
+  server-url:
+    description: >
+      Base URL of the artifact server (no trailing slash). No default is
+      shipped; pass it explicitly, e.g. from a repository variable such as
+      `${{ vars.ARTIFACT_SERVER_URL }}`.
+    required: true
+
+runs:
+  using: "composite"
+  steps:
+    - name: Zip and POST to internal storage
+      shell: bash
+      env:
+        ARTIFACT_NAME: ${{ inputs.artifact-name }}
+        SOURCE_DIR: ${{ inputs.source-dir }}
+        SERVER_URL: ${{ inputs.server-url }}
+      run: |
+        # Action lives at <repo>/.github/actions/upload-local-artifact/,
+        # script lives at <repo>/scripts/local-artifact/.
+        script_dir="$(cd -- "$GITHUB_ACTION_PATH/../../../scripts/local-artifact" && pwd -P)"
+        bash "$script_dir/upload.sh"

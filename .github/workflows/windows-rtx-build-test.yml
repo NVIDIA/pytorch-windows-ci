@@ -1,0 +1,275 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: MIT
+
+name: windows-rtx-build-test
+
+# Source-build + test CI for pytorch/pytorch on self-hosted Windows NVIDIA
+# RTX runners. Builds a wheel from source via the upstream-faithful
+# `tools/pytorch-build/win-build.sh` flow (`_rtx-build.yml`), tests it
+# (`_rtx-test.yml`), then rolls up failures (`test-summary`).
+#
+# This single workflow serves both the scheduled nightly and on-demand
+# (manual / PR-targeted) use cases:
+#
+#   - `schedule`          - daily; builds/tests the full matrix.
+#   - `workflow_dispatch` - manual; the same matrix, narrowable via the
+#                           `python-versions` / `cuda-versions` /
+#                           `test-architectures` subset filters (set each
+#                           to a single value to run one cell as a sandbox).
+#                           Target a specific commit with `pytorch-ref`, or
+#                           a PR with `pytorch-pr` (its head SHA is resolved
+#                           automatically and overrides `pytorch-ref`).
+#   - `repository_dispatch` - RFC-0050 relay (PARKED behind `dispatch-gate`;
+#                             inspect-dispatch prints the payload, build/test
+#                             are skipped). Grep `dispatch-gate` to re-enable.
+#
+# Shape:
+#
+#   prep (resolve ref)
+#       |
+#   build  matrix( config )            one multi-arch wheel per cell
+#       |   (up to 3 cells)
+#       |
+#       +-> test  matrix( config x arch )   1 reusable-workflow call per
+#                 up to 3 x 2 = 6 cells     cell; each call internally fans
+#                                           out 5 shard runners.
+#
+# `config` is a paired `{python, cuda}` entry (the runner pool is allocated
+# per python/cuda combination). The subset-filter inputs are forwarded to
+# the reusable workflows, whose own job-level `if:` performs the per-cell
+# match (GitHub forbids `matrix.*` in the `if:` of a reusable-workflow-
+# calling job, so the filter lives one layer down). Empty = no filter.
+#
+# Cell-name shape mirrors pytorch/pytorch's generated nightly:
+#   build cell -> `<build_name>-build`        e.g. `wheel-py312-cu130-build`
+#   test  cell -> `<build_name>-<arch>-test`  e.g. `wheel-py312-cu130-sm89-test`
+
+on:
+  schedule:
+    - cron: "0 3 * * *"
+  workflow_dispatch:
+    inputs:
+      pytorch-pr:
+        description: >
+          pytorch/pytorch PR number to build + test. When set, its head SHA
+          is resolved automatically and overrides `pytorch-ref`. Leave empty
+          to use `pytorch-ref` instead.
+        required: false
+        default: ""
+      pytorch-ref:
+        description: "pytorch/pytorch ref to build (branch / tag / SHA). Ignored when pytorch-pr is set."
+        required: false
+        default: "nightly"
+      python-versions:
+        description: "Comma-separated subset of 3.12 to build/test."
+        required: false
+        default: "3.12"
+      cuda-versions:
+        description: "Comma-separated subset of 13.0,13.2 to build/test."
+        required: false
+        default: "13.0,13.2"
+      test-architectures:
+        description: "Comma-separated subset of sm89,sm120 to test (build is always multi-arch)."
+        required: false
+        default: "sm89,sm120"
+
+concurrency:
+  group: windows-rtx-build-test-${{ github.event.client_payload.pr_number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'repository_dispatch' }}
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  # ===========================================================================
+  # Once-per-dispatch observability hook for the relay payload. Gated to
+  # `repository_dispatch` so schedule / workflow_dispatch runs don't waste a
+  # runner on it.
+  #
+  # TODO(dispatch-gate): repository_dispatch handling is currently parked -
+  # the build / test jobs below carry a matching `dispatch-gate` guard.
+  # Remove the guards together to re-enable a real PR-driven build + test.
+  # ===========================================================================
+  inspect-dispatch:
+    name: inspect relay dispatch (parked)
+    if: github.event_name == 'repository_dispatch'
+    runs-on: [rtx-build]
+    timeout-minutes: 5
+    steps:
+      - name: Checkout repository (for composite actions)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          show-progress: false
+
+      - name: Inspect repository_dispatch event
+        uses: ./.github/actions/inspect-dispatch-event
+
+      - name: Note parked state
+        shell: bash
+        run: |
+          echo "::notice title=dispatch-gate::repository_dispatch event acknowledged; source build + test fanout is paused. Remove the dispatch-gate guards in .github/workflows/ to re-enable."
+
+  # ===========================================================================
+  # Resolve the pytorch ref to build, once, before the matrix fans out. A PR
+  # number (if given) wins: we ask the GitHub API for its head SHA so the
+  # build pins to the exact commit (works for fork PRs too - the head commit
+  # is reachable via pytorch/pytorch's refs/pull/<n>/head). Otherwise fall
+  # back to `pytorch-ref` (defaulting to `nightly` for schedule runs, where
+  # the workflow_dispatch inputs are empty). The build records this SHA into
+  # built_pytorch_sha.txt; each test cell pins its own checkout to it.
+  # ===========================================================================
+  prep:
+    name: resolve pytorch ref
+    if: github.event_name != 'repository_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      pytorch-ref: ${{ steps.ref.outputs.pytorch-ref }}
+    steps:
+      - name: Resolve pytorch ref
+        id: ref
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ inputs.pytorch-pr }}
+          FALLBACK_REF: ${{ inputs.pytorch-ref || 'nightly' }}
+          PYTHON_VERSIONS: ${{ inputs.python-versions }}
+          CUDA_VERSIONS: ${{ inputs.cuda-versions }}
+          TEST_ARCHITECTURES: ${{ inputs.test-architectures }}
+        run: |
+          set -euo pipefail
+          if [ -n "${PR}" ]; then
+            if ! [[ "${PR}" =~ ^[0-9]+$ ]]; then
+              echo "::error::pytorch-pr must be a number, got '${PR}'." >&2
+              exit 1
+            fi
+            sha=$(gh api "repos/pytorch/pytorch/pulls/${PR}" -q '.head.sha')
+            if ! [[ "${sha}" =~ ^[0-9a-f]{40}$ ]]; then
+              echo "::error::Could not resolve head SHA for PR #${PR} (got '${sha}')." >&2
+              exit 1
+            fi
+            title=$(gh api "repos/pytorch/pytorch/pulls/${PR}" -q '.title')
+            echo "Resolved PR #${PR} -> ${sha} (${title})"
+            ref="${sha}"
+          else
+            ref="${FALLBACK_REF}"
+            echo "No PR given; using pytorch-ref='${ref}'"
+          fi
+          echo "pytorch-ref=${ref}" >> "$GITHUB_OUTPUT"
+          {
+            echo "## windows-rtx-build-test config"
+            echo ""
+            echo "| field | value |"
+            echo "| --- | --- |"
+            echo "| trigger | \`${{ github.event_name }}\` |"
+            echo "| pytorch-pr | \`${PR:-(none)}\` |"
+            echo "| pytorch-ref (resolved) | \`${ref}\` |"
+            echo "| python-versions | \`${PYTHON_VERSIONS:-(all)}\` |"
+            echo "| cuda-versions | \`${CUDA_VERSIONS:-(all)}\` |"
+            echo "| test-architectures | \`${TEST_ARCHITECTURES:-(all)}\` |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  build:
+    name: ${{ matrix.config.build_name }}-build
+    needs: prep
+    # TODO(dispatch-gate): remove this guard once relay-driven source
+    # builds are ready to run. Currently scheduled / manual runs only.
+    if: github.event_name != 'repository_dispatch'
+    strategy:
+      fail-fast: false
+      matrix:
+        # One entry per actual runner pairing. Add/remove a line to
+        # introduce/drop a (python, cuda) combination. The build job needs a
+        # machine labelled `[rtx-build, <python.label>, <cuda.label>]` per entry.
+        config: &config
+          - { python: { version: "3.12", label: "py312" }, cuda: { version: "13.0", label: "cu130" }, build_name: "wheel-py312-cu130" }
+          - { python: { version: "3.12", label: "py312" }, cuda: { version: "13.2", label: "cu132" }, build_name: "wheel-py312-cu132" }
+          # TODO: re-add Python 3.13 (py313 / cu132) to the matrix in the future.
+    uses: ./.github/workflows/_rtx-build.yml
+    with:
+      runner-base: rtx-build
+      python-version: ${{ matrix.config.python.version }}
+      python-label: ${{ matrix.config.python.label }}
+      cuda-version: ${{ matrix.config.cuda.version }}
+      cuda-label: ${{ matrix.config.cuda.label }}
+      cuda-arch-list: "8.9;12.0"
+      build-environment: win-rtx-cuda
+      pytorch-ref: ${{ needs.prep.outputs.pytorch-ref }}
+      # Must match the `wheel-artifact:` value passed to the paired test
+      # call below so the test job picks up exactly this build's wheel.
+      wheel-artifact: ${{ matrix.config.build_name }}-${{ github.run_id }}-${{ github.run_attempt }}
+      # Forward the dispatcher's subset filters; the reusable workflow's
+      # job-level `if:` evaluates them. Empty string = no filter.
+      python-versions: ${{ inputs.python-versions }}
+      cuda-versions: ${{ inputs.cuda-versions }}
+
+  test:
+    name: ${{ matrix.config.build_name }}-${{ matrix.arch.name }}-test
+    needs: build
+    # TODO(dispatch-gate): remove this guard once relay-driven testing is
+    # ready. With `needs: build` the test job would already inherit the
+    # skip via the build gate, but stating the gate explicitly makes the
+    # intent obvious at the job level.
+    if: github.event_name != 'repository_dispatch'
+    strategy:
+      fail-fast: false
+      matrix:
+        config: *config
+        arch:
+          - { name: sm89,  runner: rtx-40x0-test, arch_list: "8.9"  }
+          - { name: sm120, runner: rtx-50x0-test, arch_list: "12.0" }
+    uses: ./.github/workflows/_rtx-test.yml
+    with:
+      runner-base: ${{ matrix.arch.runner }}
+      python-version: ${{ matrix.config.python.version }}
+      python-label: ${{ matrix.config.python.label }}
+      cuda-version: ${{ matrix.config.cuda.version }}
+      cuda-label: ${{ matrix.config.cuda.label }}
+      cuda-arch-list: ${{ matrix.arch.arch_list }}
+      arch-name: ${{ matrix.arch.name }}
+      build-environment: win-rtx-${{ matrix.arch.name }}
+      test-config: "default"
+      wheel-artifact: ${{ matrix.config.build_name }}-${{ github.run_id }}-${{ github.run_attempt }}
+      # Forward the dispatcher's subset filters; the reusable workflow's
+      # job-level `if:` evaluates them. Empty string = no filter.
+      python-versions: ${{ inputs.python-versions }}
+      cuda-versions: ${{ inputs.cuda-versions }}
+      test-architectures: ${{ inputs.test-architectures }}
+
+  # ===========================================================================
+  # Post-test rollup. Runs once after every test cell/shard settles and
+  # renders a consolidated table of the test jobs that failed (with direct
+  # log links) into the run's step summary. Per-test-name detail lives in
+  # each shard's own summary (see `_rtx-test.yml`). Informational only:
+  # `if: always()` so it runs even when tests fail, and it never reports a
+  # non-zero status of its own - the test cells already carry red/green.
+  # Skipped under the parked repository_dispatch gate to match build/test.
+  # ===========================================================================
+  test-summary:
+    name: test-summary
+    needs: test
+    if: always() && github.event_name != 'repository_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout repository (for summary script)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          show-progress: false
+
+      - name: Aggregate failed test jobs
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh api --paginate \
+            "repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/attempts/${{ github.run_attempt }}/jobs" \
+            -q '.jobs[]' | jq -s '.' > jobs.json
+          python3 scripts/test-summary/aggregate_failures.py \
+            --jobs-json jobs.json \
+            --title "PyTorch test summary (run ${{ github.run_id }})" \
+            >> "$GITHUB_STEP_SUMMARY"

@@ -12,9 +12,9 @@ This project will require or download and install additional third-party open so
 | `actions/checkout@v4` | Check out this repository and `pytorch/pytorch` in GitHub Actions workflows. | MIT | Copyright (c) 2018 GitHub, Inc. and contributors | https://github.com/actions/checkout/blob/v4/LICENSE |
 | `actions/upload-artifact@v4` | Upload wheel, diagnostics, and test-report artifacts. | MIT | Copyright (c) 2018 GitHub, Inc. and contributors | https://github.com/actions/upload-artifact/blob/v4/LICENSE |
 | `actions/download-artifact@v4` | Download wheel artifacts from producer jobs. | MIT | Copyright (c) 2018 GitHub, Inc. and contributors | https://github.com/actions/download-artifact/blob/v4/LICENSE |
-| `electron/github-app-auth-action` | GitHub App authentication component declared in the OSRB request; not vendored in this repository. | MIT | Copyright (c) Contributors to the Electron project | https://github.com/electron/github-app-auth-action/blob/main/LICENSE |
-| `PyYAML` | YAML parser installed by `lint.yml` for local workflow validation. | MIT | Copyright (c) 2017-2021 Ingy d&ouml;t Net; Copyright (c) 2006-2016 Kirill Simonov | https://github.com/yaml/pyyaml/blob/main/LICENSE |
-| `check-jsonschema` | GitHub workflow schema validator installed by `lint.yml`. | Apache License 2.0 | Copyright 2021, Stephen Rosen | https://github.com/python-jsonschema/check-jsonschema/blob/main/LICENSE |
+| `electron/github-app-auth-action` | GitHub App authentication component evaluated as a potential dependency; not vendored in this repository. | MIT | Copyright (c) Contributors to the Electron project | https://github.com/electron/github-app-auth-action/blob/main/LICENSE |
+| `PyYAML` | YAML parser used for local workflow validation. | MIT | Copyright (c) 2017-2021 Ingy d&ouml;t Net; Copyright (c) 2006-2016 Kirill Simonov | https://github.com/yaml/pyyaml/blob/main/LICENSE |
+| `check-jsonschema` | GitHub workflow schema validator used for local workflow validation. | Apache License 2.0 | Copyright 2021, Stephen Rosen | https://github.com/python-jsonschema/check-jsonschema/blob/main/LICENSE |
 | `pytorch/pytorch` | Source tree checked out, built, installed, and tested by the CI workflows. This repository does not distribute PyTorch source or wheels. | BSD-style | See upstream license file for full PyTorch/Caffe2 attributions | https://github.com/pytorch/pytorch/blob/main/LICENSE |
 
 ## MIT License Text

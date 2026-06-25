@@ -97,7 +97,7 @@ jobs:
     runs-on: [rtx-build]
     timeout-minutes: 5
     steps:
-      - name: Checkout pytorch-oot-internal (for composite actions)
+      - name: Checkout repository (for composite actions)
         uses: actions/checkout@v4
         with:
           fetch-depth: 1
@@ -254,7 +254,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - name: Checkout pytorch-oot-internal (for summary script)
+      - name: Checkout repository (for summary script)
         uses: actions/checkout@v4
         with:
           fetch-depth: 1

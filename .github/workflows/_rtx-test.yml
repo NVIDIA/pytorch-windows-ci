@@ -195,7 +195,7 @@ jobs:
             exit 1
           fi
 
-      - name: Checkout pytorch-oot-internal (runner-diagnostics actions)
+      - name: Checkout repository (runner-diagnostics actions)
         uses: actions/checkout@v4
         with:
           path: oot

@@ -20,9 +20,11 @@ inputs:
       and unzipping at the workspace root restores the original layout.
     required: true
   server-url:
-    description: "Base URL of the internal artifact server (no trailing slash)."
-    required: false
-    default: "http://10.104.227.223"
+    description: >
+      Base URL of the artifact server (no trailing slash). No default is
+      shipped; pass it explicitly, e.g. from a repository variable such as
+      `${{ vars.ARTIFACT_SERVER_URL }}`.
+    required: true
 
 runs:
   using: "composite"

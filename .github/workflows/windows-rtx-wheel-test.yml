@@ -18,7 +18,6 @@ name: windows-rtx-wheel-test
 # same day.
 #
 # Counterparts:
-#   - relay-handshake.yml              -> RFC-0050 handshake (no compute, off)
 #   - windows-rtx-build-test.yml           -> full source build + test (scheduled + manual)
 #
 # Shape - one test job, 2-D matrix:
@@ -142,7 +141,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - name: Checkout pytorch-oot-internal (for summary script)
+      - name: Checkout repository (for summary script)
         uses: actions/checkout@v4
         with:
           fetch-depth: 1

@@ -230,7 +230,7 @@ Pipe the JSONL files through `jq` / `pandas` to plot pressure around a failure.
 | --- | --- |
 | Downstream CI on real PR-time events | `windows-rtx-build-test.yml` (the `pytorch-pr-trigger` `repository_dispatch` arm is parked: its trigger is disabled in `on:` and the dispatch-gated jobs stay dormant) |
 | `concurrency: upstream-pr-<pr_number>` | `windows-rtx-build-test.yml` keys `concurrency.group` on `client_payload.pr_number` when present |
-| `pytorch/actions/checkout-pr@v1` (RFC Action #1) | Used as-is in `_rtx-build.yml` for `repository_dispatch`; falls back to `actions/checkout@v4` against `pytorch/pytorch@<ref>` for schedule / manual runs |
+| `pytorch/actions/checkout-pr@v1` (RFC Action #1) | Used as-is in `_rtx-build.yml` for `repository_dispatch`; falls back to `actions/checkout@v4` against `pytorch/pytorch@<ref>` for scheduled runs |
 
 ## Repository layout
 

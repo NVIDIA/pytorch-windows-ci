@@ -14,9 +14,7 @@ Out-of-tree (OOT) GitHub Actions CI that builds and tests
 This repository hosts the GitHub Actions workflows that build and test PyTorch
 on NVIDIA's self-hosted Windows + RTX runner pool. It implements the downstream
 half of [RFC-0050: Cross-Repository CI Relay for PyTorch Out-of-Tree
-Backends](https://github.com/pytorch/rfcs/blob/master/RFC-0050-Cross-Repository-CI-Relay-for-PyTorch-Out-of-Tree-Backends.md)
-and mirrors the in-tree shape of `pytorch/pytorch` PR
-[#176678](https://github.com/pytorch/pytorch/pull/176678).
+Backends](https://github.com/pytorch/rfcs/blob/master/RFC-0050-Cross-Repository-CI-Relay-for-PyTorch-Out-of-Tree-Backends.md).
 
 Upstream covers a single configuration (Python 3.12, CUDA 12.8); this repo
 deliberately expands the matrix to catch regressions across multiple Python and
@@ -35,7 +33,7 @@ be triggered on demand from the GitHub **Actions** tab:
 
 - **`windows-rtx-build-test.yml`** — full source build + test (nightly, plus
   manual `workflow_dispatch`).
-- **`windows-rtx-wheel-test.yml`** — nightly published-wheel smoke test.
+- **`windows-rtx-wheel-test.yml`** — nightly published-wheel test.
 
 To run one manually:
 
@@ -110,7 +108,6 @@ Discussion happens through GitHub issues and pull requests on this repository.
 # References
 
 - [RFC-0050: Cross-Repository CI Relay for PyTorch Out-of-Tree Backends](https://github.com/pytorch/rfcs/blob/master/RFC-0050-Cross-Repository-CI-Relay-for-PyTorch-Out-of-Tree-Backends.md)
-- [pytorch/pytorch PR #176678 — \[CI\]\[Windows\] Add NVIDIA RTX workflow](https://github.com/pytorch/pytorch/pull/176678)
 - [pytorch/pytorch](https://github.com/pytorch/pytorch)
 - [Detailed CI architecture & reference](docs/ci-details.md)
 

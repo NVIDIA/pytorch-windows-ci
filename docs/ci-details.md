@@ -26,21 +26,13 @@ There are no GitHub-hosted (cloud) runs anywhere in this repo.
 
 ## Triggering workflows
 
-The two top-level workflows run automatically on a nightly `schedule` and can
-also be triggered on demand from the GitHub **Actions** tab via
-`workflow_dispatch`:
+The two top-level workflows run automatically on a nightly `schedule`:
 
 - **`windows-rtx-build-test.yml`** — full source build + test (nightly at
-  `0 3 * * *` / 08:30 IST). A manual run can narrow the matrix with the
-  `python-versions`, `cuda-versions`, and `test-architectures` subset inputs
-  (single value = one cell) and target a specific `pytorch-ref` or `pytorch-pr`.
+  `0 3 * * *` / 08:30 IST).
 - **`windows-rtx-wheel-test.yml`** — nightly published-wheel smoke test
   (`0 17 * * *` / 22:30 IST), installing the matching `download.pytorch.org`
   nightly wheel rather than building from source.
-
-To run one manually: open **Actions → (workflow) → Run workflow**, optionally
-fill in the subset inputs, and dispatch. Cells excluded by a subset filter
-still appear in the UI in the `skipped` state, leaving an audit trail.
 
 ## Runner requirements
 
@@ -83,8 +75,8 @@ the sm120 test cell for Python 3.13 + CUDA 13.0 needs an image registered as
 
 | Workflow | Purpose | Triggers | Compute |
 | --- | --- | --- | --- |
-| `windows-rtx-wheel-test.yml`           | Each test cell checks out `pytorch/pytorch` at `pytorch-ref` (default `nightly`) via `actions/checkout@v4` (which resolves the branch to a concrete commit), records the actual HEAD SHA + commit date into the cell's job summary, then greps `download.pytorch.org/whl/nightly/torch/` for the wheel whose filename carries that exact `devYYYYMMDD` tag together with the matrix `cu<label>` / `cp<pyshort>` tags and `pip install`s the resolved absolute URL before running `.ci/pytorch/win-test.sh`. Fails fast if no matching wheel exists, so the wheel under test always shares its commit date with the pytorch source on disk. No preflight job, no artifact transit. | `schedule` (`0 17 * * *` = 22:30 IST), `workflow_dispatch` | `_rtx-test.yml` (sm89 + sm120 in one matrix) |
-| `windows-rtx-build-test.yml`            | Full source build (multi-arch wheel) + test, scheduled nightly and on-demand. Manual runs can narrow the matrix via subset filters (single value = one cell) and target a `pytorch-ref` or `pytorch-pr` (head SHA resolved automatically). Also carries the parked path for real RFC-0050 PR-time events. | `schedule` (`0 3 * * *` = 08:30 IST), `workflow_dispatch` | `prep` -> `_rtx-build.yml` -> `_rtx-test.yml` (sm89 + sm120 in one matrix) |
+| `windows-rtx-wheel-test.yml`           | Each test cell checks out `pytorch/pytorch` at `pytorch-ref` (default `nightly`) via `actions/checkout@v4` (which resolves the branch to a concrete commit), records the actual HEAD SHA + commit date into the cell's job summary, then greps `download.pytorch.org/whl/nightly/torch/` for the wheel whose filename carries that exact `devYYYYMMDD` tag together with the matrix `cu<label>` / `cp<pyshort>` tags and `pip install`s the resolved absolute URL before running `.ci/pytorch/win-test.sh`. Fails fast if no matching wheel exists, so the wheel under test always shares its commit date with the pytorch source on disk. No preflight job, no artifact transit. | `schedule` (`0 17 * * *` = 22:30 IST) | `_rtx-test.yml` (sm89 + sm120 in one matrix) |
+| `windows-rtx-build-test.yml`            | Full source build (multi-arch wheel) + test, scheduled nightly. Also carries the parked path for real RFC-0050 PR-time events. | `schedule` (`0 3 * * *` = 08:30 IST) | `prep` -> `_rtx-build.yml` -> `_rtx-test.yml` (sm89 + sm120 in one matrix) |
 
 Both nightly workflows fan out across `(config)` for builds and
 `(config x arch)` for tests. **Sharding is not a top-level axis on either
@@ -158,7 +150,7 @@ inputs the orchestrator provided:
 | Install path | When | Required inputs | Checkout ref from | Install source |
 | --- | --- | --- | --- | --- |
 | **artifact** (path A) | source build | `wheel-artifact` | SHA in `built_pytorch_sha.txt` inside the artifact | `pip install ./artifact/*.whl` |
-| **pip-index** (path B) | nightly wheel | `pytorch-ref` (+ optional `wheel-index-url`, default `https://download.pytorch.org/whl/nightly/torch/`) | `pytorch-ref` passed verbatim (typically `nightly`); `actions/checkout@v4` resolves it | Wheel URL grepped from the index by checked-out commit's `devYYYYMMDD` + matrix `cu<label>` / `cp<pyshort>` tags |
+| **pip-index** (path B) | nightly wheel | `pytorch-ref` (wheel index `https://download.pytorch.org/whl/nightly/torch/`) | `pytorch-ref` passed verbatim (typically `nightly`); `actions/checkout@v4` resolves it | Wheel URL grepped from the index by checked-out commit's `devYYYYMMDD` + matrix `cu<label>` / `cp<pyshort>` tags |
 
 In both paths the test job records the actual `git rev-parse HEAD` + commit date
 of the checkout into its Step Summary, so each cell logs "what nightly did I
@@ -174,8 +166,7 @@ to an older wheel that disagrees with the source tree on disk.
 
 ## Default matrix
 
-`config` (paired entries — each one corresponds to a real allocated runner;
-add/remove entries to match the runner pool):
+`config` (paired entries — each one corresponds to a real allocated runner):
 
 | python | cuda toolkit | python-label | cuda-label |
 | --- | --- | --- | --- |
@@ -197,72 +188,6 @@ fanout) - no preflight, no per-cell wheel producer.
 sm120), and `runner-base` likewise (`rtx-40x0-test` vs `rtx-50x0-test`). The
 build wheel itself is multi-arch (`8.9;12.0`) so a single producer feeds both
 architectures.
-
-## Customising the matrix
-
-Each orchestrator has at most two jobs - `build` and `test`. The orchestrator's
-test matrix is 2-dimensional (`config x arch`); the shard fanout lives one layer
-down in `_rtx-test.yml`:
-
-```yaml
-# Orchestrator (windows-rtx-build-test.yml / windows-rtx-wheel-test.yml)
-matrix:
-  config:                      # paired {python, cuda} entries; each one
-    - { python: { version: "3.12", label: "py312" },  #   corresponds to an actual allocated
-        cuda:   { version: "13.0", label: "cu130" },  #   runner. Add/remove lines freely.
-        build_name: "wheel-py312-cu130" }
-    - { python: { version: "3.12", label: "py312" },
-        cuda:   { version: "13.2", label: "cu132" },
-        build_name: "wheel-py312-cu132" }
-    # ... etc
-  arch:                        # 2 entries, each carries runner-base
-    - { name: sm89,  runner: rtx-40x0-test, arch_list: "8.9"  }
-    - { name: sm120, runner: rtx-50x0-test, arch_list: "12.0" }
-
-# _rtx-test.yml (reusable; one call per orchestrator test cell)
-strategy:
-  matrix:
-    shard: [1, 2, 3, 4, 5]     # 5 shards per (config, arch); NUM_TEST_SHARDS env is "5"
-```
-
-In `windows-rtx-build-test.yml`, the `config` list is declared on the `build`
-job (`&config` anchor) and re-used on the `test` job (`*config`). In
-`windows-rtx-wheel-test.yml` the list lives directly on the `test` job since
-there is no build to share it with.
-
-To add or remove cells:
-
-- **config axis** (a python+cuda pairing): edit the `config:` list in one place
-  per orchestrator. Each entry is `{ python: {version, label}, cuda: {version,
-  label}, build_name: ... }`. Because the matrix enumerates only the pairings you
-  put in, dropping an unsupported combination (say `py313` + `cu130` if no
-  machine for it exists) is just a line delete - no `exclude:` clause needed.
-- **arch axis**: edit the `arch:` list on the `test` job. Each entry is a
-  `{ name, runner, arch_list }` triple - `runner` becomes the fourth runner
-  label, `arch_list` becomes `TORCH_CUDA_ARCH_LIST` for that cell.
-- **shard count**: edit `_rtx-test.yml` in two places - the
-  `strategy.matrix.shard` list and the `NUM_TEST_SHARDS` env literal.
-  Orchestrators are agnostic to the shard count.
-- **per-event matrix filters** (`workflow_dispatch` only): both orchestrators
-  expose three comma-separated subset inputs and forward them verbatim via
-  `with:` to the called reusable workflows (`_rtx-build.yml` / `_rtx-test.yml`),
-  whose own job-level `if:` performs the match against the cell's own
-  `python-version`, `cuda-version`, and `arch-name` inputs. The filter lives one
-  layer down because GitHub Actions disallows `matrix.*` in the `if:` of a job
-  that calls a reusable workflow. Schedule and `repository_dispatch` runs always
-  cover every cell (the orchestrator forwards the empty string, which disables
-  the corresponding filter dimension in the reusable workflow).
-
-  | Input | Default | Filters |
-  | --- | --- | --- |
-  | `python-versions`    | `3.12,3.13`   | `build` + `test` (matches the cell's `python-version`) |
-  | `cuda-versions`      | `13.0,13.2`   | `build` + `test` (matches the cell's `cuda-version`)   |
-  | `test-architectures` | `sm89,sm120`  | `test` only (matches the cell's `arch-name`)           |
-
-  Cells dropped by the filter show up in the GitHub UI with their inner
-  reusable-workflow job in the "skipped" state, so a manual run that only covered
-  py3.12 / cu13.0 still leaves an audit trail of every other slot as "this cell
-  exists, was deliberately not exercised".
 
 ## Test environment variables
 
@@ -298,9 +223,6 @@ monitor.log          start / stop bookends + sample count
 ```
 
 Pipe the JSONL files through `jq` / `pandas` to plot pressure around a failure.
-To tune the interval or relocate the output dir, edit the `with:` block in
-`_rtx-test.yml` (`start-runner-diagnostics` accepts `interval-seconds` and
-`output-dir` inputs).
 
 ## RFC-0050 mapping
 
@@ -308,7 +230,7 @@ To tune the interval or relocate the output dir, edit the `with:` block in
 | --- | --- |
 | Downstream CI on real PR-time events | `windows-rtx-build-test.yml` (the `pytorch-pr-trigger` `repository_dispatch` arm is parked: its trigger is disabled in `on:` and the dispatch-gated jobs stay dormant) |
 | `concurrency: upstream-pr-<pr_number>` | `windows-rtx-build-test.yml` keys `concurrency.group` on `client_payload.pr_number` when present |
-| `pytorch/actions/checkout-pr@v1` (RFC Action #1) | Used as-is in `_rtx-build.yml` for `repository_dispatch`; falls back to `actions/checkout@v4` against `pytorch/pytorch@<ref>` for schedule / manual runs |
+| `pytorch/actions/checkout-pr@v1` (RFC Action #1) | Used as-is in `_rtx-build.yml` for `repository_dispatch`; falls back to `actions/checkout@v4` against `pytorch/pytorch@<ref>` for scheduled runs |
 
 ## Repository layout
 
@@ -316,7 +238,7 @@ To tune the interval or relocate the output dir, edit the `with:` block in
 .github/
   workflows/
     windows-rtx-wheel-test.yml           # nightly published-wheel smoke
-    windows-rtx-build-test.yml            # full source build + test (scheduled + manual/PR)
+    windows-rtx-build-test.yml            # full source build + test (scheduled; parked PR path)
     _rtx-build.yml                   # reusable: build source (.ci/pytorch/win-build.sh), uploads wheel artifact
     _rtx-test.yml                    # reusable: test a wheel (artifact OR pip-index install path)
   actions/
@@ -327,11 +249,4 @@ To tune the interval or relocate the output dir, edit the `with:` block in
 scripts/
   runner-diagnostics/
     monitor.ps1                      # background sampler (host + GPU JSONL)
-```
-
-## Local workflow validation
-
-```bash
-python -m pip install "PyYAML>=6" "check-jsonschema>=0.29"
-check-jsonschema --builtin-schema vendor.github-workflows .github/workflows/*.yml
 ```

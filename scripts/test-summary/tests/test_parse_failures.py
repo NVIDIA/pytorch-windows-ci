@@ -290,6 +290,24 @@ def test_log_runtest_failed_marker(tmp_path):
     assert failure.name == "test_distributed"
 
 
+def test_log_runtest_failed_marker_with_progress_token(tmp_path):
+    # run_test.py prints an ``<index>/<total>`` token before ``failed!`` for
+    # per-file failures (e.g. a cpp-extension build that dies before any
+    # JUnit <testcase> is written). The marker must still be recognised.
+    _write(
+        tmp_path,
+        "run.log",
+        "cpp_extensions/test_libtorch_agnostic 1/1 failed!\n",
+    )
+
+    result = pf.collect(tmp_path)
+
+    assert len(result.failures) == 1
+    failure = result.failures[0]
+    assert failure.kind == "error"
+    assert failure.name == "test_libtorch_agnostic"
+
+
 def test_log_ignores_generic_failed_prose(tmp_path):
     # "assertion failed" must not be mistaken for a failed test file.
     _write(tmp_path, "run.log", "assertion failed\nbuild step failed!\n")

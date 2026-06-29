@@ -57,9 +57,13 @@ _LOG_INLINE = re.compile(
 # Only used to reconcile flaky reruns (fail on one attempt, pass on a later
 # one); it never adds a failure.
 _LOG_PASSED = re.compile(r"(?P<nodeid>\S+\.py(?:::\S+)?)\s+PASSED\b")
-# run_test.py per-file marker: ``test_foo failed!`` (the ``test`` guard in
-# the caller keeps this from matching generic ``... failed`` prose).
-_LOG_RUNTEST = re.compile(r"^(?P<file>[\w./\\-]+)\s+failed!?\s*$")
+# run_test.py per-file marker. Two observed forms:
+#   ``test_foo failed!``                                  (bare)
+#   ``cpp_extensions/test_libtorch_agnostic 1/1 failed!``  (with the
+#     ``<index>/<total>`` progress token run_test.py prints per file).
+# The optional ``\d+/\d+`` group absorbs that token; the ``test`` guard in
+# the caller keeps this from matching generic ``... failed`` prose.
+_LOG_RUNTEST = re.compile(r"^(?P<file>[\w./\\-]+)(?:\s+\d+/\d+)?\s+failed!?\s*$")
 
 
 @dataclass(frozen=True)

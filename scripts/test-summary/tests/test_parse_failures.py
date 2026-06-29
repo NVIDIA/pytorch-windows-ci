@@ -429,8 +429,70 @@ def test_skipped_rerun_does_not_cancel_failure(tmp_path):
 
 
 # --------------------------------------------------------------------------
+# Collected / passed / failed / skipped totals
+# --------------------------------------------------------------------------
+def test_totals_pass_fail_skip(tmp_path):
+    # FAILING_REPORT has one failure, one error, and one skipped case.
+    _write(tmp_path, "report.xml", FAILING_REPORT)
+
+    result = pf.collect(tmp_path)
+
+    assert result.failed_count == 2
+    assert result.skipped_count == 1
+    assert result.passed_count == 0
+    assert result.total_count == 3
+
+
+def test_totals_count_passing_report(tmp_path):
+    _write(tmp_path, "ok.xml", PASSING_REPORT)
+
+    result = pf.collect(tmp_path)
+
+    assert result.passed_count == 1
+    assert result.failed_count == 0
+    assert result.skipped_count == 0
+    assert result.total_count == 1
+
+
+def test_totals_rerun_pass_counts_as_passed(tmp_path):
+    # Fail-then-pass in one report: reconciled to a pass, so it counts as a
+    # single passing test and never as a failure.
+    _write(tmp_path, "rerun.xml", RERUN_THEN_PASS_REPORT)
+
+    result = pf.collect(tmp_path)
+
+    assert result.failed_count == 0
+    assert result.passed_count == 1
+    assert result.skipped_count == 0
+    assert result.total_count == 1
+
+
+def test_totals_dedupe_across_reports(tmp_path):
+    # The same passing test in two reports is one distinct passing test.
+    _write(tmp_path, "a.xml", PASSING_REPORT)
+    _write(tmp_path, "b.xml", PASSING_REPORT)
+
+    result = pf.collect(tmp_path)
+
+    assert result.passed_count == 1
+    assert result.total_count == 1
+
+
+# --------------------------------------------------------------------------
 # Rendering
 # --------------------------------------------------------------------------
+def test_render_markdown_includes_totals_line(tmp_path):
+    _write(tmp_path, "report.xml", FAILING_REPORT)
+    result = pf.collect(tmp_path)
+
+    out = pf.render_markdown(result, "Title", 200)
+
+    assert "3 test(s) collected:" in out
+    assert "0 passed" in out
+    assert "2 failed/errored" in out
+    assert "1 skipped" in out
+
+
 def test_render_markdown_includes_module(tmp_path):
     _write(tmp_path, "aoti.xml", AOTI_REPORT)
     result = pf.collect(tmp_path)

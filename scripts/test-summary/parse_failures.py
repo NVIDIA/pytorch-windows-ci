@@ -134,6 +134,11 @@ class ScanResult:
     xml_itemized: int = 0
     reported_failures: int = 0
     logs_scanned: int = 0
+    # Unique ``Failure.dedup_key`` identities seen passing / skipped in JUnit
+    # XML ``<testcase>`` records. Used only for the collected/passed/skipped
+    # totals; the failure list itself is unaffected.
+    passed_keys: set[tuple[str, str, str]] = field(default_factory=set)
+    skipped_keys: set[tuple[str, str, str]] = field(default_factory=set)
 
     @property
     def scanned_anything(self) -> bool:
@@ -148,6 +153,35 @@ class ScanResult:
         another crash signature.
         """
         return max(0, self.reported_failures - self.xml_itemized)
+
+    @property
+    def _failed_keys(self) -> set[tuple[str, str, str]]:
+        return {f.dedup_key for f in self.failures}
+
+    @property
+    def failed_count(self) -> int:
+        """Reconciled failing/errored items (matches the rendered table)."""
+        return len(self.failures)
+
+    @property
+    def passed_count(self) -> int:
+        """Unique tests that passed and are not counted as a failure.
+
+        Best-effort and XML-derived: run logs do not reliably enumerate every
+        passing test, so passes/skips are tallied from JUnit ``<testcase>``
+        records only.
+        """
+        return len(self.passed_keys - self._failed_keys)
+
+    @property
+    def skipped_count(self) -> int:
+        """Unique skipped tests that neither passed nor failed elsewhere."""
+        return len(self.skipped_keys - self._failed_keys - self.passed_keys)
+
+    @property
+    def total_count(self) -> int:
+        """Distinct tests accounted for: passed + failed + skipped."""
+        return self.passed_count + self.failed_count + self.skipped_count
 
 
 def _first_line(text: str | None, limit: int = 200) -> str:
@@ -329,7 +363,12 @@ def _collect_xml(
                 result.xml_itemized += 1
                 sink.add(failure, prefer_error=True)
             elif _case_passed(case):
-                passed.add(_testcase_key(case))
+                key = _testcase_key(case)
+                passed.add(key)
+                result.passed_keys.add(key)
+            else:
+                # Neither failed nor a clean pass -> a ``<skipped>`` case.
+                result.skipped_keys.add(_testcase_key(case))
 
         # Collection / import errors are emitted as direct children of
         # ``<testsuite>`` (not wrapped in a ``<testcase>``).
@@ -433,6 +472,16 @@ def collect(reports_dir: Path, *, parse_logs: bool = True) -> ScanResult:
     return result
 
 
+def _totals_line(result: ScanResult) -> str:
+    """One-line passed/failed/skipped tally over the distinct tests seen."""
+    return (
+        f"**{result.total_count} test(s) collected:** "
+        f"{result.passed_count} passed, "
+        f"{result.failed_count} failed/errored, "
+        f"{result.skipped_count} skipped."
+    )
+
+
 def render_markdown(result: ScanResult, title: str, max_rows: int) -> str:
     """Render a :class:`ScanResult` as a Markdown section."""
     lines = [f"## {title}", ""]
@@ -440,6 +489,9 @@ def render_markdown(result: ScanResult, title: str, max_rows: int) -> str:
     if not result.scanned_anything:
         lines.append("No test report XML files or run logs were found.")
         return "\n".join(lines) + "\n"
+
+    lines.append(_totals_line(result))
+    lines.append("")
 
     notes: list[str] = []
     if result.xml_unparsable:

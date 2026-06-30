@@ -179,6 +179,14 @@ jobs:
       VC_VERSION: ""
       PYTORCH_TEST_WITH_SLOW: "0"
       CI: "1"
+      # Short physical path the pytorch checkout is relocated to right after
+      # checkout. The runner workspace lives at
+      #   C:\actions-runner\_work\pytorch-windows-ci\pytorch-windows-ci\pytorch
+      # (the repo name is doubled), so test-time cpp_extension builds write
+      # object/dep files ~290 chars deep and blow past Windows MAX_PATH (260).
+      # Relocating to C:\pt strips ~60 chars off every derived path. See the
+      # "Relocate pytorch checkout" step for the full rationale.
+      PT_ROOT: 'C:\pt'
     steps:
       - name: Validate install-path inputs
         shell: bash
@@ -199,8 +207,9 @@ jobs:
       # submodule checkout of pytorch/pytorch (third_party/.../pybind11/...)
       # never trips the 260-char MAX_PATH during `git checkout`. No admin
       # needed (--global writes the runner user's gitconfig), unlike the
-      # registry LongPathsEnabled flag - and it covers the checkout that the
-      # test-step `subst` mitigation below cannot reach.
+      # registry LongPathsEnabled flag. This covers `git` itself; the
+      # MAX_PATH that the test-time compilers (cl/nvcc) hit is handled
+      # separately by relocating the checkout to C:\pt (see that step).
       - name: Enable git long paths
         shell: bash
         run: git config --global core.longpaths true
@@ -247,10 +256,49 @@ jobs:
           fetch-depth: 1
           show-progress: true
 
+      # Windows MAX_PATH (260) mitigation, root cause fix. The runner image
+      # already sets the LongPathsEnabled registry flag (packer
+      # win_build_setup/tools.ps1), but that does NOT help the test-time
+      # cpp_extension builds (test_libtorch_agnostic, test_python_agnostic,
+      # ...): nvcc does not support paths over MAX_PATH at all (per the CUDA
+      # docs), and cl's long-path opt-in does not cover every output path the
+      # ninja/setuptools build constructs. setuptools writes each object to
+      #   <ext>\build\temp.win-amd64-cpython-312\Release\<ABSOLUTE-SOURCE-PATH>
+      # i.e. the already-deep workspace path doubled, so cl fails "C1083:
+      # Cannot open compiler generated file" and nvcc "Could not open output
+      # file ...obj.d". The only reliable fix is a genuinely SHORTER physical
+      # path - not a `subst` alias, which setuptools' os.path.realpath()
+      # canonicalises straight back to the long physical path.
+      #
+      # So move the whole checkout out of the doubled-name workspace into
+      # C:\pt. Same-volume `move` is an atomic rename (no per-file MAX_PATH
+      # traversal), pytorch's submodule .git links are relative so they stay
+      # valid, and win-test.sh derives PROJECT_DIR/TMP_DIR/TEST_DIR purely
+      # from $PWD (it never reads $GITHUB_WORKSPACE), so running the harness
+      # from C:\pt shortens every downstream object/dep path for real. C:\pt
+      # lives outside the workspace, so clear any leftover from a previous job
+      # on this persistent runner first (robocopy /MIR empties deep trees
+      # without itself hitting MAX_PATH).
+      - name: Relocate pytorch checkout to a short path (MAX_PATH mitigation)
+        shell: cmd
+        run: |
+          if exist "%PT_ROOT%" (
+            mkdir "%PT_ROOT%_empty" 2>nul
+            robocopy "%PT_ROOT%_empty" "%PT_ROOT%" /MIR /NFL /NDL /NJH /NJS /NP >nul
+            rmdir /s /q "%PT_ROOT%"
+            rmdir /s /q "%PT_ROOT%_empty"
+          )
+          move "%GITHUB_WORKSPACE%\pytorch" "%PT_ROOT%"
+          if errorlevel 1 (
+            echo ::error::Failed to relocate pytorch checkout to %PT_ROOT%
+            exit /b 1
+          )
+          echo Relocated pytorch checkout to %PT_ROOT%
+
       - name: Record pytorch HEAD (SHA + commit date)
         id: head
         shell: bash
-        working-directory: pytorch
+        working-directory: ${{ env.PT_ROOT }}
         run: |
           set -euo pipefail
           sha=$(git rev-parse HEAD)
@@ -328,52 +376,15 @@ jobs:
         run: |
           set -euo pipefail
           python "${GITHUB_WORKSPACE}/oot/scripts/test-stats/seed_test_stats.py" \
-            --pytorch-root "${GITHUB_WORKSPACE}/pytorch"
+            --pytorch-root "${{ env.PT_ROOT }}"
 
       - name: Start runner diagnostics
         id: diag
         uses: ./oot/.github/actions/start-runner-diagnostics
 
-      # Windows MAX_PATH mitigation. The test-time cpp_extension builds
-      # (test_libtorch_agnostic, test_python_agnostic, ...) make setuptools
-      # write every object to
-      #   <ext>\build\temp.win-amd64-cpython-312\Release\<ABSOLUTE-SOURCE-PATH>
-      # i.e. the already-deep workspace path *doubled* (287/294 chars measured
-      # from this _work\pytorch-windows-ci\pytorch-windows-ci\pytorch\ layout),
-      # which blows past the 260-char MAX_PATH so cl fails "C1083: Cannot open
-      # compiler generated file: '': Invalid argument" and nvcc fails "Could
-      # not open output file ...obj.d".
-      #
-      # The runner image already sets the LongPathsEnabled registry flag
-      # (packer win_build_setup/tools.ps1), yet BOTH compilers still fail here:
-      # cl's long-path opt-in does not cover every output path it constructs in
-      # this ninja/setuptools build, and nvcc does not support paths over
-      # MAX_PATH at all (per the CUDA nvcc docs). So the registry flag is a
-      # no-op for this failure - the only reliable fix is a SHORTER path. Alias
-      # the checkout to a short virtual drive with `subst` here, then run the
-      # harness from that drive (next step) so the absolute paths Python
-      # derives from each test file's __file__ - and the object paths under
-      # them - stay short. Done in `cmd` (not bash) to avoid MSYS mangling the
-      # drive/path args; `subst` persists for the rest of the runner session.
-      # The drive is just an alias for the same directory, so the parser and
-      # artifact upload still read the real (long) path afterwards.
-      - name: Map pytorch to a short drive (MAX_PATH mitigation)
-        shell: cmd
-        working-directory: pytorch
-        run: |
-          for %%D in (Y Z X W V U T R Q P N M L) do (
-            subst %%D: "%CD%" >nul 2>&1 && (
-              echo PT_DRIVE=%%D>>"%GITHUB_ENV%"
-              echo Mapped %%D: to %CD%
-              goto :done
-            )
-          )
-          echo ::warning::Could not map a short drive via subst; cpp_extension builds may hit MAX_PATH.
-          :done
-
       - name: Run PyTorch Windows test suite
         shell: bash
-        working-directory: pytorch
+        working-directory: ${{ env.PT_ROOT }}
         env:
           # ---- sharding (consumed by .ci/pytorch/win-test.sh -> test/run_test.py)
           SHARD_NUMBER: ${{ matrix.shard }}
@@ -406,25 +417,16 @@ jobs:
         # scanned/uploaded tree - making whole-file failures invisible to the
         # summary even though the job correctly goes red.
         #
-        # The previous step mapped a short virtual drive (exported as
-        # $PT_DRIVE) onto this checkout to dodge Windows MAX_PATH in the
-        # test-time cpp_extension builds (see that step for the full rationale).
-        # Run the harness from that drive in a subshell so the object paths the
-        # build derives from each test file's __file__ stay short, while `tee`
-        # keeps writing to the real (long-path) test-reports tree that the
-        # parser and artifact upload read. Falls back to the full path if no
-        # drive could be mapped.
+        # The checkout was relocated to C:\pt (see "Relocate pytorch checkout")
+        # so this working directory - and every object/dep path win-test.sh
+        # derives from $PWD - stays well under MAX_PATH. No subst/drive aliasing
+        # is needed (and would not work: setuptools' realpath() canonicalises
+        # aliases back to the long physical path).
         run: |
           set -o pipefail
           mkdir -p test/test-reports
 
-          run_root="."
-          if [ -n "${PT_DRIVE:-}" ]; then
-            run_root="/$(printf '%s' "$PT_DRIVE" | tr 'A-Z' 'a-z')"
-            echo "MAX_PATH mitigation: running harness from ${run_root} (${PT_DRIVE}: -> $(pwd -W))"
-          fi
-
-          ( cd "$run_root" && bash .ci/pytorch/win-test.sh ) 2>&1 \
+          bash .ci/pytorch/win-test.sh 2>&1 \
             | tee "test/test-reports/run_test_shard${SHARD_NUMBER}.log"
 
       - name: Stop runner diagnostics
@@ -444,7 +446,7 @@ jobs:
         shell: bash
         run: |
           python "${GITHUB_WORKSPACE}/oot/scripts/test-summary/parse_failures.py" \
-            --reports-dir "${GITHUB_WORKSPACE}/pytorch/test" \
+            --reports-dir "${{ env.PT_ROOT }}/test" \
             --title "Failed tests - ${{ inputs.build-environment }} - ${{ inputs.python-label }}/${{ inputs.cuda-label }} - ${{ inputs.arch-name }} - shard ${{ matrix.shard }}/5" \
             >> "$GITHUB_STEP_SUMMARY"
 
@@ -469,6 +471,6 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: test-reports-${{ inputs.build-environment }}-${{ inputs.python-label }}-${{ inputs.cuda-label }}-${{ inputs.arch-name }}-shard${{ matrix.shard }}-${{ github.run_id }}-${{ github.run_attempt }}
-          path: pytorch/test/test-reports/**
+          path: ${{ env.PT_ROOT }}/test/test-reports/**
           if-no-files-found: warn
           retention-days: 14

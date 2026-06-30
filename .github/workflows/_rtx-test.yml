@@ -350,8 +350,17 @@ jobs:
         # (hard crashes, collection/import errors, whole-file aborts). The
         # log rides along in the uploaded test-reports artifact too.
         # `pipefail` keeps the test step's real exit code despite the pipe.
+        #
+        # `test-reports/` must be created up front: win-test.sh / run_test.py
+        # only create it once tests start, so without this mkdir `tee` fails
+        # with "No such file or directory", silently writes nothing, and the
+        # parent run_test.py output (including the `<file> N/M failed!`
+        # markers and the final failed-tests summary) never reaches the
+        # scanned/uploaded tree - making whole-file failures invisible to the
+        # summary even though the job correctly goes red.
         run: |
           set -o pipefail
+          mkdir -p test/test-reports
           bash .ci/pytorch/win-test.sh 2>&1 \
             | tee "test/test-reports/run_test_shard${SHARD_NUMBER}.log"
 

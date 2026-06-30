@@ -469,10 +469,16 @@ def collect(reports_dir: Path, *, parse_logs: bool = True) -> ScanResult:
     failing test (pytest ``--reruns`` with ``--junit-xml-reruns`` records
     each attempt in one report, and whole-process stepcurrent retries write a
     fresh report while leaving the failing one behind), so a test that fails
-    an early attempt but passes a later one appears as *both* a failing and a
-    passing record for the same ``(module, class, name)``. CI scores such a
-    test as a pass, so any failure whose test was also seen passing - in any
-    report or log - is dropped.
+    an early attempt but recovers on a later one appears as *both* a failing
+    and a recovered record for the same ``(module, class, name)``. A later
+    attempt counts as recovered when it either **passes** (clean XML case or
+    a ``PASSED`` log line) or is **skipped** in XML - e.g. a profiler test
+    that errors with "External init callback ..." on a crashed attempt and is
+    then ``@skipCUDAIf`` skipped on the clean rerun. CI scores such a test
+    green, so any failure whose test was also seen passing or skipped is
+    dropped. Skip recovery is strictly key-scoped: a ``<skipped>`` case only
+    cancels a failure for the *same* test, never a sibling (a different test
+    being skipped must not mask a real failure).
     """
     result = ScanResult()
     sink = _FailureSink()
@@ -480,7 +486,8 @@ def collect(reports_dir: Path, *, parse_logs: bool = True) -> ScanResult:
     _collect_xml(reports_dir, result, sink, passed)
     if parse_logs:
         _collect_logs(reports_dir, result, sink, passed)
-    result.failures = [f for f in sink.values() if f.dedup_key not in passed]
+    recovered = passed | result.skipped_keys
+    result.failures = [f for f in sink.values() if f.dedup_key not in recovered]
     return result
 
 

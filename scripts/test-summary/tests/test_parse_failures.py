@@ -479,8 +479,40 @@ def test_xdist_result_first_pass_reconciles_xml_failure(tmp_path):
     assert result.failures == []
 
 
+def test_log_error_reconciled_by_xml_skip(tmp_path):
+    # A flaky test that errors on a crashed attempt (captured only as an
+    # inline ``<nodeid> ERROR:`` log line, no <testcase> written) and is then
+    # SKIPPED on the clean rerun (recorded in XML for the same key). CI scores
+    # it green, so the stale log error must not be listed.
+    _write(
+        tmp_path,
+        "report.xml",
+        '<?xml version="1.0" encoding="utf-8"?>\n'
+        '<testsuite name="suite" tests="1" failures="0" errors="0" skipped="1">\n'
+        '  <testcase classname="TestX" file="sub/test_foo.py"\n'
+        '            name="test_bar" time="0.1">\n'
+        '    <skipped message="flaky on this platform"/>\n'
+        "  </testcase>\n"
+        "</testsuite>\n",
+    )
+    _write(
+        tmp_path,
+        "run.log",
+        "sub\\test_foo.py::TestX::test_bar ERROR: init callback in wrong thread\n",
+    )
+
+    result = pf.collect(tmp_path)
+
+    assert result.failures == []
+    # It is accounted for as skipped, not failed.
+    assert result.failed_count == 0
+    assert result.skipped_count == 1
+
+
 def test_skipped_rerun_does_not_cancel_failure(tmp_path):
-    # A <skipped> case is not a pass and must not mask a real failure.
+    # A <skipped> case must not mask a DIFFERENT test's real failure: skip
+    # recovery is strictly key-scoped. FAILING_REPORT skips ``test_skip`` while
+    # ``test_fail``/``test_err`` (different keys) genuinely fail and remain.
     _write(tmp_path, "fail.xml", FAILING_REPORT)
 
     result = pf.collect(tmp_path)

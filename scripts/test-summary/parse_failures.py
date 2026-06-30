@@ -53,10 +53,16 @@ _LOG_SUMMARY = re.compile(
 _LOG_INLINE = re.compile(
     r"(?P<nodeid>\S+\.py(?:::\S+)?)\s+(?P<kind>FAILED|ERROR)\b"
 )
-# pytest inline-progress *pass* line: ``test/foo.py::TestX::test_y PASSED``.
-# Only used to reconcile flaky reruns (fail on one attempt, pass on a later
-# one); it never adds a failure.
+# pytest *pass* progress lines, used only to reconcile flaky reruns (fail on
+# one attempt, pass on a later one); they never add a failure. Two orderings
+# must both be recognised, mirroring the failure patterns above, otherwise a
+# pass in the form the failure was NOT seen in slips through and the failure
+# is never cancelled:
+#   nodeid-first (serial):  ``test/foo.py::TestX::test_y PASSED [ 50%]``
+#   result-first (xdist):   ``[gw0] [ 50%] PASSED test/foo.py::TestX::test_y``
+# ``\bPASSED`` avoids matching ``XPASSED`` (no word boundary before ``P``).
 _LOG_PASSED = re.compile(r"(?P<nodeid>\S+\.py(?:::\S+)?)\s+PASSED\b")
+_LOG_PASSED_PREFIX = re.compile(r"\bPASSED\s+(?P<nodeid>\S+\.py(?:::\S+)?)")
 # run_test.py per-file marker. Two observed forms:
 #   ``test_foo failed!``                                  (bare)
 #   ``cpp_extensions/test_libtorch_agnostic 1/1 failed!``  (with the
@@ -268,9 +274,11 @@ def _passed_key_from_log_line(line: str) -> tuple[str, str, str] | None:
 
     The key is computed the same way as a failure's :attr:`Failure.dedup_key`
     so a passing rerun line reconciles against the matching failing record
-    regardless of whether that failure came from XML or a log.
+    regardless of whether that failure came from XML or a log. Both the
+    serial (nodeid-first) and xdist (result-first) progress orderings are
+    accepted.
     """
-    match = _LOG_PASSED.search(line)
+    match = _LOG_PASSED.search(line) or _LOG_PASSED_PREFIX.search(line)
     if match is None:
         return None
     file, classname, name = _parse_nodeid(match.group("nodeid"))

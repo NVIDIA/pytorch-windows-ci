@@ -436,6 +436,49 @@ def test_log_pass_reconciles_log_failure(tmp_path):
     assert result.failures == []
 
 
+def test_xdist_result_first_pass_reconciles_log_failure(tmp_path):
+    # pytest-xdist prints progress result-FIRST (``[gwN] [ NN%] <RESULT>
+    # <nodeid>``). The failing attempt is captured by the result-first
+    # failure pattern; the passing rerun must be recognised in the SAME
+    # result-first ordering, otherwise it slips through and the (green,
+    # rerun-passed) test is wrongly listed.
+    _write(
+        tmp_path,
+        "run.log",
+        "[gw3] [ 50%] ERROR test/test_foo.py::TestX::test_bar\n"
+        "[gw1] [ 75%] PASSED test/test_foo.py::TestX::test_bar\n",
+    )
+
+    result = pf.collect(tmp_path)
+
+    assert result.failures == []
+
+
+def test_xdist_result_first_pass_reconciles_xml_failure(tmp_path):
+    # XML recorded the failing attempt; only an xdist result-first PASSED
+    # progress line captured the passing rerun. It must still cancel.
+    _write(
+        tmp_path,
+        "report.xml",
+        '<?xml version="1.0" encoding="utf-8"?>\n'
+        '<testsuite name="suite" tests="1" failures="1" errors="0">\n'
+        '  <testcase classname="test_foo.TestX" file="test/test_foo.py"\n'
+        '            name="test_bar" time="0.1">\n'
+        '    <failure message="boom">tb</failure>\n'
+        "  </testcase>\n"
+        "</testsuite>\n",
+    )
+    _write(
+        tmp_path,
+        "run.log",
+        "[gw0] [ 42%] PASSED test/test_foo.py::TestX::test_bar\n",
+    )
+
+    result = pf.collect(tmp_path)
+
+    assert result.failures == []
+
+
 def test_skipped_rerun_does_not_cancel_failure(tmp_path):
     # A <skipped> case is not a pass and must not mask a real failure.
     _write(tmp_path, "fail.xml", FAILING_REPORT)

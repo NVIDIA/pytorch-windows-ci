@@ -153,10 +153,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # TEMP-DEBUG: single shard only (was [1, 2, 3, 4, 5]) so one runner
-        # runs the targeted cpp_extension subset below. Revert to the full
-        # list when done debugging the MAX_PATH fix.
-        shard: [1]
+        shard: [1, 2, 3, 4, 5]
     runs-on:
       - ${{ inputs.runner-base }}
       - ${{ inputs.python-label }}
@@ -222,19 +219,6 @@ jobs:
         with:
           path: oot
           show-progress: false
-
-      # TEMP-DEBUG: run the test-summary parser's own unit tests on the runner
-      # so this debug run also validates the rerun fail->pass reconciliation
-      # (incl. the xdist result-first PASSED case that wrongly listed a green
-      # shard's flaky test). Deterministic and fast - independent of torch, so
-      # it runs before the wheel install. Revert by deleting this step.
-      - name: 'TEMP-DEBUG: validate test-summary parser (rerun fail->pass fix)'
-        shell: bash
-        run: |
-          set -euo pipefail
-          python -m pip install -q pytest
-          python -m pytest -v \
-            "${GITHUB_WORKSPACE}/oot/scripts/test-summary/tests/test_parse_failures.py"
 
       # Pull the wheel + SHA produced by the paired build job from GitHub
       # Actions artifact storage. Lands files under `artifact/...`.
@@ -398,56 +382,17 @@ jobs:
         id: diag
         uses: ./oot/.github/actions/start-runner-diagnostics
 
-      # === TEMP-DEBUG: run a targeted subset instead of the full suite
-      # === (`bash .ci/pytorch/win-test.sh`). Two goals:
-      # ===  - profiler/test_cpp_thread: known-flaky on win-cuda; its
-      # ===    profiler-handler registration throws "External init callback
-      # ===    must run in same thread as registerClient", then passes on
-      # ===    rerun - a LIVE rerun fail->pass case to confirm the summary
-      # ===    parser reconciles it (green shard, not listed in summary).
-      # ===  - test_cpp_extensions_*: the setuptools/ninja/nvcc/cl builds
-      # ===    that emit the deep object/dep paths, to confirm the C:\pt
-      # ===    relocation fixed the C1083 / "Could not open output file"
-      # ===    MAX_PATH failures - in minutes instead of hours.
-      #
-      # This MUST run through `setup_pytorch_env.bat` first. A previous
-      # attempt invoked `python test/run_test.py` from a bare bash shell and
-      # got "0 tests / 0 reports": without that script the MSVC toolchain
-      # (vcvarsall x64 + DISTUTILS_USE_SDK), CUDA on PATH, the conda env that
-      # actually holds torch, and PYTHONPATH=build are all missing, so every
-      # cpp_extension build and test_cpp_thread's cpp_extension.load() fails
-      # at build/import time. Those die *before* any test runs, so no JUnit
-      # XML is written (run_test.py's tests default to --save-xml only once
-      # they reach common_utils) - the summary then sees 0 reports and the
-      # build-error text doesn't match the parser's failure markers, so it
-      # reports "all passed". Running setup_pytorch_env.bat (exactly what
-      # win-test.sh's per-shard .bats do) gives the real toolchain, so the
-      # builds succeed (validating the C:\pt MAX_PATH fix) and tests emit XML.
-      #
-      # We call run_test.py directly with --include (no --shard) instead of
-      # win-test.sh so the whole targeted set runs on this single shard and
-      # we skip win-test.sh's other per-shard .bats (test_libtorch /
-      # test_custom_* build & run C++ artifacts that don't exist in a
-      # wheel-only test job and would fail spuriously).
-      #
-      # cmd (not bash) so the env that setup_pytorch_env.bat sets in-process
-      # (vcvars, CUDA, conda, DISTUTILS_USE_SDK) persists into run_test.py.
-      #
-      # The checkout was relocated to C:\pt (see "Relocate pytorch checkout")
-      # so this working directory - and every object/dep path the builds
-      # derive from it - stays well under MAX_PATH. No subst/drive aliasing
-      # is needed (and would not work: setuptools' realpath() canonicalises
-      # aliases back to the long physical path).
-      #
-      # === To revert to the full suite: delete this whole step and restore a
-      # === bash step running `bash .ci/pytorch/win-test.sh` (tee'd into
-      # === test/test-reports/run_test_shard${SHARD_NUMBER}.log), with env
-      # === SHARD_NUMBER/NUM_TEST_SHARDS/TEST_CONFIG/PYTORCH_FINAL_PACKAGE_DIR.
       - name: Run PyTorch Windows test suite
-        shell: cmd
+        shell: bash
         working-directory: ${{ env.PT_ROOT }}
         env:
+          # ---- sharding (consumed by .ci/pytorch/win-test.sh -> test/run_test.py)
+          SHARD_NUMBER: ${{ matrix.shard }}
+          NUM_TEST_SHARDS: "5"
           TEST_CONFIG: ${{ inputs.test-config }}
+          # ---- where the wheel lives on this runner (path A) or
+          # ----   a placeholder dir for path B (pip-index install
+          # ----   already happened in `Install PyTorch`).
           PYTORCH_FINAL_PACKAGE_DIR: ${{ github.workspace }}/artifact
           # ---- GH context useful for log correlation + stats hooks
           PR_NUMBER: ${{ github.event.pull_request.number || github.event.client_payload.pr_number || '' }}
@@ -458,37 +403,31 @@ jobs:
           GITHUB_RUN_ID: ${{ github.run_id }}
           GITHUB_RUN_NUMBER: ${{ github.run_number }}
           GITHUB_RUN_ATTEMPT: ${{ github.run_attempt }}
+        # Tee the harness output into the test-reports tree so the summary
+        # parser can recover failures that never make it into JUnit XML
+        # (hard crashes, collection/import errors, whole-file aborts). The
+        # log rides along in the uploaded test-reports artifact too.
+        # `pipefail` keeps the test step's real exit code despite the pipe.
+        #
+        # `test-reports/` must be created up front: win-test.sh / run_test.py
+        # only create it once tests start, so without this mkdir `tee` fails
+        # with "No such file or directory", silently writes nothing, and the
+        # parent run_test.py output (including the `<file> N/M failed!`
+        # markers and the final failed-tests summary) never reaches the
+        # scanned/uploaded tree - making whole-file failures invisible to the
+        # summary even though the job correctly goes red.
+        #
+        # The checkout was relocated to C:\pt (see "Relocate pytorch checkout")
+        # so this working directory - and every object/dep path win-test.sh
+        # derives from $PWD - stays well under MAX_PATH. No subst/drive aliasing
+        # is needed (and would not work: setuptools' realpath() canonicalises
+        # aliases back to the long physical path).
         run: |
-          @echo on
-          rem ---- env win-test.sh exports before calling its per-shard .bats
-          set "SCRIPT_HELPERS_DIR=%CD%\.ci\pytorch\win-test-helpers"
-          set "TMP_DIR=%CD%\build\win_tmp"
-          set "TMP_DIR_WIN=%CD%\build\win_tmp"
-          set "PROJECT_DIR=%CD%"
-          set "PROJECT_DIR_WIN=%CD%"
-          set "TEST_DIR=%CD%\test"
-          set "PYTORCH_TESTING_DEVICE_ONLY_FOR=cuda"
-          rem ---- Leave USE_CUDA at the job default (1). win-test.sh only
-          rem ---- forces USE_CUDA=0 for the force_on_cpu / openreg configs,
-          rem ---- never the CUDA wheel test, which runs with USE_CUDA=1. With
-          rem ---- USE_CUDA=1 setup_pytorch_env.bat prepends the system CUDA
-          rem ---- v%CUDA_VERSION% bin onto PATH; the wheel's torch needs that
-          rem ---- directory to resolve its CUDA DLLs when it is imported from
-          rem ---- the copied %TMP_DIR_WIN%\build\torch tree. An earlier
-          rem ---- `set USE_CUDA=0` here removed that dir from PATH and made
-          rem ---- `import torch` access-violate (0xC0000005 -> 0 tests ran).
-          if not exist "%TMP_DIR%\build\torch" mkdir "%TMP_DIR%\build\torch"
-          if not exist "%CD%\test\test-reports" mkdir "%CD%\test\test-reports"
+          set -o pipefail
+          mkdir -p test/test-reports
 
-          rem ---- real toolchain (vcvars x64, DISTUTILS_USE_SDK, conda)
-          call "%SCRIPT_HELPERS_DIR%\setup_pytorch_env.bat"
-          if errorlevel 1 exit /b 1
-
-          pushd test
-          python run_test.py --verbose --include profiler/test_cpp_thread test_cpp_extensions_aot_ninja test_cpp_extensions_aot_no_ninja test_cpp_extensions_jit test_cpp_extensions_stream_and_event
-          set "RT_RC=%errorlevel%"
-          popd
-          exit /b %RT_RC%
+          bash .ci/pytorch/win-test.sh 2>&1 \
+            | tee "test/test-reports/run_test_shard${SHARD_NUMBER}.log"
 
       - name: Stop runner diagnostics
         if: always()

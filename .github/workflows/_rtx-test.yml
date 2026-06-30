@@ -195,6 +195,16 @@ jobs:
             exit 1
           fi
 
+      # Let git use the \\?\ extended-length prefix so the deep recursive
+      # submodule checkout of pytorch/pytorch (third_party/.../pybind11/...)
+      # never trips the 260-char MAX_PATH during `git checkout`. No admin
+      # needed (--global writes the runner user's gitconfig), unlike the
+      # registry LongPathsEnabled flag - and it covers the checkout that the
+      # test-step `subst` mitigation below cannot reach.
+      - name: Enable git long paths
+        shell: bash
+        run: git config --global core.longpaths true
+
       - name: Checkout repository (runner-diagnostics actions)
         uses: actions/checkout@v7
         with:
@@ -324,6 +334,43 @@ jobs:
         id: diag
         uses: ./oot/.github/actions/start-runner-diagnostics
 
+      # Windows MAX_PATH mitigation. The test-time cpp_extension builds
+      # (test_libtorch_agnostic, test_python_agnostic, ...) make setuptools
+      # write every object to
+      #   <ext>\build\temp.win-amd64-cpython-312\Release\<ABSOLUTE-SOURCE-PATH>
+      # i.e. the already-deep workspace path *doubled* (287/294 chars measured
+      # from this _work\pytorch-windows-ci\pytorch-windows-ci\pytorch\ layout),
+      # which blows past the 260-char MAX_PATH so cl fails "C1083: Cannot open
+      # compiler generated file: '': Invalid argument" and nvcc fails "Could
+      # not open output file ...obj.d".
+      #
+      # The runner image already sets the LongPathsEnabled registry flag
+      # (packer win_build_setup/tools.ps1), yet BOTH compilers still fail here:
+      # cl's long-path opt-in does not cover every output path it constructs in
+      # this ninja/setuptools build, and nvcc does not support paths over
+      # MAX_PATH at all (per the CUDA nvcc docs). So the registry flag is a
+      # no-op for this failure - the only reliable fix is a SHORTER path. Alias
+      # the checkout to a short virtual drive with `subst` here, then run the
+      # harness from that drive (next step) so the absolute paths Python
+      # derives from each test file's __file__ - and the object paths under
+      # them - stay short. Done in `cmd` (not bash) to avoid MSYS mangling the
+      # drive/path args; `subst` persists for the rest of the runner session.
+      # The drive is just an alias for the same directory, so the parser and
+      # artifact upload still read the real (long) path afterwards.
+      - name: Map pytorch to a short drive (MAX_PATH mitigation)
+        shell: cmd
+        working-directory: pytorch
+        run: |
+          for %%D in (Y Z X W V U T R Q P N M L) do (
+            subst %%D: "%CD%" >nul 2>&1 && (
+              echo PT_DRIVE=%%D>>"%GITHUB_ENV%"
+              echo Mapped %%D: to %CD%
+              goto :done
+            )
+          )
+          echo ::warning::Could not map a short drive via subst; cpp_extension builds may hit MAX_PATH.
+          :done
+
       - name: Run PyTorch Windows test suite
         shell: bash
         working-directory: pytorch
@@ -358,10 +405,26 @@ jobs:
         # markers and the final failed-tests summary) never reaches the
         # scanned/uploaded tree - making whole-file failures invisible to the
         # summary even though the job correctly goes red.
+        #
+        # The previous step mapped a short virtual drive (exported as
+        # $PT_DRIVE) onto this checkout to dodge Windows MAX_PATH in the
+        # test-time cpp_extension builds (see that step for the full rationale).
+        # Run the harness from that drive in a subshell so the object paths the
+        # build derives from each test file's __file__ stay short, while `tee`
+        # keeps writing to the real (long-path) test-reports tree that the
+        # parser and artifact upload read. Falls back to the full path if no
+        # drive could be mapped.
         run: |
           set -o pipefail
           mkdir -p test/test-reports
-          bash .ci/pytorch/win-test.sh 2>&1 \
+
+          run_root="."
+          if [ -n "${PT_DRIVE:-}" ]; then
+            run_root="/$(printf '%s' "$PT_DRIVE" | tr 'A-Z' 'a-z')"
+            echo "MAX_PATH mitigation: running harness from ${run_root} (${PT_DRIVE}: -> $(pwd -W))"
+          fi
+
+          ( cd "$run_root" && bash .ci/pytorch/win-test.sh ) 2>&1 \
             | tee "test/test-reports/run_test_shard${SHARD_NUMBER}.log"
 
       - name: Stop runner diagnostics

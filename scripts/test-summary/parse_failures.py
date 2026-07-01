@@ -84,17 +84,41 @@ class Failure:
     source: str = "xml"
 
     @property
-    def module(self) -> str:
-        """Best-effort test module (e.g. ``test_torchbind``).
+    def module_path(self) -> str:
+        """Path-aware module identity used for de-duplication.
 
-        Prefers the JUnit ``file`` attribute; falls back to the dotted
-        prefix of ``classname`` (``a.b.TestX`` -> ``a.b``).
+        A normalised, test-directory-relative path with the ``.py`` suffix
+        dropped (``functorch/test_ops.py`` -> ``functorch/test_ops``).
+        Keeping the directory is what stops same-basename tests in different
+        directories (``test_ops.py`` and ``functorch/test_ops.py``) from
+        collapsing to one key and reconciling each other's failures. The
+        leading ``test/`` (PyTorch's test root) is stripped so a repo-relative
+        spelling (``test/test_nn.py`` in a log) and a test-root-relative one
+        (``test_nn.py`` in JUnit) line up. Falls back to the dotted classname
+        prefix when no ``file`` is known.
         """
         if self.file:
-            return Path(self.file.replace("\\", "/")).stem
+            path = self.file.replace("\\", "/")
+            while path.startswith("./"):
+                path = path[2:]
+            if path.startswith("test/"):
+                path = path[len("test/"):]
+            if path.endswith(".py"):
+                path = path[:-3]
+            return path
         if "." in self.classname:
-            return self.classname.rsplit(".", 1)[0]
+            return self.classname.rsplit(".", 1)[0].replace(".", "/")
         return ""
+
+    @property
+    def module(self) -> str:
+        """Best-effort test module basename (e.g. ``test_torchbind``).
+
+        The trailing path segment of :attr:`module_path`, used for display
+        and sorting only - never for identity (that is :attr:`dedup_key`).
+        """
+        path = self.module_path
+        return path.rsplit("/", 1)[-1] if path else ""
 
     @property
     def _class_leaf(self) -> str:
@@ -109,17 +133,21 @@ class Failure:
 
         Normalises so a pytest nodeid (``test_x.py::TestA::test_y``) and a
         JUnit case (file ``test_x.py``, classname ``test_x.TestA``, name
-        ``test_y``) collapse to the same key. A class segment equal to the
-        module (the function-style ``classname == module`` case) is treated
-        as "no class" so both spellings line up.
+        ``test_y``) collapse to the same key. The path-aware
+        :attr:`module_path` is the module component, so tests that share a
+        basename but live in different directories stay distinct. A class
+        segment equal to the module basename (the function-style
+        ``classname == module`` case) is treated as "no class" so both
+        spellings line up.
         """
         if self.source == "report":
             return ("__report__", self.file, "")
-        module = self.module.lower()
+        module_path = self.module_path.lower()
+        module_base = module_path.rsplit("/", 1)[-1]
         leaf = self._class_leaf.lower()
-        if leaf == module:
+        if leaf == module_base:
             leaf = ""
-        return (module, leaf, self.name.lower())
+        return (module_path, leaf, self.name.lower())
 
     @property
     def qualified_name(self) -> str:
@@ -145,10 +173,22 @@ class ScanResult:
     reported_failures: int = 0
     logs_scanned: int = 0
     # Unique ``Failure.dedup_key`` identities seen passing / skipped in JUnit
-    # XML ``<testcase>`` records. Used only for the collected/passed/skipped
-    # totals; the failure list itself is unaffected.
+    # XML ``<testcase>`` records. Used for the collected/passed/skipped totals.
     passed_keys: set[tuple[str, str, str]] = field(default_factory=set)
     skipped_keys: set[tuple[str, str, str]] = field(default_factory=set)
+    # Latest ``<testsuite timestamp=...>`` at which each key was last seen
+    # failing vs. last seen recovered (a clean pass or a skip). These drive
+    # attempt-ordered rerun reconciliation: a failure is only cancelled when
+    # the recovering evidence is at least as recent as the failing evidence,
+    # so an earlier pass can never mask a genuinely later failure. Timestamps
+    # are compared as ISO-8601 strings; a missing timestamp sorts earliest
+    # ("") and falls back to lenient "seen recovered anywhere" behaviour.
+    xml_fail_ts: dict[tuple[str, str, str], str] = field(default_factory=dict)
+    xml_ok_ts: dict[tuple[str, str, str], str] = field(default_factory=dict)
+    # Keys seen passing in a ``PASSED`` run-log progress line. Logs carry no
+    # per-attempt timestamp, but a ``PASSED`` line is only ever emitted by an
+    # attempt that actually passed, so it always counts as recovery.
+    passed_log_keys: set[tuple[str, str, str]] = field(default_factory=set)
 
     @property
     def scanned_anything(self) -> bool:
@@ -333,16 +373,19 @@ def _testcase_key(case: ET.Element) -> tuple[str, str, str]:
     ).dedup_key
 
 
-def _collect_xml(
-    reports_dir: Path,
-    result: ScanResult,
-    sink: _FailureSink,
-    passed: set[tuple[str, str, str]],
-) -> None:
+def _bump(store: dict[tuple[str, str, str], str], key: tuple[str, str, str], ts: str) -> None:
+    """Record ``ts`` for ``key`` when it is newer than what is stored."""
+    current = store.get(key)
+    if current is None or ts > current:
+        store[key] = ts
+
+
+def _collect_xml(reports_dir: Path, result: ScanResult, sink: _FailureSink) -> None:
     """Scan JUnit XML, recording cases, suite-level errors, and crashes.
 
-    Passing ``<testcase>`` keys are added to ``passed`` so flaky reruns
-    (fail on one attempt, pass on a later one) can be reconciled later.
+    Each ``<testcase>`` outcome is tagged with its ``<testsuite>``
+    ``timestamp`` so a later-attempt pass/skip can be told apart from an
+    earlier one during rerun reconciliation.
     """
     for xml_path in sorted(reports_dir.rglob("*.xml")):
         result.xml_scanned += 1
@@ -363,56 +406,56 @@ def _collect_xml(
             continue
 
         for suite in root.iter("testsuite"):
+            ts = suite.get("timestamp", "") or ""
             for attr in ("failures", "errors"):
                 try:
                     result.reported_failures += int(suite.get(attr, "0") or "0")
                 except ValueError:
                     pass
 
-        for case in root.iter("testcase"):
-            failure = _failure_from_testcase(case)
-            if failure is not None:
-                result.xml_itemized += 1
-                sink.add(failure, prefer_error=True)
-            elif _case_passed(case):
-                key = _testcase_key(case)
-                passed.add(key)
-                result.passed_keys.add(key)
-            else:
-                # Neither failed nor a clean pass -> a ``<skipped>`` case.
-                result.skipped_keys.add(_testcase_key(case))
+            # ``findall`` (direct children only) so a testcase under a nested
+            # suite is attributed to that suite's timestamp exactly once.
+            for case in suite.findall("testcase"):
+                failure = _failure_from_testcase(case)
+                if failure is not None:
+                    result.xml_itemized += 1
+                    sink.add(failure, prefer_error=True)
+                    _bump(result.xml_fail_ts, failure.dedup_key, ts)
+                elif _case_passed(case):
+                    key = _testcase_key(case)
+                    result.passed_keys.add(key)
+                    _bump(result.xml_ok_ts, key, ts)
+                else:
+                    # Neither failed nor a clean pass -> a ``<skipped>`` case.
+                    key = _testcase_key(case)
+                    result.skipped_keys.add(key)
+                    _bump(result.xml_ok_ts, key, ts)
 
-        # Collection / import errors are emitted as direct children of
-        # ``<testsuite>`` (not wrapped in a ``<testcase>``).
-        for suite in root.iter("testsuite"):
+            # Collection / import errors are emitted as direct children of
+            # ``<testsuite>`` (not wrapped in a ``<testcase>``).
             for kind in FAIL_KINDS:
                 child = suite.find(kind)
                 if child is None:
                     continue
                 result.xml_itemized += 1
-                sink.add(
-                    Failure(
-                        classname="",
-                        name=suite.get("name", "") or xml_path.stem,
-                        kind=kind,
-                        message=_first_line(child.get("message") or child.text),
-                        file=suite.get("file", ""),
-                        source="xml",
-                    )
+                suite_failure = Failure(
+                    classname="",
+                    name=suite.get("name", "") or xml_path.stem,
+                    kind=kind,
+                    message=_first_line(child.get("message") or child.text),
+                    file=suite.get("file", ""),
+                    source="xml",
                 )
+                sink.add(suite_failure)
+                _bump(result.xml_fail_ts, suite_failure.dedup_key, ts)
                 break
 
 
-def _collect_logs(
-    reports_dir: Path,
-    result: ScanResult,
-    sink: _FailureSink,
-    passed: set[tuple[str, str, str]],
-) -> None:
+def _collect_logs(reports_dir: Path, result: ScanResult, sink: _FailureSink) -> None:
     """Scan ``*.log`` / ``*.txt`` for failures not captured in XML.
 
-    ``PASSED`` progress lines are recorded in ``passed`` so a rerun that
-    eventually passed cancels an earlier failing line for the same test.
+    ``PASSED`` progress lines are recorded so a rerun that eventually passed
+    cancels an earlier failing line for the same test.
     """
     log_paths = sorted(
         {*reports_dir.rglob("*.log"), *reports_dir.rglob("*.txt")}
@@ -431,7 +474,7 @@ def _collect_logs(
                 continue
             passed_key = _passed_key_from_log_line(clean)
             if passed_key is not None:
-                passed.add(passed_key)
+                result.passed_log_keys.add(passed_key)
 
 
 class _FailureSink:
@@ -462,6 +505,30 @@ class _FailureSink:
         return list(self._seen.values())
 
 
+def _is_recovered(key: tuple[str, str, str], result: ScanResult) -> bool:
+    """Whether a failing ``key`` was superseded by a later successful attempt.
+
+    Recovery is tied to the *latest* evidence, not to a pass being seen
+    anywhere, so an early pass can never mask a genuinely later failure:
+
+    * A ``PASSED`` run-log progress line always counts - such a line is only
+      emitted by an attempt that actually passed, and logs carry no
+      comparable timestamp.
+    * Otherwise a clean/skipped XML case recovers the key only when its
+      ``<testsuite>`` timestamp is at least as recent as the newest failing
+      XML timestamp for the same key. Missing timestamps compare equal (""),
+      preserving lenient "recovered anywhere" behaviour when a harness omits
+      them.
+    """
+    if key in result.passed_log_keys:
+        return True
+    ok_ts = result.xml_ok_ts.get(key)
+    if ok_ts is None:
+        return False
+    fail_ts = result.xml_fail_ts.get(key)
+    return fail_ts is None or ok_ts >= fail_ts
+
+
 def collect(reports_dir: Path, *, parse_logs: bool = True) -> ScanResult:
     """Scan ``reports_dir`` for failures across JUnit XML and run logs.
 
@@ -470,24 +537,33 @@ def collect(reports_dir: Path, *, parse_logs: bool = True) -> ScanResult:
     each attempt in one report, and whole-process stepcurrent retries write a
     fresh report while leaving the failing one behind), so a test that fails
     an early attempt but recovers on a later one appears as *both* a failing
-    and a recovered record for the same ``(module, class, name)``. A later
-    attempt counts as recovered when it either **passes** (clean XML case or
-    a ``PASSED`` log line) or is **skipped** in XML - e.g. a profiler test
-    that errors with "External init callback ..." on a crashed attempt and is
-    then ``@skipCUDAIf`` skipped on the clean rerun. CI scores such a test
-    green, so any failure whose test was also seen passing or skipped is
-    dropped. Skip recovery is strictly key-scoped: a ``<skipped>`` case only
-    cancels a failure for the *same* test, never a sibling (a different test
-    being skipped must not mask a real failure).
+    and a recovered record for the same ``(module_path, class, name)``. A
+    later attempt counts as recovered when it either **passes** (clean XML
+    case or a ``PASSED`` log line) or is **skipped** in XML - e.g. a profiler
+    test that errors with "External init callback ..." on a crashed attempt
+    and is then ``@skipCUDAIf`` skipped on the clean rerun.
+
+    Recovery is scoped tightly (see :func:`_is_recovered`): it is keyed on the
+    path-aware :attr:`Failure.module_path` (so a same-basename test in another
+    directory cannot cancel a failure), and, within XML, honours attempt
+    order via ``<testsuite>`` timestamps so an earlier pass never hides a
+    later failure.
+
+    A whole-file ``<file> failed!`` marker from ``run_test.py`` does not need
+    attempt reconciliation: that line is only printed by ``handle_complete``
+    after ``run_test_retries`` has exhausted its retries on a test that
+    ``FAILED CONSISTENTLY`` (>=3 attempts) - a fail-then-pass instead hits the
+    "Test succeeded in new process, continuing" branch and prints no marker,
+    so a stale marker cannot survive a successful retry.
     """
     result = ScanResult()
     sink = _FailureSink()
-    passed: set[tuple[str, str, str]] = set()
-    _collect_xml(reports_dir, result, sink, passed)
+    _collect_xml(reports_dir, result, sink)
     if parse_logs:
-        _collect_logs(reports_dir, result, sink, passed)
-    recovered = passed | result.skipped_keys
-    result.failures = [f for f in sink.values() if f.dedup_key not in recovered]
+        _collect_logs(reports_dir, result, sink)
+    result.failures = [
+        f for f in sink.values() if not _is_recovered(f.dedup_key, result)
+    ]
     return result
 
 
@@ -527,7 +603,20 @@ def render_markdown(result: ScanResult, title: str, max_rows: int) -> str:
     scanned_desc = f"{result.xml_scanned} report(s) and {result.logs_scanned} log(s)"
 
     if not result.failures:
-        lines.append(f"All collected tests passed across {scanned_desc}.{note}")
+        if result.missing_itemization:
+            # A header that declares more failures/errors than were written as
+            # cases is a crash/timeout signature (the process died before the
+            # cases reached the report). Do not call this shard green.
+            lines.append(
+                f"**Likely crash:** no failing tests were itemized, but XML "
+                f"headers across {scanned_desc} declared "
+                f"{result.missing_itemization} more failure(s)/error(s) than "
+                f"were recorded as cases - the process probably died before "
+                f"writing them. Treat this shard as failed and inspect the raw "
+                f"logs.{note}"
+            )
+        else:
+            lines.append(f"All collected tests passed across {scanned_desc}.{note}")
         return "\n".join(lines) + "\n"
 
     by_source = Counter(f.source for f in result.failures)

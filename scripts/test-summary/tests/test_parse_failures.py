@@ -509,6 +509,100 @@ def test_log_error_reconciled_by_xml_skip(tmp_path):
     assert result.skipped_count == 1
 
 
+def test_same_basename_different_dirs_do_not_collide(tmp_path):
+    # Two distinct tests that share a basename but live in different
+    # directories must stay distinct: keying on the basename stem alone would
+    # collapse them into one and let one file's pass hide the other's failure.
+    xml = (
+        '<?xml version="1.0" encoding="utf-8"?>\n'
+        '<testsuite name="s" tests="2" failures="2" errors="0">\n'
+        '  <testcase classname="TestOps" file="test/test_ops.py"\n'
+        '            name="test_thing"><failure message="a"/></testcase>\n'
+        '  <testcase classname="TestOps" file="functorch/test_ops.py"\n'
+        '            name="test_thing"><failure message="b"/></testcase>\n'
+        "</testsuite>\n"
+    )
+    _write(tmp_path, "r.xml", xml)
+
+    result = pf.collect(tmp_path)
+
+    # Both survive as separate failures (distinct module_path).
+    assert len(result.failures) == 2
+    modules = {f.module_path for f in result.failures}
+    assert modules == {"test_ops", "functorch/test_ops"}
+
+
+def test_pass_in_one_dir_does_not_reconcile_failure_in_another(tmp_path):
+    # ``functorch/test_ops.py::test_thing`` passes; the same-basename
+    # ``test/test_ops.py::test_thing`` fails. The pass must not cancel the
+    # failure, since they are different tests.
+    xml = (
+        '<?xml version="1.0" encoding="utf-8"?>\n'
+        '<testsuite name="s" tests="2" failures="1" errors="0">\n'
+        '  <testcase classname="TestOps" file="test/test_ops.py"\n'
+        '            name="test_thing"><failure message="boom"/></testcase>\n'
+        '  <testcase classname="TestOps" file="functorch/test_ops.py"\n'
+        '            name="test_thing"/>\n'
+        "</testsuite>\n"
+    )
+    _write(tmp_path, "r.xml", xml)
+
+    result = pf.collect(tmp_path)
+
+    assert {f.module_path for f in result.failures} == {"test_ops"}
+
+
+def test_earlier_pass_does_not_hide_later_failure(tmp_path):
+    # Same test passes in an earlier-timestamped attempt and fails in a
+    # later one (a genuine regression across whole-process retries). The
+    # later failure must be reported, not masked by the earlier pass.
+    early_pass = (
+        '<?xml version="1.0" encoding="utf-8"?>\n'
+        '<testsuite name="s" timestamp="2026-06-30T05:00:00" failures="0">\n'
+        '  <testcase classname="test_mod.TestX" file="test/test_mod.py"\n'
+        '            name="test_bar"/>\n'
+        "</testsuite>\n"
+    )
+    later_fail = (
+        '<?xml version="1.0" encoding="utf-8"?>\n'
+        '<testsuite name="s" timestamp="2026-06-30T06:00:00" failures="1">\n'
+        '  <testcase classname="test_mod.TestX" file="test/test_mod.py"\n'
+        '            name="test_bar"><failure message="regressed"/></testcase>\n'
+        "</testsuite>\n"
+    )
+    _write(tmp_path, "a_pass.xml", early_pass)
+    _write(tmp_path, "b_fail.xml", later_fail)
+
+    result = pf.collect(tmp_path)
+
+    assert {f.name for f in result.failures} == {"test_bar"}
+
+
+def test_later_pass_reconciles_earlier_failure_by_timestamp(tmp_path):
+    # Same test fails first, then passes on a later-timestamped retry. The
+    # later pass wins and the failure is reconciled away.
+    early_fail = (
+        '<?xml version="1.0" encoding="utf-8"?>\n'
+        '<testsuite name="s" timestamp="2026-06-30T05:00:00" failures="1">\n'
+        '  <testcase classname="test_mod.TestX" file="test/test_mod.py"\n'
+        '            name="test_bar"><failure message="flaky"/></testcase>\n'
+        "</testsuite>\n"
+    )
+    later_pass = (
+        '<?xml version="1.0" encoding="utf-8"?>\n'
+        '<testsuite name="s" timestamp="2026-06-30T06:00:00" failures="0">\n'
+        '  <testcase classname="test_mod.TestX" file="test/test_mod.py"\n'
+        '            name="test_bar"/>\n'
+        "</testsuite>\n"
+    )
+    _write(tmp_path, "a_fail.xml", early_fail)
+    _write(tmp_path, "b_pass.xml", later_pass)
+
+    result = pf.collect(tmp_path)
+
+    assert result.failures == []
+
+
 def test_skipped_rerun_does_not_cancel_failure(tmp_path):
     # A <skipped> case must not mask a DIFFERENT test's real failure: skip
     # recovery is strictly key-scoped. FAILING_REPORT skips ``test_skip`` while
@@ -605,6 +699,19 @@ def test_render_markdown_all_passed():
     result = pf.ScanResult(xml_scanned=5, logs_scanned=1)
     out = pf.render_markdown(result, "Title", 200)
     assert "All collected tests passed" in out
+
+
+def test_render_markdown_header_only_failure_not_green(tmp_path):
+    # A header that declares errors but itemizes none (crash signature) with
+    # no other failures must NOT render the green "all passed" line.
+    _write(tmp_path, "crash.xml", HEADER_ONLY_REPORT)
+
+    result = pf.collect(tmp_path)
+    out = pf.render_markdown(result, "Title", 200)
+
+    assert "All collected tests passed" not in out
+    assert "Likely crash" in out
+    assert "Treat this shard as failed" in out
 
 
 def test_render_markdown_notes_crash_and_missing(tmp_path):

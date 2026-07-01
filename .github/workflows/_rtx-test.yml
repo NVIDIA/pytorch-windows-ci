@@ -255,6 +255,10 @@ jobs:
           submodules: recursive
           fetch-depth: 1
           show-progress: true
+          # This checkout is read-only (the tree is relocated to C:\pt and
+          # only built/tested, never pushed), so it does not need a GitHub
+          # token persisted in .git/config.
+          persist-credentials: false
 
       # Windows MAX_PATH (260) mitigation, root cause fix. The runner image
       # already sets the LongPathsEnabled registry flag (packer
@@ -446,7 +450,7 @@ jobs:
         shell: bash
         run: |
           python "${GITHUB_WORKSPACE}/oot/scripts/test-summary/parse_failures.py" \
-            --reports-dir "${{ env.PT_ROOT }}/test" \
+            --reports-dir "${{ env.PT_ROOT }}/test/test-reports" \
             --title "Failed tests - ${{ inputs.build-environment }} - ${{ inputs.python-label }}/${{ inputs.cuda-label }} - ${{ inputs.arch-name }} - shard ${{ matrix.shard }}/5" \
             >> "$GITHUB_STEP_SUMMARY"
 

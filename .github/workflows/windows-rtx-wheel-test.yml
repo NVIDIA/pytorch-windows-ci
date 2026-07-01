@@ -6,7 +6,7 @@ name: windows-rtx-wheel-test
 # Daily smoke of the *published* pytorch nightly wheel on self-hosted
 # Windows NVIDIA RTX runners. No source build, no preflight, no
 # artifact handoff - each test runner is told `pytorch-ref: nightly`,
-# `actions/checkout@v4` resolves that against `pytorch/pytorch` to a
+# `actions/checkout@v7` resolves that against `pytorch/pytorch` to a
 # concrete commit, the runner reads that commit's UTC date, then
 # greps `download.pytorch.org/whl/nightly/torch/` for the wheel whose
 # filename carries that exact `devYYYYMMDD` tag together with the
@@ -142,7 +142,7 @@ jobs:
     timeout-minutes: 10
     steps:
       - name: Checkout repository (for summary script)
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           fetch-depth: 1
           show-progress: false

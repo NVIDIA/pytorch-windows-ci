@@ -75,7 +75,7 @@ the sm120 test cell for Python 3.13 + CUDA 13.0 needs an image registered as
 
 | Workflow | Purpose | Triggers | Compute |
 | --- | --- | --- | --- |
-| `windows-rtx-wheel-test.yml`           | Each test cell checks out `pytorch/pytorch` at `pytorch-ref` (default `nightly`) via `actions/checkout@v4` (which resolves the branch to a concrete commit), records the actual HEAD SHA + commit date into the cell's job summary, then greps `download.pytorch.org/whl/nightly/torch/` for the wheel whose filename carries that exact `devYYYYMMDD` tag together with the matrix `cu<label>` / `cp<pyshort>` tags and `pip install`s the resolved absolute URL before running `.ci/pytorch/win-test.sh`. Fails fast if no matching wheel exists, so the wheel under test always shares its commit date with the pytorch source on disk. No preflight job, no artifact transit. | `schedule` (`0 17 * * *` = 22:30 IST) | `_rtx-test.yml` (sm89 + sm120 in one matrix) |
+| `windows-rtx-wheel-test.yml`           | Each test cell checks out `pytorch/pytorch` at `pytorch-ref` (default `nightly`) via `actions/checkout@v7` (which resolves the branch to a concrete commit), records the actual HEAD SHA + commit date into the cell's job summary, then greps `download.pytorch.org/whl/nightly/torch/` for the wheel whose filename carries that exact `devYYYYMMDD` tag together with the matrix `cu<label>` / `cp<pyshort>` tags and `pip install`s the resolved absolute URL before running `.ci/pytorch/win-test.sh`. Fails fast if no matching wheel exists, so the wheel under test always shares its commit date with the pytorch source on disk. No preflight job, no artifact transit. | `schedule` (`0 17 * * *` = 22:30 IST) | `_rtx-test.yml` (sm89 + sm120 in one matrix) |
 | `windows-rtx-build-test.yml`            | Full source build (multi-arch wheel) + test, scheduled nightly. Also carries the parked path for real RFC-0050 PR-time events. | `schedule` (`0 3 * * *` = 08:30 IST) | `prep` -> `_rtx-build.yml` -> `_rtx-test.yml` (sm89 + sm120 in one matrix) |
 
 Both nightly workflows fan out across `(config)` for builds and
@@ -150,7 +150,7 @@ inputs the orchestrator provided:
 | Install path | When | Required inputs | Checkout ref from | Install source |
 | --- | --- | --- | --- | --- |
 | **artifact** (path A) | source build | `wheel-artifact` | SHA in `built_pytorch_sha.txt` inside the artifact | `pip install ./artifact/*.whl` |
-| **pip-index** (path B) | nightly wheel | `pytorch-ref` (wheel index `https://download.pytorch.org/whl/nightly/torch/`) | `pytorch-ref` passed verbatim (typically `nightly`); `actions/checkout@v4` resolves it | Wheel URL grepped from the index by checked-out commit's `devYYYYMMDD` + matrix `cu<label>` / `cp<pyshort>` tags |
+| **pip-index** (path B) | nightly wheel | `pytorch-ref` (wheel index `https://download.pytorch.org/whl/nightly/torch/`) | `pytorch-ref` passed verbatim (typically `nightly`); `actions/checkout@v7` resolves it | Wheel URL grepped from the index by checked-out commit's `devYYYYMMDD` + matrix `cu<label>` / `cp<pyshort>` tags |
 
 In both paths the test job records the actual `git rev-parse HEAD` + commit date
 of the checkout into its Step Summary, so each cell logs "what nightly did I
@@ -230,7 +230,7 @@ Pipe the JSONL files through `jq` / `pandas` to plot pressure around a failure.
 | --- | --- |
 | Downstream CI on real PR-time events | `windows-rtx-build-test.yml` (the `pytorch-pr-trigger` `repository_dispatch` arm is parked: its trigger is disabled in `on:` and the dispatch-gated jobs stay dormant) |
 | `concurrency: upstream-pr-<pr_number>` | `windows-rtx-build-test.yml` keys `concurrency.group` on `client_payload.pr_number` when present |
-| `pytorch/actions/checkout-pr@v1` (RFC Action #1) | Used as-is in `_rtx-build.yml` for `repository_dispatch`; falls back to `actions/checkout@v4` against `pytorch/pytorch@<ref>` for scheduled runs |
+| `pytorch/actions/checkout-pr@v1` (RFC Action #1) | Used as-is in `_rtx-build.yml` for `repository_dispatch`; falls back to `actions/checkout@v7` against `pytorch/pytorch@<ref>` for scheduled runs |
 
 ## Repository layout
 

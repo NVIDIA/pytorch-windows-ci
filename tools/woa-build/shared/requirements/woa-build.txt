@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: MIT
+
 # WoA CI - STRICT build-only extras (installed into the BUILD venv, on top of woa-base.txt).
 #
 # The build cell compiles torch (vanilla -> cuda_embed) + the torchaudio/torchvision

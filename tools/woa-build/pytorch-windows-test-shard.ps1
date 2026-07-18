@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: MIT
+
 #Requires -Version 5.1
 <#
 .SYNOPSIS
@@ -65,7 +68,7 @@ $reportsDir = Join-Path $PytorchRoot 'test\test-reports'
 New-Item -ItemType Directory -Path $reportsDir -Force | Out-Null
 $env:PYTORCH_WIN_TEST_LOG_DIR = $reportsDir
 
-# WoA test arg set (docs/woa-ci-plan.md §7). Overriding the default here means we
+# WoA test arg set (docs/woa-ci-plan.md section 7). Overriding the default here means we
 # run the full suite (minus the excludes) rather than the library's test_cuda-only
 # default. Operator can still override via the same env var.
 if ([string]::IsNullOrWhiteSpace($env:PYTORCH_WIN_TEST_RUN_TEST_EXTRA_ARGS)) {

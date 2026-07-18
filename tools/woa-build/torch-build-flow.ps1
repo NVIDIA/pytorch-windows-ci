@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: MIT
+
 #Requires -Version 5.1
 <#
 .SYNOPSIS
@@ -11,7 +14,7 @@
   cuda_embed torch wheel into a flat -OutputDir for `actions/upload-artifact`.
 
   All the site-specific toolchain paths come from shared/env/defaults/*.psd1
-  (WoA §10); this only wires the per-job dynamic values (checkout root, venv,
+  (WoA section 10); this only wires the per-job dynamic values (checkout root, venv,
   arch list, CUDA/cuDNN overrides forwarded from the workflow WOA_* env).
 
   The dated wheel tree and its logs/WHEEL_OUT_ROOT marker are left in place so the
@@ -43,7 +46,7 @@ if (-not [string]::IsNullOrWhiteSpace($VenvActivate)) {
 }
 
 # Forward the workflow's WOA_* toolchain env (if set) onto the names the library
-# reads. Unset ones fall through to the WoA §10 defaults in build-toolchain.psd1.
+# reads. Unset ones fall through to the WoA section 10 defaults in build-toolchain.psd1.
 if ($env:TORCH_CUDA_ARCH_LIST) { $env:PYTORCH_WIN_BUILD_TORCH_CUDA_ARCH_LIST = $env:TORCH_CUDA_ARCH_LIST }
 if ($env:WOA_CUDA_PATH)        { $env:PYTORCH_WIN_BUILD_CUDA_PATH   = $env:WOA_CUDA_PATH }
 if ($env:WOA_CUDNN_ROOT)       { $env:PYTORCH_WIN_BUILD_CUDNN_ROOT  = $env:WOA_CUDNN_ROOT }

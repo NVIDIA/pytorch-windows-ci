@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: MIT
+
 #
 # Build feature toggles and compiler flag fragments. Each value is the default the build
 # environment uses when the matching PYTORCH_WIN_BUILD_* override is unset.

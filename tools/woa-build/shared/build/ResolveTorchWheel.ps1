@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: MIT
+
 <#
 .SYNOPSIS
   Resolve dated wheel output root and PyTorch wheel paths for extension jobs.

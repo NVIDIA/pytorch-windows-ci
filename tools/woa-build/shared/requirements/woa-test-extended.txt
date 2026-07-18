@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: MIT
+
 # WoA CI - BEST-EFFORT test dependencies (installed into the TEST venv only).
 #
 # Installed with per-package tolerance by New-WoaJobVenv.ps1: the batch is tried first,

@@ -38,7 +38,7 @@ run builds and tests the **full** matrix with a fixed config:
 | --- | --- | --- |
 | pytorch ref | `nightly` | `pytorch/pytorch` ref built + tested, resolved to a full commit SHA in `prep`. |
 | python versions | `3.13` (temporary) | Currently limited to **3.13 only**; the other cells (`3.11,3.12,3.14,3.14t`) are commented out in the orchestrator's matrix and will be re-enabled shortly (`3.14t` = free-threaded). |
-| shards | `4` | Test shard count; **must match** the `shard:` matrix length in `_woa-test.yml` (fixed for now; see plan §4). |
+| shards | `4` | Test shard count; **must match** the `shard:` matrix length in `_woa-test.yml` (fixed for now; see plan section 4). |
 
 The `prep` job prints the resolved config to the run summary. Each build cell
 records the concrete pytorch commit into `built_pytorch_sha.txt` inside its wheel
@@ -70,7 +70,7 @@ is deferred.
 ## Runner requirements (`woa-arm64` pool)
 
 There is no runner image — every runner in the shared, persistent `woa-arm64`
-pool must be provisioned to the contract in [plan §10](./woa-ci-plan.md#10-runner-preinstall-contract-paths-the-workflows-assume).
+pool must be provisioned to the contract in [plan section 10](./woa-ci-plan.md#10-runner-preinstall-contract-paths-the-workflows-assume).
 Summary:
 
 - **PowerShell 7 (`pwsh`)** and `ninja` on `PATH`; `git` with long-path support.
@@ -89,8 +89,8 @@ Summary:
     build when no win_arm64 wheel exists.
 - **Toolchain (CTK 13.4):** CUDA `C:\Program Files\NVIDIA\CUDA\v13.4`, cuDNN
   `C:\Program Files\NVIDIA\CUDNN\v9.25`, MSVC arm64 `vcvarsall.bat`, APL
-  (`C:\DevToolKit\APL`) + vcpkg libuv (`C:\DevToolKit\vcpkg`). These match the
-  single-drive `C:` `pytorch-windows-infra` arm64 provisioner.
+  (`C:\DevToolKit\APL`) + vcpkg libuv (`C:\DevToolKit\vcpkg`). These are the
+  single-drive `C:` install paths every arm64 runner must provide.
 - Build + test share the pool; the test runners additionally need a **GPU**
   (`woa-preflight-test` asserts `nvidia-smi`).
 
@@ -114,7 +114,7 @@ touched. All checkouts use `persist-credentials: false`.
 
 | Artifact | Produced by | Contents |
 | --- | --- | --- |
-| `woa-<pylabel>-cu134-<run_id>-<attempt>` | each build cell | the `cuda_embed` torch wheel + torchaudio + torchvision wheels + `built_pytorch_sha.txt` |
+| `woa-<pylabel>-cu134-<run_id>` | each build cell | the `cuda_embed` torch wheel + torchaudio + torchvision wheels + `built_pytorch_sha.txt` |
 | `test-reports-win-woa-arm64-<pylabel>-arm64-shard<N>-<run_id>-<attempt>` | each test shard | JUnit XML + `run_test.py` logs |
 | `runner-diagnostics-woa-*` | build/test | runner diagnostics (best-effort) |
 
@@ -151,7 +151,7 @@ and the test job warns and continues.
 
 | Symptom | Likely cause / fix |
 | --- | --- |
-| `woa-preflight-build/test` fails immediately | Runner missing a §10 path (CUDA/cuDNN), a clean ARM64 interpreter for the cell's Python, or a GPU. Re-provision or override the `WOA_*` env. |
+| `woa-preflight-build/test` fails immediately | Runner missing a section 10 path (CUDA/cuDNN), a clean ARM64 interpreter for the cell's Python, or a GPU. Re-provision or override the `WOA_*` env. |
 | `woa-create-venv` fails | No ARM64 interpreter for the cell (or an x64 one shadows it), or a **strict core** package failed to install. Extended (best-effort) failures only warn. Re-provision the arm64 CPython; check the pip log in the step. |
 | `WHEEL_OUT_ROOT marker not found` in an extension step | The torch build step didn't complete in the same job, or `CI_PROJECT_DIR` differs between steps. Extensions read the marker the torch step writes. |
 | Test shard fails with `TORCH_IMPORT_FAILED` | The installed wheel can't load torch (e.g. a missing embedded DLL → WinError 126). A synthetic failing JUnit is emitted so the shard stays visible in the summary. |

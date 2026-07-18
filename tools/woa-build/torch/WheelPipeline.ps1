@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: MIT
+
 <#
 .SYNOPSIS
   PyTorch Windows wheel stages: vanilla pip wheel, then CUDA runtime wheel via second pip wheel.

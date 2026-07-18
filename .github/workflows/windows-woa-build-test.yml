@@ -36,9 +36,9 @@ on:
     # Manual/workflow_dispatch is intentionally NOT offered for this repo.
     - cron: "0 5 * * *"
 
-concurrency:
-  group: windows-woa-build-test-${{ github.run_id }}
-  cancel-in-progress: false
+# No `concurrency:` group: the shared arm64 pool runs one job per agent, and the
+# only trigger is the once-a-day schedule, so runs never overlap. A run_id-keyed
+# group would be unique per run and coalesce nothing anyway.
 
 permissions:
   contents: read
@@ -46,14 +46,14 @@ permissions:
 
 jobs:
   # ===========================================================================
-  # Resolve the pytorch ref to a full commit SHA ONCE (over HTTPS) and pin every
-  # build + test cell to it. The nightly run builds a moving branch (`nightly`), so
-  # without this each of the N build cells would independently check out a moving
-  # branch (e.g. `nightly`) and could build DIFFERENT commits mid-run. Resolving
-  # here guarantees a single, integrity-checked source across the whole run
-  # (Git objects are content-addressed, so checking out a full SHA yields exactly
-  # that commit or fails). `_woa-build.yml` additionally rejects a non-SHA ref, so
-  # the pin is enforced even when the reusable workflow is called directly.
+  # Resolve pytorch + the torchaudio/torchvision sources to full commit SHAs ONCE
+  # (over HTTPS) and pin every build + test cell to them. The nightly run tracks
+  # moving branches, so without this each build cell would independently check out
+  # a moving branch and could build DIFFERENT commits mid-run. Resolving here gives
+  # one integrity-checked source triple across the whole run (Git objects are
+  # content-addressed, so a full SHA yields exactly that commit or fails).
+  # `_woa-build.yml` additionally rejects a non-SHA pytorch ref, so the pin is
+  # enforced even when the reusable workflow is called directly.
   # ===========================================================================
   prep:
     name: resolve pytorch ref
@@ -61,37 +61,46 @@ jobs:
     timeout-minutes: 5
     outputs:
       pytorch-ref: ${{ steps.ref.outputs.pytorch-ref }}
+      torchaudio-ref: ${{ steps.ref.outputs.torchaudio-ref }}
+      torchvision-ref: ${{ steps.ref.outputs.torchvision-ref }}
     steps:
-      - name: Resolve pytorch ref to a commit SHA
+      - name: Resolve source refs to commit SHAs
         id: ref
         shell: bash
         env:
           REF: "nightly"
+          AUDIO_REF: "main"
+          VISION_REF: "main"
           PYTHON_VERSIONS: ""
           NUM_SHARDS: "4"
         run: |
           set -euo pipefail
-          repo_url="https://github.com/pytorch/pytorch"
-          if [[ "${REF}" =~ ^[0-9a-f]{40}$ ]]; then
-            # Already a full commit SHA - use as-is (no resolution needed).
-            sha="${REF}"
-            echo "pytorch-ref is already a full commit SHA: ${sha}"
-          else
-            # Resolve a branch/tag to its commit SHA over HTTPS. Prefer a peeled
-            # annotated-tag commit (refs/tags/<x>^{}) when present, else the first
-            # matching ref (covers branches like `nightly` and lightweight tags).
-            lines="$(git ls-remote "${repo_url}" "${REF}" "refs/heads/${REF}" "refs/tags/${REF}" 2>/dev/null || true)"
+          # Resolve a branch/tag to its commit SHA over HTTPS (a full SHA passes
+          # through unchanged). Prefer a peeled annotated-tag commit
+          # (refs/tags/<x>^{}) when present, else the first matching ref.
+          resolve_ref() {
+            local repo_url="$1" ref="$2" lines sha
+            if [[ "${ref}" =~ ^[0-9a-f]{40}$ ]]; then printf '%s' "${ref}"; return 0; fi
+            lines="$(git ls-remote "${repo_url}" "${ref}" "refs/heads/${ref}" "refs/tags/${ref}" 2>/dev/null || true)"
             sha="$(printf '%s\n' "${lines}" | awk '/\^\{\}$/ {print $1; exit}')"
-            if [ -z "${sha}" ]; then
-              sha="$(printf '%s\n' "${lines}" | awk 'NF {print $1; exit}')"
+            if [ -z "${sha}" ]; then sha="$(printf '%s\n' "${lines}" | awk 'NF {print $1; exit}')"; fi
+            printf '%s' "${sha}"
+          }
+          require_sha() {
+            if ! [[ "$2" =~ ^[0-9a-f]{40}$ ]]; then
+              echo "::error::Could not resolve $1 ref '$3' to a 40-hex commit SHA (got '${2:-<empty>}')." >&2
+              exit 1
             fi
-            echo "Resolved pytorch-ref '${REF}' -> ${sha}"
-          fi
-          if ! [[ "${sha}" =~ ^[0-9a-f]{40}$ ]]; then
-            echo "::error::Could not resolve pytorch-ref '${REF}' to a 40-hex commit SHA (got '${sha:-<empty>}'). Pass a branch, tag, or full commit SHA." >&2
-            exit 1
-          fi
-          echo "pytorch-ref=${sha}" >> "$GITHUB_OUTPUT"
+          }
+          sha="$(resolve_ref "https://github.com/pytorch/pytorch" "${REF}")";        require_sha pytorch     "${sha}"       "${REF}"
+          audio_sha="$(resolve_ref "https://github.com/pytorch/audio" "${AUDIO_REF}")";   require_sha torchaudio  "${audio_sha}"  "${AUDIO_REF}"
+          vision_sha="$(resolve_ref "https://github.com/pytorch/vision" "${VISION_REF}")"; require_sha torchvision "${vision_sha}" "${VISION_REF}"
+          echo "Resolved pytorch '${REF}' -> ${sha}, torchaudio '${AUDIO_REF}' -> ${audio_sha}, torchvision '${VISION_REF}' -> ${vision_sha}"
+          {
+            echo "pytorch-ref=${sha}"
+            echo "torchaudio-ref=${audio_sha}"
+            echo "torchvision-ref=${vision_sha}"
+          } >> "$GITHUB_OUTPUT"
           {
             echo "## windows-woa-build-test config"
             echo ""
@@ -100,6 +109,8 @@ jobs:
             echo "| trigger | \`${{ github.event_name }}\` |"
             echo "| pytorch-ref (input) | \`${REF}\` |"
             echo "| pytorch-ref (resolved SHA) | \`${sha}\` |"
+            echo "| torchaudio-ref (resolved SHA) | \`${audio_sha}\` |"
+            echo "| torchvision-ref (resolved SHA) | \`${vision_sha}\` |"
             echo "| python-versions (build + test) | \`${PYTHON_VERSIONS:-(all)}\` |"
             echo "| test config | \`per-version / cu134\` |"
             echo "| shards | \`${NUM_SHARDS}\` |"
@@ -134,6 +145,10 @@ jobs:
       cuda-arch-list: "8.9;10.3+PTX;12.0;12.1+PTX"
       build-environment: win-woa-arm64
       pytorch-ref: ${{ needs.prep.outputs.pytorch-ref }}
+      # Extensions pinned to the SHAs resolved in prep so every cell builds the
+      # same torchaudio/torchvision source (reproducible across the matrix).
+      torchaudio-ref: ${{ needs.prep.outputs.torchaudio-ref }}
+      torchvision-ref: ${{ needs.prep.outputs.torchvision-ref }}
       # Must match the paired test cell's `wheel-artifact` for the same label.
       # No run_attempt in the name: "Re-run failed jobs" bumps run_attempt but does NOT
       # re-run this already-succeeded build, so the wheel must keep a stable name (scoped
@@ -185,8 +200,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - name: Checkout pytorch-oot-internal (for summary script)
-        uses: actions/checkout@v7
+      - name: Checkout this repository (for summary script)
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
         with:
           fetch-depth: 1
           show-progress: false
@@ -208,7 +223,7 @@ jobs:
       - name: Download all shard test-reports
         if: always()
         continue-on-error: true
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           pattern: test-reports-*
           path: all-reports

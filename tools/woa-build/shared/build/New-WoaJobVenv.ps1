@@ -1,10 +1,13 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: MIT
+
 <#
 .SYNOPSIS
     Create a FRESH per-job Python virtual environment for the Windows-on-Arm PyTorch CI.
 
 .DESCRIPTION
-    The WoA runners keep only clean ARM64 CPython interpreters (installed by the
-    pytorch-windows-infra provisioner via winget); they no longer carry pre-built venvs.
+    The WoA runners keep only clean ARM64 CPython interpreters (provisioned via winget);
+    they no longer carry pre-built venvs.
     Because the shared runners are public-facing and may see untrusted code, every job
     builds its own throwaway venv under the job scratch tree (wiped by woa-strict-clean at
     job start and end), so nothing a job installs can leak into the next job.
@@ -234,6 +237,13 @@ foreach ($rf in $ExtendedRequirements) {
 if ($skipped.Count -gt 0) {
     Write-Warning "  $($skipped.Count) best-effort package(s) skipped: $($skipped -join ', ')"
 }
+
+# The best-effort installs above intentionally tolerate a failing `pip install` (a package with no
+# win_arm64 wheel / buildable sdist is skipped, not fatal). A tolerated failure leaves $LASTEXITCODE
+# nonzero, and the woa-create-venv composite checks $LASTEXITCODE after this script returns - so a
+# skipped optional package would be misread as a venv failure. Clear the leaked native exit state
+# here; strict/core failures already threw (ErrorActionPreference=Stop) and never reach this point.
+$global:LASTEXITCODE = 0
 
 $activate = Join-Path $VenvPath 'Scripts\Activate.ps1'
 if (-not (Test-Path -LiteralPath $activate)) {

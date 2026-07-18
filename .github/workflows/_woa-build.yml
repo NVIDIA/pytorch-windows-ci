@@ -60,10 +60,19 @@ on:
         required: false
         default: "win-woa-arm64"
       pytorch-ref:
-        description: "pytorch/pytorch commit to build. MUST be a full 40-hex commit SHA (enforced) - the orchestrator prep resolves branches/tags to a SHA before calling this workflow."
+        description: "pytorch/pytorch commit to build. MUST be a full 40-hex commit SHA (enforced below). The orchestrator prep resolves branches/tags to a SHA; direct callers must pass a SHA (required, no default, so a symbolic ref cannot slip past the guard)."
+        type: string
+        required: true
+      torchaudio-ref:
+        description: "torchaudio (pytorch/audio) commit to build. Resolved to a SHA by the orchestrator prep; empty = clone the remote default branch (direct-caller fallback)."
         type: string
         required: false
-        default: "nightly"
+        default: ""
+      torchvision-ref:
+        description: "torchvision (pytorch/vision) commit to build. Resolved to a SHA by the orchestrator prep; empty = clone the remote default branch (direct-caller fallback)."
+        type: string
+        required: false
+        default: ""
       wheel-artifact:
         description: >
           Artifact name to publish the wheels + built_pytorch_sha.txt under.
@@ -107,11 +116,18 @@ jobs:
       CUDA_VERSION: ${{ inputs.cuda-version }}
       BUILD_TEST: "1"
       DISTUTILS_USE_SDK: "1"
-      # ---- WoA preinstall contract (single-drive C: runners; see docs/woa-ci-plan.md §10) ----
-      # Paths match the pytorch-windows-infra arm64 provisioner (single C: drive): CTK/cuDNN under
+      # Pinned extension source commits (resolved by the orchestrator prep); empty
+      # falls back to the remote default branch. Read by the vendored extension
+      # pipeline via Resolve-CiEnv.
+      TORCHAUDIO_WIN_GIT_REF: ${{ inputs.torchaudio-ref }}
+      TORCHVISION_WIN_GIT_REF: ${{ inputs.torchvision-ref }}
+      # ---- WoA preinstall contract (single-drive C: runners; see docs/woa-ci-plan.md) ----
+      # Expected install paths on every woa-arm64 runner: CTK/cuDNN under
       # C:\Program Files\NVIDIA, tools/vcpkg/APL under C:\DevToolKit.
       WOA_CUDA_PATH: 'C:\Program Files\NVIDIA\CUDA\v13.4'
       WOA_CUDNN_ROOT: 'C:\Program Files\NVIDIA\CUDNN\v9.25'
+      # arm64 MSVC entry point verified by woa-preflight-build (fail fast if absent).
+      WOA_VCVARS_BAT: 'C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvarsarm64.bat'
       # Short relocated checkout root + job scratch on C: (MAX_PATH + space; runners are C: only).
       PT_ROOT: 'C:\pt'
       WOA_SCRATCH: 'C:\ci\woa\scratch'
@@ -124,10 +140,13 @@ jobs:
       # Keep the OOT tooling in oot/ so the parallel pytorch checkout can't
       # trample it, and so the composite actions resolve at ./oot/.github/...
       - name: Checkout OOT tooling repo
-        uses: actions/checkout@v7
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
         with:
           path: oot
           show-progress: false
+          # Don't leave the job token in oot/.git/config while the build (and any
+          # third-party build code) runs; this checkout only needs read access now.
+          persist-credentials: false
 
       # Persistent shared runner -> scrub any leftover job state BEFORE work.
       - name: Strict clean (pre)
@@ -147,6 +166,7 @@ jobs:
           python-label: ${{ inputs.python-label }}
           cuda-path: ${{ env.WOA_CUDA_PATH }}
           cudnn-root: ${{ env.WOA_CUDNN_ROOT }}
+          vcvars-bat: ${{ env.WOA_VCVARS_BAT }}
 
       # Build a FRESH, throwaway venv for this job from the clean interpreter and install the
       # WoA BUILD deps (woa-base.txt + woa-build.txt, strict - no test harness/domain stack).
@@ -189,7 +209,7 @@ jobs:
       # actions/checkout clones over HTTPS/TLS (no SSH; credentials not persisted).
       # `ref` is a full commit SHA (see the guard above), so the fetch is pinned.
       - name: Checkout pytorch/pytorch
-        uses: actions/checkout@v7
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
         with:
           repository: pytorch/pytorch
           ref: ${{ inputs.pytorch-ref }}
@@ -199,9 +219,9 @@ jobs:
           path: pytorch
           persist-credentials: false
 
-      # MAX_PATH mitigation (see _rtx-test.yml for the full rationale): relocate
-      # the deep pytorch tree to a short root on D:. Same-volume move is an
-      # atomic rename; the strict-clean above already emptied C:\pt.
+      # MAX_PATH mitigation: relocate the deep pytorch tree to the short root
+      # PT_ROOT (C:\pt). Same-volume move is an atomic rename; the strict-clean
+      # above already emptied C:\pt.
       - name: Relocate pytorch checkout to a short path
         shell: cmd
         run: |
@@ -282,7 +302,7 @@ jobs:
 
       - name: Publish wheels + sha artifact
         if: inputs.wheel-artifact != ''
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: ${{ inputs.wheel-artifact }}
           path: artifact
@@ -327,7 +347,7 @@ jobs:
 
       - name: Upload runner diagnostics
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: runner-diagnostics-woa-build-${{ inputs.python-label }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ steps.diag.outputs.output-dir }}/**
@@ -341,7 +361,7 @@ jobs:
       # log is truncated or the runner rebooted mid-build. Runs on success AND failure.
       - name: Upload build logs
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: build-logs-woa-${{ inputs.python-label }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ github.workspace }}/logs/**

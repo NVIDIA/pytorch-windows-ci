@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: MIT
+
 #Requires -Version 5.1
 <#
 .SYNOPSIS
@@ -157,7 +160,19 @@ function Invoke-PytorchWindowsBuildFlow {
         Write-CiPhase -State 'PASS' -Phase 'toolchain_metadata' -Component $component
 
         Write-CiPhase -State 'START' -Phase 'env_dump_process' -Component $component
-        Get-ChildItem Env: | Sort-Object Name | Format-Table -AutoSize -Wrap
+        # Public CI logs: do NOT dump the whole process environment (it can leak proxy
+        # URLs, internal endpoints, usernames, or tokens GitHub cannot mask). Emit only an
+        # allow-list of benign build knobs, each routed through the secret redactor.
+        $envAllowPrefixes = @(
+            'BUILD_', 'PYTHON_VERSION', 'PYTHON_LABEL', 'CUDA_', 'CUDNN_', 'CMAKE_',
+            'TORCH_', 'USE_', 'PYTORCH_WIN_BUILD_', 'EXT_WIN_', 'DISTUTILS_USE_SDK',
+            'BLAS', 'FORCE_CUDA', 'MAX_JOBS', 'VSCMD_', 'WOA_', 'CHECKOUT_ROOT',
+            'CI_PROJECT_DIR', 'PT_ROOT'
+        )
+        Get-ChildItem Env: |
+            Where-Object { $n = $_.Name; @($envAllowPrefixes | Where-Object { $n -like "$_*" }).Count -gt 0 } |
+            Sort-Object Name |
+            ForEach-Object { '  {0}={1}' -f $_.Name, (Hide-CiSecretsInString -Text ([string]$_.Value)) }
         Write-CiPhase -State 'PASS' -Phase 'env_dump_process' -Component $component
 
         Invoke-PytorchWindowsWheelStages -CheckoutRoot $checkoutRoot -BuildSubset $buildSubset -Component $component

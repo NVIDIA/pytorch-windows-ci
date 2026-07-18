@@ -21,8 +21,9 @@ Upstream covers a single configuration (Python 3.12, CUDA 12.8); this repo
 deliberately expands the matrix to catch regressions across multiple Python and
 CUDA toolkit combinations before they show up upstream. The build/test logic
 comes entirely from PyTorch's in-tree `.ci/pytorch/*.sh` scripts — this repo
-holds only the workflow wiring. Every job runs on a self-hosted NVIDIA runner;
-there are no GitHub-hosted (cloud) runs.
+holds only the workflow wiring. The build and test jobs run on self-hosted NVIDIA
+runners; the lightweight jobs (lint, prep/ref-resolution, and test-summary) run
+on GitHub-hosted `ubuntu-latest`.
 
 > **Full architecture, matrix, and runner model:**
 > [docs/ci-details.md](docs/ci-details.md).

@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: MIT
+
 <#
 .SYNOPSIS
   Small helpers shared by torchaudio and torchvision Windows wheel scripts.
@@ -54,26 +57,50 @@ function Get-ExtensionWheelBuildWorkRoot {
 function Invoke-ExtensionGitShallowClone {
     <#
     .SYNOPSIS
-      Shallow clone with core.longpaths=true for Windows MAX_PATH during checkout.
+      Shallow checkout with core.longpaths=true for Windows MAX_PATH during checkout.
+
+    .DESCRIPTION
+      With -Ref (a full commit SHA) the exact commit is fetched with --depth 1 and checked
+      out detached, so the build is reproducible and integrity-checked (Git objects are
+      content-addressed). Without -Ref it shallow-clones the remote's default branch.
+      Sets $LASTEXITCODE non-zero on the first failing git step so the caller can throw.
 
     .PARAMETER RemoteUrl
       Git remote URL.
 
     .PARAMETER LocalDirectoryName
       Target directory under cwd (e.g. audio or vision).
+
+    .PARAMETER Ref
+      Full commit SHA to pin; empty = the remote default branch.
     #>
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)][string] $RemoteUrl,
-        [Parameter(Mandatory)][string] $LocalDirectoryName
+        [Parameter(Mandatory)][string] $LocalDirectoryName,
+        [string] $Ref
     )
-    & git @(
-        'clone',
-        '--config', 'core.longpaths=true',
-        '--depth', '1',
-        $RemoteUrl,
-        $LocalDirectoryName
-    )
+    if ([string]::IsNullOrWhiteSpace($Ref)) {
+        & git @(
+            'clone',
+            '--config', 'core.longpaths=true',
+            '--depth', '1',
+            $RemoteUrl,
+            $LocalDirectoryName
+        )
+        return
+    }
+    # Pinned commit: init + fetch that exact SHA (shallow) + detached checkout.
+    New-Item -ItemType Directory -Path $LocalDirectoryName -Force | Out-Null
+    & git @('-C', $LocalDirectoryName, '-c', 'init.defaultBranch=main', 'init', '-q')
+    if ($LASTEXITCODE -ne 0) { return }
+    & git @('-C', $LocalDirectoryName, 'config', 'core.longpaths', 'true')
+    if ($LASTEXITCODE -ne 0) { return }
+    & git @('-C', $LocalDirectoryName, 'remote', 'add', 'origin', $RemoteUrl)
+    if ($LASTEXITCODE -ne 0) { return }
+    & git @('-C', $LocalDirectoryName, 'fetch', '--depth', '1', 'origin', $Ref)
+    if ($LASTEXITCODE -ne 0) { return }
+    & git @('-C', $LocalDirectoryName, 'checkout', '--detach', 'FETCH_HEAD')
 }
 
 function Invoke-ExtensionPipWheelLogged {

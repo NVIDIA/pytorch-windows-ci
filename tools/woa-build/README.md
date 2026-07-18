@@ -13,7 +13,7 @@ torch (vanilla) → torch (cuda_embed, DLLs embedded) → torchaudio → torchvi
 ```
 
 See [`docs/woa-ci-plan.md`](../../docs/woa-ci-plan.md) for the design, the locked
-decisions, and the runner contract (§10).
+decisions, and the runner contract (section 10).
 
 ## Overview
 
@@ -71,9 +71,9 @@ rest):
 
 ## Site defaults (`shared/env/defaults/*.psd1`)
 
-The WoA §10 runner contract lives here (overridable via the `PYTORCH_WIN_*` env
-vars above), matching the single-drive `C:` `pytorch-windows-infra` arm64
-provisioner: CUDA `C:\Program Files\NVIDIA\CUDA\v13.4` + cuDNN
+The WoA runner contract lives here (overridable via the `PYTORCH_WIN_*` env
+vars above), describing the expected single-drive `C:` arm64 runner layout:
+CUDA `C:\Program Files\NVIDIA\CUDA\v13.4` + cuDNN
 `C:\Program Files\NVIDIA\CUDNN\v9.25`, APL/libuv under `C:\DevToolKit`, the fresh
 per-job venv under `C:\ci\woa\scratch\venv\<pylabel>` (built by `woa-create-venv`
 from the runner's clean ARM64 interpreter — no preinstalled venvs),

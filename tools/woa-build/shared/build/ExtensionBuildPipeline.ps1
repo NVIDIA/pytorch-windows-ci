@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: MIT
+
 #Requires -Version 5.1
 <#
 .SYNOPSIS
@@ -49,6 +52,22 @@ function Get-ExtensionGitRemoteUrl {
     switch ($ExtName) {
         'torchaudio'  { return (Resolve-CiEnv -Name 'TORCHAUDIO_WIN_GIT_URL'  -Default (Get-CiDefault TorchaudioGitUrl)) }
         'torchvision' { return (Resolve-CiEnv -Name 'TORCHVISION_WIN_GIT_URL' -Default (Get-CiDefault TorchvisionGitUrl)) }
+    }
+}
+
+function Get-ExtensionGitRef {
+    <#
+    .SYNOPSIS
+      Per-extension pinned commit SHA (empty = clone the remote default branch).
+      The orchestrator prep resolves audio/vision to a SHA and passes it in.
+    #>
+    [CmdletBinding()]
+    [OutputType([string])]
+    param([Parameter(Mandatory)][ValidateSet('torchaudio', 'torchvision')][string] $ExtName)
+
+    switch ($ExtName) {
+        'torchaudio'  { return (Resolve-CiEnv -Name 'TORCHAUDIO_WIN_GIT_REF') }
+        'torchvision' { return (Resolve-CiEnv -Name 'TORCHVISION_WIN_GIT_REF') }
     }
 }
 
@@ -204,12 +223,14 @@ function Invoke-PytorchExtensionBuild {
     if ($LASTEXITCODE -ne 0) { throw "pip install CUDA-embedded torch wheel failed with exit $LASTEXITCODE" }
     Write-CiPhase -State 'PASS' -Phase "${phase}_pip_install_torch_cuda_embed" -Component $component
 
-    # 4. Shallow clone with long-path support; cd into the cloned source.
+    # 4. Shallow checkout (pinned SHA when provided) with long-path support; cd into the source.
     $remoteUrl = Get-ExtensionGitRemoteUrl -ExtName $ExtName
-    Write-CiPhase -State 'START' -Phase "${phase}_git_clone" -Component $component -Detail $remoteUrl
-    Invoke-ExtensionGitShallowClone -RemoteUrl $remoteUrl -LocalDirectoryName $LocalDirectoryName
+    $gitRef    = Get-ExtensionGitRef -ExtName $ExtName
+    $cloneDetail = if ([string]::IsNullOrWhiteSpace($gitRef)) { "$remoteUrl (default branch)" } else { "$remoteUrl @ $gitRef" }
+    Write-CiPhase -State 'START' -Phase "${phase}_git_clone" -Component $component -Detail $cloneDetail
+    Invoke-ExtensionGitShallowClone -RemoteUrl $remoteUrl -LocalDirectoryName $LocalDirectoryName -Ref $gitRef
     if ($LASTEXITCODE -ne 0) {
-        throw "git clone $ExtName failed with exit $LASTEXITCODE"
+        throw "git checkout $ExtName failed with exit $LASTEXITCODE"
     }
     $repoRoot = Join-Path $workRoot $LocalDirectoryName
     Set-Location -LiteralPath $repoRoot
@@ -217,11 +238,13 @@ function Invoke-PytorchExtensionBuild {
 
     $logsDir = Get-ExtensionLogsDir
     New-Item -ItemType Directory -Path $logsDir -Force | Out-Null
+    # Record the resolved source (URL + pinned ref) alongside the checked-out HEAD SHA so the
+    # artifact metadata captures exactly which extension commit was built.
     Export-RepoMetadataSidecar `
         -CanonicalName $ExtName `
         -GitRoot $repoRoot `
         -LogsDir $logsDir `
-        -ExtraFields @{ clone_remote_url = $remoteUrl }
+        -ExtraFields @{ clone_remote_url = $remoteUrl; clone_ref = $gitRef }
 
     # 5. vcvars + common build env.
     Write-CiPhase -State 'START' -Phase "${phase}_vcvars" -Component $component

@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: MIT
+
 #Requires -Version 5.1
 <#
 .SYNOPSIS
@@ -114,13 +117,17 @@ function Set-RunTestExtensionsDirEnv {
       long paths for some inputs and nvcc does not support >MAX_PATH output paths AT ALL, so the flag
       alone is not a reliable guard. The only robust fix is to keep the build-output root short.
 
-      Resolving PYTORCH_WIN_TEST_TORCH_EXTENSIONS_DIR (default 'C:\te' via the manifest DefaultKey)
-      and exporting it as TORCH_EXTENSIONS_DIR gives paths like C:\te\pyXYZ_cuNNN\<ext>\..., dozens of
-      chars shorter. Set to empty to opt out (falls back to torch's default location).
+      Resolving PYTORCH_WIN_TEST_TORCH_EXTENSIONS_DIR (default a short root UNDER the per-job scratch,
+      C:\ci\woa\scratch\te, via the manifest DefaultKey) and exporting it as TORCH_EXTENSIONS_DIR gives
+      paths like ...\te\pyXYZ_cuNNN\<ext>\..., dozens of chars shorter. Keeping it inside scratch means
+      woa-strict-clean wipes it per job, so JIT-built DLLs never leak across commits, Python/CUDA
+      versions, shards, or jobs. Set to empty to opt out (falls back to torch's default location).
 
-      Best-effort: if the short root cannot be created (e.g. the drive is absent on some runner) we
+      Best-effort: if the short root cannot be created (e.g. the path is unavailable on some runner) we
       WARN and leave TORCH_EXTENSIONS_DIR untouched rather than failing the shard - a long default
-      path is no worse than today's behaviour.
+      path is no worse than today's behaviour. If the resolved path is OUTSIDE the job scratch
+      (WOA_SCRATCH) we also skip it, so strict-clean stays authoritative and we never seed a
+      persistent cross-job cache.
 
     .OUTPUTS
       The TORCH_EXTENSIONS_DIR value now in effect, or $null when disabled/unavailable.
@@ -132,10 +139,23 @@ function Set-RunTestExtensionsDirEnv {
     param()
 
     # -AllowEmpty so an operator can opt out by clearing the CI variable (set to ''); an unset
-    # variable still falls through to the manifest DefaultKey (the short D: root).
+    # variable still falls through to the manifest DefaultKey (the short root under job scratch).
     $dir = Resolve-CiEnv -Name 'PYTORCH_WIN_TEST_TORCH_EXTENSIONS_DIR' -AllowEmpty
     if ([string]::IsNullOrWhiteSpace($dir)) {
         return $null
+    }
+
+    # Keep the JIT build root inside the per-job scratch so strict-clean removes it (no cross-job
+    # DLL/metadata leakage). If it resolves outside scratch, skip rather than seed a persistent cache.
+    $scratch = $env:WOA_SCRATCH
+    if (-not [string]::IsNullOrWhiteSpace($scratch)) {
+        $dirFull = [System.IO.Path]::GetFullPath($dir)
+        $scratchFull = [System.IO.Path]::GetFullPath($scratch).TrimEnd('\', '/') + '\'
+        if (-not $dirFull.StartsWith($scratchFull, [System.StringComparison]::OrdinalIgnoreCase)) {
+            Write-CiPhase -State 'WARN' -Phase 'torch_extensions_dir' -Component 'pytorch-windows-test' `
+                -Detail "TORCH_EXTENSIONS_DIR '$dir' is outside WOA_SCRATCH '$scratch'; leaving unset so strict-clean stays authoritative (no cross-job JIT cache)."
+            return $null
+        }
     }
 
     try {
@@ -555,41 +575,15 @@ sys.stderr.write("torch %s cuda=%s import OK\n" % (torch.__version__, torch.vers
     return $code
 }
 
-function Invoke-PostRunReportPublish {
-    <#
-    .SYNOPSIS
-      Invoke publish-test-reports.sh via Git Bash and return its exit code.
-
-    .DESCRIPTION
-      Never throws - the caller folds the result into Resolve-TestShardExitCode. A failed upload means
-      this shard's JUnit never reached the triage server, so the shard should go non-green
-      (invisible-to-triage) even if run_test itself passed. The script's own stdout is routed to the
-      host (job log) via Out-Host so the returned value is a clean integer, never an array polluted by
-      the 7z/curl chatter the publish step prints.
-    #>
-    [CmdletBinding()]
-    [OutputType([int])]
-    param(
-        [Parameter(Mandatory)][string] $PublishScript,
-        [Parameter(Mandatory)][string] $BashExe
-    )
-    & $BashExe --login -c "bash `"$PublishScript`"" | Out-Host
-    $code = if ($null -eq $LASTEXITCODE) { 0 } else { $LASTEXITCODE }
-    if ($code -ne 0) {
-        Write-Warning "publish-test-reports.sh exited $code (artifact upload failed; shard will be marked an allowed failure)"
-    }
-    return $code
-}
-
-# Sentinel exit code for "this shard produced no triage-visible result" - either run_test emitted zero
-# JUnit XML, or the upload to the triage server failed. Distinct from the watchdog's 124 and from
-# pytest's own 0-5 so it reads unambiguously in the job log. continue-on-error renders it yellow.
+# Sentinel exit code for "this shard produced no uploadable test report" - run_test.py emitted zero
+# JUnit XML, or a report-publish step reported failure. Distinct from the watchdog's 124 and from
+# pytest's own 0-5 so it reads unambiguously in the job log.
 $Script:ReportUnavailableExitCode = 125
 
 function Get-TestReportUnavailableExitCode {
     <#
     .SYNOPSIS
-      Sentinel exit code meaning the shard produced/uploaded nothing triage can see.
+      Sentinel exit code meaning the shard produced/uploaded no test report.
     #>
     return $Script:ReportUnavailableExitCode
 }
@@ -615,22 +609,21 @@ function Resolve-TestShardExitCode {
     .DESCRIPTION
       Two policies, selected by -FailOnTestFailure:
 
-      Default (triage-owned, -FailOnTestFailure OFF) - a shard goes non-green (continue-on-error ->
-      yellow) ONLY for problems triage cannot see on its own; an ordinary test failure stays GREEN
-      because triage_report.xlsx is the authoritative failure record:
+      Default (-FailOnTestFailure OFF) - a shard goes non-green ONLY for problems an external failure
+      record cannot recover on its own; an ordinary test failure stays GREEN:
         * watchdog wall-clock timeout -> return the timeout code (124): the run was TRUNCATED, so tests
           after the hang never executed (coverage gap).
-        * zero JUnit XML produced     -> 125: nothing was measured (crash / everything filtered) - the
-          shard is invisible to triage.
-        * upload failed               -> 125: reports exist but never reached the triage server.
-        * otherwise                   -> 0: tests ran; pass/fail is triage's job, not the shard's.
+        * zero JUnit XML produced     -> 125: nothing was measured (crash / everything filtered).
+        * report publish failed       -> 125: reports exist but were not published.
+        * otherwise                   -> 0: tests ran; pass/fail is recorded in the JUnit reports.
 
-      -FailOnTestFailure ON (GitHub / x86 parity) - additionally propagate a plain test failure: after
-      the truncation/visibility guards above, a non-zero run_test.py exit (one or more failing tests)
-      returns that code so the job goes RED. --keep-going / CONTINUE_THROUGH_ERROR still ran the whole
-      shard first, so the red status reflects the complete pass/fail picture (matching `_rtx-test.yml`,
-      which lets win-test.sh's exit code flow). There is no triage server on GitHub, so the shard itself
-      must carry red/green.
+      -FailOnTestFailure ON (GitHub / x86 parity, the mode this repo uses) - additionally propagate a
+      plain test failure: after the truncation/visibility guards above, a non-zero run_test.py exit
+      (one or more failing tests) returns that code so the job goes RED. --keep-going /
+      CONTINUE_THROUGH_ERROR still ran the whole shard first, so the red status reflects the complete
+      pass/fail picture (matching `_rtx-test.yml`, which lets win-test.sh's exit code flow). The
+      uploaded test-reports artifact carries the per-test detail, so the shard itself must carry
+      red/green.
 
       Watchdog is checked first because it synthesizes one XML (ReportXmlCount would be >=1) yet must
       still surface as the timeout rather than a plain pass.

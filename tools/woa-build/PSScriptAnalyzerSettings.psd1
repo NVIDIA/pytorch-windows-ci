@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: MIT
+
 #
 # PSScriptAnalyzer settings for the vendored WoA build/test library
 # (consumed by .github/workflows/lint.yml `powershell` job via -Settings).

@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: MIT
+
 #
 # Extension defaults — torchaudio / torchvision build flow, vcpkg layout, codec toggles, and the
 # parent dir for the per-job work tree.

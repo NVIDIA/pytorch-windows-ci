@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: MIT
+
 <#
 .SYNOPSIS
   Resolve CUDA / cuDNN / CUPTI runtime directories and copy *.dll into the PyTorch build tree's
@@ -65,25 +68,26 @@ function Get-CudaCuptiRuntimeDir {
       $null if none is found.
 
     .DESCRIPTION
-      CUPTI's runtime DLL moved between CUDA toolkit layouts, so we keep a map of every known
-      location and return the first one that actually holds a cupti64_*.dll:
+      The CUPTI runtime DLL lives in different directories depending on the CUDA toolkit layout, so
+      we keep a map of every known location and return the first one that actually holds a
+      cupti64_*.dll. Across the toolkit versions this repo targets (up to and including the publicly
+      released CTK 13.4, https://developer.nvidia.com/cuda-13-4-0-download-archive) the DLL has been
+      seen in these layouts:
 
-        * LEGACY  (<= CUDA 13.1): the toolkit ships an extras\CUPTI subtree
-                                  (doc\ include\ lib64\ samples\); the DLL is in extras\CUPTI\lib64.
-        * FLATTENED (CUDA 13.4 early RCs): extras\CUPTI was removed and its contents were hoisted
-                                  into the toolkit root — extras\CUPTI\lib64 -> lib,
-                                  extras\CUPTI\include -> include, etc.; the DLL is in top-level lib\.
-        * ARCH-SPLIT (CUDA 13.4 RC018+): the flattened lib\ was further split into per-arch
-                                  subdirs; the toolkit's own arm64 DLL is in lib\arm64\
-                                  (e.g. lib\arm64\cupti64_2026.3.0.dll), with an x64 copy in lib\x64\.
-        * LEGACY ARCH-SPLIT (CUDA 13.4 GA): the extras\CUPTI subtree is back, but its lib64\ is now
-                                  per-arch; the arm64 DLL is in extras\CUPTI\lib64\arm64\
-                                  (e.g. extras\CUPTI\lib64\arm64\cupti64_2026.3.0.dll), x64 in lib64\x64\.
+        * LEGACY: the toolkit ships an extras\CUPTI subtree (doc\ include\ lib64\ samples\); the
+                  DLL is in extras\CUPTI\lib64.
+        * FLATTENED: extras\CUPTI is absent and its contents are hoisted into the toolkit root
+                  (extras\CUPTI\lib64 -> lib, extras\CUPTI\include -> include, etc.); the DLL is in
+                  the top-level lib\.
+        * ARCH-SPLIT: the flattened lib\ is further split into per-arch subdirs; the toolkit's own
+                  arm64 DLL is in lib\arm64\, with an x64 copy in lib\x64\.
+        * LEGACY ARCH-SPLIT: the extras\CUPTI subtree is present but its lib64\ is per-arch; the
+                  arm64 DLL is in extras\CUPTI\lib64\arm64\, with an x64 copy in extras\CUPTI\lib64\x64\.
 
-      The previous code hard-coded only 'extras\CUPTI\lib64', so on 13.4 (no extras\CUPTI) nothing
-      was staged, cupti64_*.dll never made it into torch\lib, and aoti_custom_ops.dll ->
-      torch_cpu.dll failed to load with WinError 126 at test time (imports fine on the build box
-      because CUDA is on PATH there).
+      Hard-coding only 'extras\CUPTI\lib64' means a layout without that subtree stages no CUPTI DLL,
+      so cupti64_*.dll never makes it into torch\lib and aoti_custom_ops.dll -> torch_cpu.dll fails
+      to load with WinError 126 at test time (it imports fine on the build box because CUDA is on
+      PATH there).
 
       Only CUPTI needs this map: the main CUDA runtime DLLs stayed in <cuda>\bin across 13.1/13.4
       (staged separately by Get-CudaBinDirForDelvewheel), and cuDNN is a separate install — CUPTI is
@@ -100,10 +104,10 @@ function Get-CudaCuptiRuntimeDir {
     # x64 cupti would pass this check but still fail to load (WinError 126). A missing arm64 DLL must
     # surface as a build failure, not a silently-wrong wheel.
     $cuptiDirMap = [ordered]@{
-        'legacy-lib64-arm64'  = 'extras\CUPTI\lib64\arm64' # 13.4 GA: extras\CUPTI kept, lib64\ split per-arch (confirmed)
-        'legacy-lib64'        = 'extras\CUPTI\lib64'   # <= 13.1 (confirmed)
-        'flattened-lib'       = 'lib'                   # 13.4 early RCs: DLL directly in lib\ (confirmed)
-        'flattened-lib-arm64' = 'lib\arm64'             # 13.4 RC018+: lib\ split into per-arch subdirs (confirmed)
+        'legacy-lib64-arm64'  = 'extras\CUPTI\lib64\arm64' # extras\CUPTI kept, lib64\ split per-arch
+        'legacy-lib64'        = 'extras\CUPTI\lib64'   # extras\CUPTI subtree, single lib64\
+        'flattened-lib'       = 'lib'                   # DLL directly in the top-level lib\
+        'flattened-lib-arm64' = 'lib\arm64'             # top-level lib\ split into per-arch subdirs
     }
     foreach ($layout in $cuptiDirMap.Keys) {
         $dir = Join-Path $cudaPath $cuptiDirMap[$layout]

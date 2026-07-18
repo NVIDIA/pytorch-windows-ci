@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: MIT
+
 #
 # Test runtime defaults — test venv activator. Toolchain paths reused at test time live in
 # build-toolchain.psd1 so a single edit covers build + test.
@@ -17,11 +20,12 @@
         # Per-test cap (seconds) handed to pytest-timeout (thread method). Normal tests finish in
         # seconds; this only trips on a wedged individual test so run_test.py can continue.
         PerTestTimeoutSec = 900
-        # Short root for test-time JIT cpp_extension builds (exported as TORCH_EXTENSIONS_DIR). The
-        # default systemprofile cache base is ~95 chars before the per-extension tail; nvcc has no
-        # long-path support at all, so a short root on the runner's C: (where isolated checkouts also
-        # live) is the only reliable MAX_PATH guard. Set the env var to empty to fall back to torch's
-        # default location.
-        TorchExtensionsDir = 'C:\te'
+        # Short root for test-time JIT cpp_extension builds (exported as TORCH_EXTENSIONS_DIR),
+        # placed UNDER the per-job scratch (WOA_SCRATCH = C:\ci\woa\scratch) so woa-strict-clean
+        # wipes it at job end - JIT-built DLLs/metadata never survive across commits, Python/CUDA
+        # versions, shards, or jobs. Kept short because the default systemprofile cache base is
+        # ~95 chars and nvcc has no long-path support at all. Set the env var to empty to fall back
+        # to torch's default location.
+        TorchExtensionsDir = 'C:\ci\woa\scratch\te'
     }
 }

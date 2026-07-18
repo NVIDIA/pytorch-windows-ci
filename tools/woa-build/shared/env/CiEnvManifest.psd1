@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: MIT
+
 #
 # CiEnvManifest.psd1 — every CI/CD env var this project understands.
 #
@@ -116,6 +119,8 @@
         'EXTENSION_WIN_WORK_PARENT'                     = @{ Type = 'Path'; Domain = 'Extensions'; DefaultKey = 'ExtensionWinWorkParent'; Required = $false; Secret = $false; Description = 'Parent dir for extension build work trees.' }
         'TORCHAUDIO_WIN_GIT_URL'                        = @{ Type = 'Url';    Domain = 'Extensions'; DefaultKey = 'TorchaudioGitUrl';      Required = $false; Secret = $false; Description = 'Override upstream torchaudio git URL for the shallow clone (default: pytorch/audio).' }
         'TORCHVISION_WIN_GIT_URL'                       = @{ Type = 'Url';    Domain = 'Extensions'; DefaultKey = 'TorchvisionGitUrl';     Required = $false; Secret = $false; Description = 'Override upstream torchvision git URL for the shallow clone (default: pytorch/vision).' }
+        'TORCHAUDIO_WIN_GIT_REF'                        = @{ Type = 'String'; Domain = 'Extensions'; DefaultKey = $null;                   Required = $false; Secret = $false; Description = 'Pinned torchaudio commit SHA (resolved by the orchestrator prep); empty = clone the remote default branch.' }
+        'TORCHVISION_WIN_GIT_REF'                       = @{ Type = 'String'; Domain = 'Extensions'; DefaultKey = $null;                   Required = $false; Secret = $false; Description = 'Pinned torchvision commit SHA (resolved by the orchestrator prep); empty = clone the remote default branch.' }
         'EXT_WIN_CMAKE_CUDA_ARCHITECTURES'              = @{ Type = 'String'; Domain = 'Extensions'; DefaultKey = $null;                    Required = $false; Secret = $false; Description = 'Global CMAKE_CUDA_ARCHITECTURES fallback for every extension when no per-ext override is set.' }
         'TORCHAUDIO_WIN_CMAKE_CUDA_ARCHITECTURES'       = @{ Type = 'String'; Domain = 'Extensions'; DefaultKey = $null;                    Required = $false; Secret = $false; Description = 'torchaudio-specific CMAKE_CUDA_ARCHITECTURES override.' }
         'TORCHVISION_WIN_CMAKE_CUDA_ARCHITECTURES'      = @{ Type = 'String'; Domain = 'Extensions'; DefaultKey = $null;                    Required = $false; Secret = $false; Description = 'torchvision-specific CMAKE_CUDA_ARCHITECTURES override.' }

@@ -12,10 +12,10 @@ name: _woa-test
 #
 # One invocation is a single WoA test cell for the given Python (py311..py314 or
 # free-threaded py314t), CTK 13.4; the orchestrator calls it once per built
-# version. Sharding is an internal fan-out: `strategy.matrix.shard` spawns a
-# FIXED number of parallel runners (5 for now; variable-by-availability is deferred - see
-# docs/woa-ci-plan.md §4). The test step exports SHARD_NUMBER / NUM_TEST_SHARDS
-# to the vendored PowerShell test entrypoint, which drives test/run_test.py.
+# version. Sharding is an internal fan-out: the `setup` job turns `num-shards`
+# into the shard list and `strategy.matrix.shard` spawns that many parallel jobs.
+# The test step exports SHARD_NUMBER / NUM_TEST_SHARDS to the vendored PowerShell
+# test entrypoint, which drives test/run_test.py.
 #
 # Runners: the same PERSISTENT shared arm64 pool (`woa-arm64`) used for build,
 # carrying only clean ARM64 interpreters (no pre-built venvs). `woa-preflight-test`
@@ -62,7 +62,7 @@ on:
         required: false
         default: "default"
       num-shards:
-        description: "Fixed shard count; must match the `shard:` matrix length below."
+        description: "Number of parallel test shards. Drives the shard matrix (see the setup job) - the single source of truth for the count."
         type: string
         required: false
         default: "4"
@@ -83,8 +83,38 @@ permissions:
   actions: read
 
 jobs:
+  # Turn `num-shards` into the shard list [1..N] so the matrix always matches the
+  # requested count (no silently-omitted or invalid shards). Cheap GitHub-hosted job.
+  setup:
+    name: shard plan
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    # Token-exact match (comma-delimited) so "3.14" does not also match "3.14t".
+    if: >
+      inputs.python-versions == '' ||
+      contains(format(',{0},', inputs.python-versions), format(',{0},', inputs.python-version))
+    outputs:
+      shards: ${{ steps.plan.outputs.shards }}
+    steps:
+      - name: Compute shard list from num-shards
+        id: plan
+        shell: bash
+        env:
+          NUM_SHARDS: ${{ inputs.num-shards }}
+        run: |
+          set -euo pipefail
+          n="${NUM_SHARDS}"
+          if ! [[ "${n}" =~ ^[1-9][0-9]*$ ]]; then
+            echo "::error::num-shards must be a positive integer; got '${n}'." >&2
+            exit 1
+          fi
+          shards="$(seq -s, 1 "${n}")"
+          echo "shards=[${shards}]" >> "$GITHUB_OUTPUT"
+          echo "shard plan: [${shards}]"
+
   test:
-    name: test (shard ${{ matrix.shard }}/4)
+    name: test (shard ${{ matrix.shard }}/${{ inputs.num-shards }})
+    needs: setup
     # Token-exact match (comma-delimited) so "3.14" does not also match "3.14t".
     if: >
       inputs.python-versions == '' ||
@@ -92,9 +122,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # FIXED shard count. To change it, edit this list AND `num-shards`
-        # (and the job name suffix above). Variable sharding is deferred (§4).
-        shard: [1, 2, 3, 4]
+        # Shard list generated from `num-shards` by the setup job - the count is
+        # controlled by that one input, no hardcoded shard numbers here.
+        shard: ${{ fromJSON(needs.setup.outputs.shards) }}
     runs-on:
       - ${{ inputs.runner-base }}
     timeout-minutes: 240
@@ -107,8 +137,8 @@ jobs:
       USE_CUDA: "1"
       CONTINUE_THROUGH_ERROR: "1"
       CI: "1"
-      # ---- WoA preinstall contract (single-drive C: runners; docs/woa-ci-plan.md §10) -------
-      # Paths match the pytorch-windows-infra arm64 provisioner (single C: drive).
+      # ---- WoA preinstall contract (single-drive C: runners; docs/woa-ci-plan.md) -------
+      # Expected install paths on every woa-arm64 runner (single C: drive).
       WOA_CUDA_PATH: 'C:\Program Files\NVIDIA\CUDA\v13.4'
       WOA_CUDNN_ROOT: 'C:\Program Files\NVIDIA\CUDNN\v9.25'
       PT_ROOT: 'C:\pt'
@@ -119,10 +149,12 @@ jobs:
       PIP_CACHE_DIR: 'C:\ci\woa\scratch\pipcache'
     steps:
       - name: Checkout OOT tooling repo
-        uses: actions/checkout@v7
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
         with:
           path: oot
           show-progress: false
+          # Don't retain the job token in oot/.git/config while the test workload runs.
+          persist-credentials: false
 
       - name: Strict clean (pre)
         uses: ./oot/.github/actions/woa-strict-clean
@@ -153,7 +185,7 @@ jobs:
           venv-path: ${{ env.WOA_VENV_DIR }}\${{ inputs.python-label }}
 
       - name: Download wheels artifact
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           name: ${{ inputs.wheel-artifact }}
           path: artifact
@@ -176,7 +208,7 @@ jobs:
         run: git config --global core.longpaths true
 
       - name: Checkout pytorch/pytorch at the built ref
-        uses: actions/checkout@v7
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
         with:
           repository: pytorch/pytorch
           ref: ${{ steps.ref.outputs.ref }}
@@ -227,19 +259,37 @@ jobs:
           & $env:VENV_ACTIVATE
           $dist = Join-Path $env:GITHUB_WORKSPACE "artifact"
 
+          # $ErrorActionPreference='Stop' does NOT make a native pip nonzero exit throw,
+          # so check $LASTEXITCODE after every pip call and fail explicitly.
+          function Invoke-Pip { param([string[]]$PipArgs)
+            python -m pip @PipArgs
+            if ($LASTEXITCODE -ne 0) { throw "pip $($PipArgs -join ' ') failed with exit $LASTEXITCODE" }
+          }
+
+          # torch is required. Prefer the cuda_embed wheel (DLLs embedded).
           $torch = Get-ChildItem -LiteralPath $dist -Filter "torch-*.whl" |
             Sort-Object { if ($_.Name -match "cuda_embed|cuda-embed") { 0 } else { 1 } } |
             Select-Object -First 1
           if (-not $torch) { Write-Host "::error::No torch wheel in artifact"; exit 1 }
-          python -m pip install "$($torch.FullName)"
+          Invoke-Pip @("install", $torch.FullName)
 
+          # Extensions are non-blocking: a missing wheel (failed build) only warns, but if a
+          # wheel IS present its install must succeed (a failed install is a real error).
+          $installedExts = @()
           foreach ($ext in @("torchaudio", "torchvision")) {
             $w = Get-ChildItem -LiteralPath $dist -Filter "$ext-*.whl" -ErrorAction SilentlyContinue | Select-Object -First 1
-            if ($w) { python -m pip install "$($w.FullName)" }
+            if ($w) { Invoke-Pip @("install", $w.FullName); $installedExts += $ext }
             else { Write-Host "::warning::No $ext wheel in artifact (extension build may have failed; non-blocking)" }
           }
 
+          # Smoke-test imports: torch is required (CUDA must be visible); every installed
+          # extension must import too, so a broken wheel fails the shard instead of going green.
           python -c "import torch; print('torch', torch.__version__, 'cuda', torch.version.cuda); assert torch.cuda.is_available()"
+          if ($LASTEXITCODE -ne 0) { throw "import torch smoke test failed with exit $LASTEXITCODE" }
+          foreach ($ext in $installedExts) {
+            python -c "import $ext; print('$ext', $ext.__version__)"
+            if ($LASTEXITCODE -ne 0) { throw "import $ext smoke test failed with exit $LASTEXITCODE" }
+          }
 
       - name: Start runner diagnostics
         id: diag
@@ -287,7 +337,7 @@ jobs:
 
       - name: Upload test-reports archive
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: test-reports-${{ inputs.build-environment }}-${{ inputs.python-label }}-arm64-shard${{ matrix.shard }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ env.PT_ROOT }}/test/test-reports/**

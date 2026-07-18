@@ -2,17 +2,17 @@
 
 Engine = GitHub Actions. The three composite actions and three workflows wire the
 full P0 job graph; the `tools/woa-build/**` PowerShell library provides the
-reusable build/test guts (GitHub entrypoints + WoA §10 site defaults). The
+reusable build/test guts (GitHub entrypoints + WoA section 10 site defaults). The
 library-invoking workflow steps run under **`pwsh` (PowerShell 7)** — the code
-uses the pwsh-6+ multi-arg `Join-Path`, so `pwsh` is a runner prerequisite (§10).
-Nothing runs end-to-end until the `woa-arm64` runners are provisioned to the §10
+uses the pwsh-6+ multi-arg `Join-Path`, so `pwsh` is a runner prerequisite (section 10).
+Nothing runs end-to-end until the `woa-arm64` runners are provisioned to the section 10
 contract.
 
 ## 1. Goal & scope
 
 Add out-of-tree CI for **PyTorch on Windows arm64 (WoA)** to this repo,
-alongside the existing x86 Windows RTX CI, so WoA changes can be validated here
-before being pushed to the public-facing repo — the same flow the x86 CI follows.
+alongside the existing x86 Windows RTX CI, following the same structure the x86
+CI uses.
 
 The build/test guts are a vendored PowerShell library driven entirely by env vars,
 wrapped in GitHub Actions workflows + composite actions.
@@ -31,10 +31,10 @@ wrapped in GitHub Actions workflows + composite actions.
 | Wheel handoff | **GitHub Actions artifacts** (build → test). |
 | PyTorch ref | `nightly` (default; overridable). |
 | Extensions failure | **Don't block the run, but show the job as failed** — extensions run `continue-on-error: true` (so a failure still builds the sibling extension + uploads the torch wheel), then a `Reflect extension build status` gate fails the build job if either extension failed. Non-blocking across cells (`fail-fast: false`). |
-| Cleanup | **Stricter than the internal CI** — runners may be exposed to untrusted code/malware (see §9). |
+| Cleanup | **Stricter than a typical persistent-runner CI** — runners may be exposed to untrusted code/malware (see section 9). |
 | Reporting | **Summary only** (`parse_failures.py`); no triage port for now. |
 | Runners | **One shared pool** tagged `woa-arm64` (distinct from x86) for build + test; `test` `needs: build`, so the whole build stage finishes before any test starts — same mechanism as x86. |
-| Shards | **Fixed count for now** (static matrix of 4); variable-by-availability deferred to a future change (design retained in §4). |
+| Shards | **Fixed count for now** (static matrix of 4); variable-by-availability deferred to a future change (design retained in section 4). |
 
 ## 2. WoA vs the x86 RTX CI (both in this repo)
 
@@ -49,7 +49,7 @@ wrapped in GitHub Actions workflows + composite actions.
 | PyTorch source | `pytorch/pytorch` from GitHub | `pytorch/pytorch` from GitHub |
 | Wheel handoff | GA artifact | GA artifact |
 | Toolchain | pre-baked image | in-job preflight (pre-provisioned CUDA/cuDNN) |
-| Sharding | static `strategy.matrix.shard` | fixed shard matrix (see §4) |
+| Sharding | static `strategy.matrix.shard` | fixed shard matrix (see section 4) |
 | Test entry | `.ci/pytorch/win-test.sh` | `pytorch-windows-test-shard.ps1` → `test/run_test.py` (arm64) |
 | Reporting | `scripts/test-summary/parse_failures.py` | `scripts/test-summary/parse_failures.py` (summary only) |
 
@@ -66,7 +66,7 @@ pod per job). Persistent WoA runners need **no JQS/k8s and no autoscaler**:
 - One agent = one concurrent job per machine. Install multiple agents on a box
   for more concurrency if desired.
 - The "JQS can poll only one repo" limitation does **not** apply — register the
-  persistent agents directly to this internal repo.
+  persistent agents directly to this repo (or org).
 - Because the **same pool serves build and test** (decision #11), ordering is
   enforced by `needs:` (test `needs` build) and by label matching: test jobs
   queue until a labeled runner frees up after the build stage.
@@ -74,7 +74,7 @@ pod per job). Persistent WoA runners need **no JQS/k8s and no autoscaler**:
 **Runner-label contract (confirmed):** a single pool tag **`woa-arm64`**, used by
 *both* build and test jobs. Python/CTK are **not** encoded in the label (unlike
 x86) — every runner has all toolchains + the clean ARM64 interpreters preinstalled,
-and the job builds its own venv from the interpreter for its Python (see §10).
+and the job builds its own venv from the interpreter for its Python (see section 10).
 
 ## 4. Sharding strategy
 
@@ -110,7 +110,7 @@ New GitHub Actions workflows:
   _woa-test.yml                # reusable: one python -> dynamic shard fan-out -> install that wheel -> run_test.py -> upload test-reports-*
 ```
 
-Vendored build/test scripts (internal-CI-isms removed — UNC publish,
+Vendored build/test scripts (source-CI-isms removed — UNC publish,
 `run-with-checkout.sh` wrappers, toolkit auto-update):
 
 ```
@@ -127,7 +127,7 @@ Composite actions (persistent-runner hygiene + toolchain presence checks):
 .github/actions/
   woa-preflight-build/      # wraps Invoke-PreflightBuildEnv.ps1 (path presence; NO toolkit update)
   woa-preflight-test/       # wraps Invoke-PreflightTestEnv.ps1 (+ nvidia-smi)
-  woa-strict-clean/         # strict pre/post workspace + checkout scrub (see §9)
+  woa-strict-clean/         # strict pre/post workspace + checkout scrub (see section 9)
 ```
 
 Reused **as-is**: `scripts/test-summary/parse_failures.py` (+ cross-shard
@@ -181,7 +181,7 @@ test-summary   parse_failures.py --shards-root (per-cell + overall)
 6. `docs/woa-ci.md` — operator docs (matrix, inputs, runner-label contract).
 
 ### Modified files
-7. `README.md` — WoA CI section (internal only).
+7. `README.md` — WoA CI section.
 8. `.github/workflows/lint.yml` — optional PSScriptAnalyzer + Pester + shellcheck
    over `tools/woa-build/**`.
 9. `.gitignore` — ignore WoA build scratch if inside the workspace.
@@ -199,7 +199,7 @@ test-summary   parse_failures.py --shards-root (per-cell + overall)
 - **Orchestration:** one build-test workflow drives `prep → build → test → summary`
   via job `needs:` ordering; per-python cells come from `strategy.matrix`.
 - **Sharding:** static `strategy.matrix.shard` today (dynamic via `fromJSON`
-  deferred — see §4).
+  deferred — see section 4).
 - **Build-runner serialization:** `concurrency:` group + shared-pool `needs:`
   ordering (test `needs` build).
 - **Axis filters:** job-level `if:` + reusable-workflow inputs.
@@ -242,8 +242,8 @@ and end (`if: always()`):
 No runner image is built; every `woa-arm64` runner must have these preinstalled.
 All are overridable via workflow `env` / repo variables, but these are the
 defaults the workflows will ship with. **The operator configures the runners to
-match this convention** (agreed). Paths track the single-drive `C:`
-`pytorch-windows-infra` arm64 provisioner (these runners have **C: only**).
+match this convention** (agreed). Paths track the single-drive `C:` layout every
+arm64 runner provides (these runners have **C: only**).
 
 ### Clean ARM64 interpreters (venvs are built per job, not preinstalled)
 
@@ -297,7 +297,7 @@ build/test work — the same-machine guarantee an in-job preflight provides.
 
 ## 11. Implementation plan (phased; extensions are P0)
 
-All decisions are locked (§1) and the runner contract is defined (§10). Phased
+All decisions are locked (section 1) and the runner contract is defined (section 10). Phased
 delivery is fine, but the **torchaudio + torchvision extension builds are P0** —
 they are part of the first functional CI, not a later add-on. Work happens on
 `feat/woa-ci`.
@@ -315,12 +315,12 @@ they are part of the first functional CI, not a later add-on. Work happens on
   `torchaudio/torchvision build-pipeline.ps1`, `pytorch-windows-test-shard.ps1`)
   that translate the workflow params into the library's `CHECKOUT_ROOT` /
   `CI_PROJECT_DIR` / `PYTORCH_WIN_*` env contract and collect wheels into a flat
-  artifact dir, plus WoA §10 overrides in `shared/env/defaults/*.psd1`.
-  Internal-CI-only modules were dropped: the toolkit auto-update, the UNC-share
+  artifact dir, plus WoA section 10 overrides in `shared/env/defaults/*.psd1`.
+  Source-CI-only modules were dropped: the toolkit auto-update, the UNC-share
   publish + wheel install, the triage service, and the git-bash wrappers; the
   runner-worktree cleanup/preflight are reimplemented as composite actions. Wheel
-  handoff is GA artifacts and test reporting is summary-only, per §1.
+  handoff is GA artifacts and test reporting is summary-only, per section 1.
 - **Phase 3 — polish:** `docs/woa-ci.md` operator docs; optional `lint.yml`
   PSScriptAnalyzer / Pester steps.
 
-Nothing runs until the `woa-arm64` runners are registered and provisioned per §10.
+Nothing runs until the `woa-arm64` runners are registered and provisioned per section 10.

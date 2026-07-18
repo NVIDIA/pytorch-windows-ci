@@ -1,0 +1,98 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: MIT
+
+name: "WoA create job venv"
+description: >
+  Build a FRESH, throwaway Python virtual environment for this job from the runner's
+  clean ARM64 interpreter. The WoA runners keep only clean interpreters (no pre-built
+  venvs); because they are public-facing and may see untrusted code, each job creates
+  its own venv under the job scratch tree (wiped by `woa-strict-clean` at start + end),
+  so nothing a job installs can leak into the next job.
+
+  Resolves the ARM64-native interpreter for the requested version (fails fast on an x64
+  build), creates the venv, and installs the role-scoped WoA dependency set via
+  tools/woa-build/shared/build/New-WoaJobVenv.ps1. The `role` selects the requirement files:
+    - build: woa-base.txt + woa-build.txt (strict)                    - the build toolchain only.
+    - test : woa-base.txt + woa-test.txt (strict) + woa-test-extended.txt (best-effort).
+  woa-base.txt is shared (both roles need it to build sdists / JIT cpp extensions + runtime).
+  Returns the venv activation script.
+
+inputs:
+  role:
+    description: "Which dependency set to install: 'build' (base + build tooling) or 'test' (base + test harness + best-effort extended)."
+    required: true
+  python-version:
+    description: "Python version in dotted form (3.11 | 3.12 | 3.13 | 3.14 | 3.14t). A trailing 't' selects the free-threaded build."
+    required: true
+  python-label:
+    description: "Python label (py311 | py312 | py313 | py314 | py314t); names the venv folder."
+    required: true
+  venv-path:
+    description: "Absolute path of the venv to create (should live under the job scratch tree so strict-clean wipes it)."
+    required: true
+  pip-extra-args:
+    description: "Extra `pip install` args (space-separated, e.g. an internal --index-url). No secrets."
+    required: false
+    default: ""
+
+outputs:
+  venv-activate:
+    description: "Resolved <venv-path>\\Scripts\\Activate.ps1 for the job."
+    value: ${{ steps.create.outputs.venv-activate }}
+
+runs:
+  using: "composite"
+  steps:
+    - name: Create job venv
+      id: create
+      shell: pwsh
+      env:
+        INPUT_ROLE: ${{ inputs.role }}
+        INPUT_PY_VERSION: ${{ inputs.python-version }}
+        INPUT_PY_LABEL: ${{ inputs.python-label }}
+        INPUT_VENV_PATH: ${{ inputs.venv-path }}
+        INPUT_PIP_EXTRA_ARGS: ${{ inputs.pip-extra-args }}
+      run: |
+        $ErrorActionPreference = "Stop"
+        $ootRoot = Join-Path $env:GITHUB_ACTION_PATH "..\..\.."
+        $script  = Join-Path $ootRoot "tools\woa-build\shared\build\New-WoaJobVenv.ps1"
+        $reqDir  = Join-Path $ootRoot "tools\woa-build\shared\requirements"
+
+        # Role -> requirement files. woa-base.txt is shared (both roles need it to build
+        # sdists / JIT cpp extensions + the runtime); build adds only its build tooling,
+        # test adds the pytest harness (strict) + the best-effort domain/ONNX/solver stack.
+        $base = Join-Path $reqDir "woa-base.txt"
+        switch ($env:INPUT_ROLE) {
+          "build" {
+            $core = @($base, (Join-Path $reqDir "woa-build.txt"))
+            $extended = @()
+          }
+          "test" {
+            $core = @($base, (Join-Path $reqDir "woa-test.txt"))
+            $extended = @((Join-Path $reqDir "woa-test-extended.txt"))
+          }
+          default {
+            Write-Host "::error title=WoA create venv::Unknown role '$($env:INPUT_ROLE)' (expected 'build' or 'test')."
+            exit 1
+          }
+        }
+
+        $pipExtra = @()
+        if (-not [string]::IsNullOrWhiteSpace($env:INPUT_PIP_EXTRA_ARGS)) {
+          $pipExtra = $env:INPUT_PIP_EXTRA_ARGS -split '\s+' | Where-Object { $_ }
+        }
+        & $script `
+          -PythonVersion        $env:INPUT_PY_VERSION `
+          -PythonLabel          $env:INPUT_PY_LABEL `
+          -VenvPath             $env:INPUT_VENV_PATH `
+          -CoreRequirements     $core `
+          -ExtendedRequirements $extended `
+          -PipExtraArgs         $pipExtra
+        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+        $activate = Join-Path $env:INPUT_VENV_PATH "Scripts\Activate.ps1"
+        if (-not (Test-Path -LiteralPath $activate)) {
+          Write-Host "::error title=WoA create venv::venv activation script missing after creation: $activate"
+          exit 1
+        }
+        "venv-activate=$activate" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8

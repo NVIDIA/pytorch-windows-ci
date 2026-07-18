@@ -1,0 +1,304 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: MIT
+
+name: _woa-test
+
+# Reusable Windows-on-Arm (WoA) test workflow. The arm64 analog of
+# `_rtx-test.yml`, but with a single install path: the wheels are always a
+# producer-uploaded GitHub Actions artifact from `_woa-build.yml` (no pip-index
+# path - this repo only runs the build-test flow for WoA). The built pytorch
+# SHA travels with the wheels in `built_pytorch_sha.txt`, so the test checkout
+# pins the exact source that produced the wheel.
+#
+# One invocation is a single WoA test cell for the given Python (py311..py314 or
+# free-threaded py314t), CTK 13.4; the orchestrator calls it once per built
+# version. Sharding is an internal fan-out: `strategy.matrix.shard` spawns a
+# FIXED number of parallel runners (5 for now; variable-by-availability is deferred - see
+# docs/woa-ci-plan.md §4). The test step exports SHARD_NUMBER / NUM_TEST_SHARDS
+# to the vendored PowerShell test entrypoint, which drives test/run_test.py.
+#
+# Runners: the same PERSISTENT shared arm64 pool (`woa-arm64`) used for build,
+# carrying only clean ARM64 interpreters (no pre-built venvs). `woa-preflight-test`
+# additionally asserts a GPU is visible, `woa-create-venv` builds a FRESH throwaway
+# venv for this cell from the clean interpreter (then the built wheels are installed
+# into it), and `woa-strict-clean` scrubs job state (including the venv) at start + end.
+
+on:
+  workflow_call:
+    inputs:
+      runner-base:
+        description: "Runner label for the shared WoA build+test pool."
+        type: string
+        required: false
+        default: "woa-arm64"
+      python-version:
+        description: "Python version in dotted form (e.g. 3.13, or 3.14t for free-threaded)."
+        type: string
+        required: false
+        default: "3.13"
+      python-label:
+        description: "Python label selecting the venv (py311 | py312 | py313 | py314 | py314t)."
+        type: string
+        required: false
+        default: "py313"
+      cuda-version:
+        description: "CUDA toolkit version in dotted form (13.4)."
+        type: string
+        required: false
+        default: "13.4"
+      cuda-arch-list:
+        description: "TORCH_CUDA_ARCH_LIST for the test step."
+        type: string
+        required: false
+        default: "8.9;10.3+PTX;12.0;12.1+PTX"
+      build-environment:
+        description: "Logical name passed through as BUILD_ENVIRONMENT."
+        type: string
+        required: false
+        default: "win-woa-arm64"
+      test-config:
+        description: "Test-config name forwarded as TEST_CONFIG."
+        type: string
+        required: false
+        default: "default"
+      num-shards:
+        description: "Fixed shard count; must match the `shard:` matrix length below."
+        type: string
+        required: false
+        default: "4"
+      wheel-artifact:
+        description: "Artifact name carrying the wheels + built_pytorch_sha.txt (required)."
+        type: string
+        required: true
+
+      # ---- workflow_dispatch matrix filter -----------------------------------
+      python-versions:
+        description: "Comma-separated allowlist of python versions; empty = no filter."
+        type: string
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  test:
+    name: test (shard ${{ matrix.shard }}/4)
+    # Token-exact match (comma-delimited) so "3.14" does not also match "3.14t".
+    if: >
+      inputs.python-versions == '' ||
+      contains(format(',{0},', inputs.python-versions), format(',{0},', inputs.python-version))
+    strategy:
+      fail-fast: false
+      matrix:
+        # FIXED shard count. To change it, edit this list AND `num-shards`
+        # (and the job name suffix above). Variable sharding is deferred (§4).
+        shard: [1, 2, 3, 4]
+    runs-on:
+      - ${{ inputs.runner-base }}
+    timeout-minutes: 240
+    env:
+      BUILD_ENVIRONMENT: ${{ inputs.build-environment }}
+      PYTHON_VERSION: ${{ inputs.python-version }}
+      PYTHON_LABEL: ${{ inputs.python-label }}
+      CUDA_VERSION: ${{ inputs.cuda-version }}
+      TORCH_CUDA_ARCH_LIST: ${{ inputs.cuda-arch-list }}
+      USE_CUDA: "1"
+      CONTINUE_THROUGH_ERROR: "1"
+      CI: "1"
+      # ---- WoA preinstall contract (single-drive C: runners; docs/woa-ci-plan.md §10) -------
+      # Paths match the pytorch-windows-infra arm64 provisioner (single C: drive).
+      WOA_CUDA_PATH: 'C:\Program Files\NVIDIA\CUDA\v13.4'
+      WOA_CUDNN_ROOT: 'C:\Program Files\NVIDIA\CUDNN\v9.25'
+      PT_ROOT: 'C:\pt'
+      WOA_SCRATCH: 'C:\ci\woa\scratch'
+      # Fresh per-job venv + pip cache pinned inside scratch (strict-clean wipes both);
+      # no cross-job wheel cache survives on these public-facing runners.
+      WOA_VENV_DIR: 'C:\ci\woa\scratch\venv'
+      PIP_CACHE_DIR: 'C:\ci\woa\scratch\pipcache'
+    steps:
+      - name: Checkout OOT tooling repo
+        uses: actions/checkout@v7
+        with:
+          path: oot
+          show-progress: false
+
+      - name: Strict clean (pre)
+        uses: ./oot/.github/actions/woa-strict-clean
+        with:
+          phase: pre
+          pt-root: ${{ env.PT_ROOT }}
+          scratch-root: ${{ env.WOA_SCRATCH }}
+
+      - name: Preflight test toolchain + GPU
+        id: preflight
+        uses: ./oot/.github/actions/woa-preflight-test
+        with:
+          python-version: ${{ inputs.python-version }}
+          python-label: ${{ inputs.python-label }}
+          cuda-path: ${{ env.WOA_CUDA_PATH }}
+          cudnn-root: ${{ env.WOA_CUDNN_ROOT }}
+
+      # Build a FRESH, throwaway venv for this cell from the clean interpreter and install the
+      # WoA TEST deps (woa-base.txt + woa-test.txt strict, + woa-test-extended.txt best-effort).
+      # The built wheels are added on top below. Lives under scratch so strict-clean wipes it.
+      - name: Create job venv
+        id: venv
+        uses: ./oot/.github/actions/woa-create-venv
+        with:
+          role: test
+          python-version: ${{ inputs.python-version }}
+          python-label: ${{ inputs.python-label }}
+          venv-path: ${{ env.WOA_VENV_DIR }}\${{ inputs.python-label }}
+
+      - name: Download wheels artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ inputs.wheel-artifact }}
+          path: artifact
+
+      - name: Resolve pytorch ref from artifact
+        id: ref
+        shell: bash
+        run: |
+          set -euo pipefail
+          ref=$(tr -d '[:space:]' < artifact/built_pytorch_sha.txt)
+          if ! [[ "$ref" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::Invalid SHA in artifact: '$ref'" >&2
+            exit 1
+          fi
+          echo "ref=$ref" >> "$GITHUB_OUTPUT"
+          echo "checkout ref: $ref"
+
+      - name: Enable git long paths
+        shell: bash
+        run: git config --global core.longpaths true
+
+      - name: Checkout pytorch/pytorch at the built ref
+        uses: actions/checkout@v7
+        with:
+          repository: pytorch/pytorch
+          ref: ${{ steps.ref.outputs.ref }}
+          submodules: recursive
+          fetch-depth: 1
+          show-progress: false
+          path: pytorch
+          persist-credentials: false
+
+      - name: Relocate pytorch checkout to a short path
+        shell: cmd
+        run: |
+          move "%GITHUB_WORKSPACE%\pytorch" "%PT_ROOT%"
+          if errorlevel 1 (
+            echo ::error::Failed to relocate pytorch checkout to %PT_ROOT%
+            exit /b 1
+          )
+          echo Relocated pytorch checkout to %PT_ROOT%
+
+      - name: Record pytorch HEAD (SHA + commit date)
+        shell: bash
+        working-directory: ${{ env.PT_ROOT }}
+        run: |
+          set -euo pipefail
+          sha=$(git rev-parse HEAD)
+          date_iso=$(git log -1 --format=%cI HEAD)
+          date_ymd=$(TZ=UTC git log -1 --date=format-local:%Y%m%d --format=%cd HEAD)
+          {
+            echo "## pytorch checkout"
+            echo ""
+            echo "| field      | value |"
+            echo "| ---        | --- |"
+            echo "| input ref  | \`${{ steps.ref.outputs.ref }}\` |"
+            echo "| HEAD sha   | \`$sha\` |"
+            echo "| committed  | \`$date_iso\` |"
+            echo "| dev tag    | \`dev$date_ymd\` |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # Install the built wheels into this cell's fresh venv. The cuda_embed torch wheel
+      # is the distributable one (DLLs embedded), so prefer it over any vanilla
+      # torch wheel that may also be present; then add the extension wheels.
+      - name: Install PyTorch + extensions
+        shell: powershell
+        env:
+          VENV_ACTIVATE: ${{ steps.venv.outputs.venv-activate }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          & $env:VENV_ACTIVATE
+          $dist = Join-Path $env:GITHUB_WORKSPACE "artifact"
+
+          $torch = Get-ChildItem -LiteralPath $dist -Filter "torch-*.whl" |
+            Sort-Object { if ($_.Name -match "cuda_embed|cuda-embed") { 0 } else { 1 } } |
+            Select-Object -First 1
+          if (-not $torch) { Write-Host "::error::No torch wheel in artifact"; exit 1 }
+          python -m pip install "$($torch.FullName)"
+
+          foreach ($ext in @("torchaudio", "torchvision")) {
+            $w = Get-ChildItem -LiteralPath $dist -Filter "$ext-*.whl" -ErrorAction SilentlyContinue | Select-Object -First 1
+            if ($w) { python -m pip install "$($w.FullName)" }
+            else { Write-Host "::warning::No $ext wheel in artifact (extension build may have failed; non-blocking)" }
+          }
+
+          python -c "import torch; print('torch', torch.__version__, 'cuda', torch.version.cuda); assert torch.cuda.is_available()"
+
+      - name: Start runner diagnostics
+        id: diag
+        uses: ./oot/.github/actions/start-runner-diagnostics
+
+      # Run this shard via the vendored PowerShell test entrypoint (Phase 2),
+      # which drives test/run_test.py with the WoA exclude args and writes JUnit
+      # XML + logs into <PT_ROOT>\test\test-reports.
+      - name: Run PyTorch arm64 test suite (shard ${{ matrix.shard }}/${{ inputs.num-shards }})
+        shell: pwsh
+        env:
+          VENV_ACTIVATE: ${{ steps.venv.outputs.venv-activate }}
+          SHARD_NUMBER: ${{ matrix.shard }}
+          NUM_TEST_SHARDS: ${{ inputs.num-shards }}
+          TEST_CONFIG: ${{ inputs.test-config }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          & "$env:GITHUB_WORKSPACE\oot\tools\woa-build\pytorch-windows-test-shard.ps1" `
+            -PytorchRoot $env:PT_ROOT `
+            -ShardNumber ([int]$env:SHARD_NUMBER) `
+            -NumShards ([int]$env:NUM_TEST_SHARDS) `
+            -TestConfig $env:TEST_CONFIG `
+            -VenvActivate $env:VENV_ACTIVATE
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Stop runner diagnostics
+        if: always()
+        uses: ./oot/.github/actions/stop-runner-diagnostics
+        with:
+          output-dir: ${{ steps.diag.outputs.output-dir }}
+
+      # Per-shard failing-test detail (read-only; never changes pass/fail). The
+      # orchestrator's test-summary job renders the cross-shard aggregate.
+      - name: Summarize failed tests (this shard)
+        if: always()
+        shell: powershell
+        env:
+          VENV_ACTIVATE: ${{ steps.venv.outputs.venv-activate }}
+        run: |
+          & $env:VENV_ACTIVATE
+          python "$env:GITHUB_WORKSPACE\oot\scripts\test-summary\parse_failures.py" `
+            --reports-dir "$env:PT_ROOT\test\test-reports" `
+            --title "Failed tests - $($env:BUILD_ENVIRONMENT) - $($env:PYTHON_LABEL)/cu134 - arm64 - shard ${{ matrix.shard }}/${{ inputs.num-shards }}" `
+            | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+
+      - name: Upload test-reports archive
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-reports-${{ inputs.build-environment }}-${{ inputs.python-label }}-arm64-shard${{ matrix.shard }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ env.PT_ROOT }}/test/test-reports/**
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Strict clean (post)
+        if: always()
+        uses: ./oot/.github/actions/woa-strict-clean
+        with:
+          phase: post
+          pt-root: ${{ env.PT_ROOT }}
+          scratch-root: ${{ env.WOA_SCRATCH }}
+          extra-paths: ${{ github.workspace }}/artifact

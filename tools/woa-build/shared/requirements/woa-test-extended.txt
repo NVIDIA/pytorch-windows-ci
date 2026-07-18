@@ -1,0 +1,48 @@
+# WoA CI - BEST-EFFORT test dependencies (installed into the TEST venv only).
+#
+# Installed with per-package tolerance by New-WoaJobVenv.ps1: the batch is tried first,
+# and on failure each package is retried individually - one that has no win_arm64 wheel
+# for a given interpreter (and no buildable sdist) is SKIPPED with a warning instead of
+# aborting the test venv. So a package missing on py311/py314 does not block the rest of
+# that venv or the other cells.
+#
+# The heavier / compiled / less-portable test deps (numerical, ONNX export, solvers) plus
+# `lintrunner` / `tlparse` (Rust sdists when no wheel is published - the runner has
+# Rust/Cargo from the infra provisioner so they build from source). Unpinned for the same
+# per-interpreter reason as woa-base.txt. Excludes cmake/ninja (native ARM64 on PATH), the
+# S3 stack (no-S3 flow), and torch runtime deps (pulled with the torch wheel).
+
+# --- lint (Rust wheel/sdist; may be unavailable on some interpreters) ---
+lintrunner
+flake8
+
+# --- domain / numerical test dependencies ---
+scipy
+pandas
+pillow
+scikit-image
+scikit-build
+imageio
+tifffile
+PyWavelets
+lxml
+
+# --- ONNX / export test stack ---
+onnx
+onnxscript
+onnx-ir
+coremltools
+ml-dtypes
+
+# --- solvers / misc test tooling ---
+lark
+z3-solver
+PuLP
+pwlf
+tlparse
+tqdm
+redis
+dill
+fbscribelogger
+setuptools-git-versioning
+pyre-extensions

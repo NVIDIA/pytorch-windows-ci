@@ -1,0 +1,30 @@
+# WoA CI - SHARED STRICT base (installed into BOTH the build and test venv).
+#
+# The build/runtime tooling both roles genuinely need: the build cell compiles torch
+# from source; the test cell installs prebuilt wheels but STILL needs this to build
+# Rust/C sdists (tlparse, lintrunner, ...) and to JIT-compile cpp_extension tests at
+# runtime, plus numpy et al. to import torch and run the suite. Installed as a strict
+# `pip install -r` pass - any failure aborts the job venv.
+#
+# VERSION STRATEGY - unpinned (pip picks the newest compatible wheel per interpreter).
+# The known-good baseline was captured on CPython 3.13 only; a 3.13-era `>=` floor can
+# EXCEED the last version that supports an older Python, so floors are avoided and pip
+# resolves per interpreter (py311..py314 + free-threaded py314t). This list is the arm64
+# CI's own contract, NOT upstream .ci/docker/requirements-ci.txt (no win_arm64 support yet).
+#
+# `setuptools` is the one constrained entry: floored >=70.1 (pytorch's setup.py imports
+# `setuptools.command.bdist_wheel`, added in 70.1; `python -m venv` on 3.11 pre-seeds
+# 65.5.0) and capped <80 (setuptools 80 dropped legacy build machinery pytorch relies on).
+
+uv
+setuptools>=70.1,<80
+wheel
+build
+packaging
+numpy
+optree
+pyyaml
+typing_extensions
+requests
+six
+psutil

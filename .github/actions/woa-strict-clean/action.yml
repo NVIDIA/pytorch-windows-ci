@@ -1,0 +1,218 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: MIT
+
+name: "WoA strict clean"
+description: >
+  Strict workspace + checkout scrub for the PERSISTENT, shared Windows-arm64
+  (WoA) runners. These runners are reused across jobs and may be exposed to
+  untrusted code, so we remove job-produced/downloaded state outright at both
+  job start (`phase: pre`) and job end (`phase: post`, called under
+  `if: always()`).
+
+  Preinstalled toolchains and the clean ARM64 interpreters are NEVER touched - only
+  the relocated checkout root, the workspace, wheels/build outputs, and job scratch
+  (which includes the fresh per-job venv + pip cache under C:\ci\woa\scratch).
+  Removal is long-path safe (a mirror-empty via robocopy avoids MAX_PATH during
+  recursive delete of pytorch's deep third_party tree).
+
+inputs:
+  phase:
+    description: "'pre' (job start) or 'post' (job end); only affects log wording."
+    required: false
+    default: "pre"
+  pt-root:
+    description: "Short relocated checkout root to wipe (matches PT_ROOT). Default C:\\pt."
+    required: false
+    default: 'C:\pt'
+  scratch-root:
+    description: "Job build scratch root to wipe (e.g. C:\\ci\\woa\\scratch). Empty = skip."
+    required: false
+    default: 'C:\ci\woa\scratch'
+  extra-paths:
+    description: "Newline-separated extra absolute paths to remove (wheels, temp trees, etc.)."
+    required: false
+    default: ""
+
+runs:
+  using: "composite"
+  steps:
+    - name: Strict clean (${{ inputs.phase }})
+      shell: powershell
+      env:
+        INPUT_PHASE: ${{ inputs.phase }}
+        INPUT_PT_ROOT: ${{ inputs.pt-root }}
+        INPUT_SCRATCH_ROOT: ${{ inputs.scratch-root }}
+        INPUT_EXTRA_PATHS: ${{ inputs.extra-paths }}
+      run: |
+        $ErrorActionPreference = "Stop"
+
+        # These runners are PERSISTENT and shared: a leftover PT_ROOT / scratch tree is a
+        # normal crash/reboot artifact from a prior job, and it MUST be cleared at job start
+        # (phase=pre) before the checkout is relocated here - a stale, non-empty destination
+        # makes the downstream `move ... %PT_ROOT%` nest the checkout one level deep (Windows
+        # `move` into an existing dir), so `git -C %PT_ROOT%` later fails with "not a git
+        # repository". So pre-clean removal is STRICT: verify the path is actually gone and
+        # fail loudly if it is not. Post-clean stays best-effort (the next job's pre-clean is
+        # the safety net) so a cleanup transient never turns an otherwise-green job red.
+        $strict = ($env:INPUT_PHASE -eq 'pre')
+
+        # Best-effort: strip read-only/hidden/system attributes and (re)grant the CURRENT user full
+        # control over the tree before deleting. This clears the two non-handle reasons a delete is
+        # denied for SELF-OWNED leftovers: read-only files from a checkout, and a restrictive DACL a
+        # prior job set on its own files (the owner can always rewrite its own DACL, so this needs no
+        # admin). It CANNOT rescue a cross-identity leftover - e.g. files created by an ELEVATED
+        # run.cmd and owned by Administrators, which an unelevated runner can't even read the ACL of;
+        # that is an operational fix (run the runner as one consistent, non-elevated account). All
+        # calls are quiet + failure-tolerant, and $LASTEXITCODE is reset so a benign icacls/attrib
+        # partial-failure never trips the step's trailing `exit $LASTEXITCODE`.
+        function Clear-PathGuards([string]$path) {
+          $me = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
+          & cmd /c "attrib -r -h -s `"$path`" >nul 2>&1"
+          & cmd /c "attrib -r -h -s `"$path\*`" /s /d >nul 2>&1"
+          & icacls "$path" /grant "${me}:(OI)(CI)F" /t /c /q > $null 2>&1
+          $global:LASTEXITCODE = 0
+        }
+
+        # Long-path-safe recursive delete: mirror an empty dir onto the target
+        # with robocopy (empties deep trees without itself hitting MAX_PATH),
+        # then remove the now-empty directory. Files are removed directly.
+        function Remove-TreeRobust([string]$path, [bool]$strict) {
+          if ([string]::IsNullOrWhiteSpace($path)) { return }
+          if (-not (Test-Path -LiteralPath $path)) {
+            Write-Host "  (absent) $path"
+            return
+          }
+          if (Test-Path -LiteralPath $path -PathType Leaf) {
+            Remove-Item -LiteralPath $path -Force -ErrorAction SilentlyContinue
+            if (Test-Path -LiteralPath $path) {
+              Clear-PathGuards $path
+              Remove-Item -LiteralPath $path -Force -ErrorAction SilentlyContinue
+            }
+            if (Test-Path -LiteralPath $path) {
+              $msg = "strict clean could not remove file $path (locked by a live process, or owned by another/elevated account - see the runner-identity note)."
+              if ($strict) { throw $msg } else { Write-Host "::warning::$msg"; return }
+            }
+            Write-Host "  removed file $path"
+            return
+          }
+          $empty = Join-Path $env:RUNNER_TEMP ("empty_" + [guid]::NewGuid().ToString("N"))
+          New-Item -ItemType Directory -Force -Path $empty | Out-Null
+          try {
+            # Retry: a leftover from a just-crashed job can briefly keep a handle open; a short
+            # backoff lets the OS release it before we give up. /MIR mirrors empty -> target,
+            # deleting everything under target (long-path safe), then Remove-Item drops the
+            # now-empty root. On the 2nd+ attempt, clear attrs/ACLs first (cheap, self-owned only).
+            for ($attempt = 1; $attempt -le 5; $attempt++) {
+              if ($attempt -gt 1) { Clear-PathGuards $path }
+              & robocopy $empty $path /MIR /NFL /NDL /NJH /NJS /NP | Out-Null
+              # robocopy exit codes 0-7 are success (1 = files copied/removed); only >=8 is a real
+              # failure. Reset $LASTEXITCODE so a benign robocopy code does not make the GitHub
+              # `powershell` step exit non-zero (it appends `exit $LASTEXITCODE`).
+              $rc = $LASTEXITCODE
+              $global:LASTEXITCODE = 0
+              if ($rc -ge 8) { throw "robocopy /MIR failed (exit $rc) while scrubbing $path" }
+              Remove-Item -LiteralPath $path -Recurse -Force -ErrorAction SilentlyContinue
+              if (-not (Test-Path -LiteralPath $path)) { break }
+              Start-Sleep -Seconds 2
+            }
+          }
+          finally {
+            Remove-Item -LiteralPath $empty -Recurse -Force -ErrorAction SilentlyContinue
+          }
+          if (Test-Path -LiteralPath $path) {
+            $msg = "strict clean could not remove '$path' after 5 attempts. Either a live process still holds a handle (a leftover build helper - the process sweep should have killed it), OR the tree contains entries owned by another/elevated account that this unelevated runner cannot delete (e.g. created by a run.cmd once launched as admin). For the latter, run once from an elevated shell: takeown /f '$path' /r /d y ; icacls '$path' /grant '$($env:USERNAME):(OI)(CI)F' /t /c /q ; rd /s /q '$path' - then always run the runner as one consistent, non-elevated account so it never recurs."
+            if ($strict) { throw $msg } else { Write-Host "::warning::$msg"; return }
+          }
+          Write-Host "  scrubbed dir  $path"
+        }
+
+        # A directory that is a live process's current directory (or has a file open) cannot be
+        # renamed or deleted, so no amount of retrying in Remove-TreeRobust wins until the holder
+        # dies. On a crashed MSVC build the usual offenders are mspdbsrv.exe (the PDB server that
+        # cl.exe/link.exe spawn and leave running with its CWD in the build tree), the MSBuild
+        # file Tracker.exe, vctip.exe, and the sccache server - all left orphaned when a job is
+        # killed mid-build (e.g. a GPU TDR / forced cancel).
+        #
+        # These runners run WITHOUT admin, but that is fine: every build process is launched by
+        # the SAME user the runner runs as, and terminating your own processes needs no elevation.
+        # So this sweep - running as that same user in every pre/post clean - reliably reclaims the
+        # leftover with no manual step, no reboot, and no admin. It targets only the job-scoped
+        # build-tool family below plus any process whose IMAGE lives under the trees we own
+        # (PT_ROOT / scratch, e.g. an orphaned venv python.exe). It deliberately NEVER lists the
+        # job/runner infrastructure (node, git, pwsh/powershell, cmd, bash, Runner.*), which live
+        # under actions-runner\ and C:\DevToolKit. Best-effort: per-process failures are ignored.
+        function Stop-StaleBuildProcesses([string[]]$roots) {
+          # Orphaned build daemons + the compiler/build toolchain. None of these are ever part of
+          # the runner/step infrastructure, and at clean time no legitimate build is in flight
+          # (pre = before this job builds; post = after it finished), so killing any that survive
+          # only reclaims a crashed job's leftovers. mspdbsrv/tracker/sccache auto-respawn on demand.
+          $names = @(
+            'mspdbsrv','mspdbsrv100','vctip','vcpkgsrv','tracker','sccache',
+            'cl','link','lib','ml64','armasm64','rc','mt','midl',
+            'nvcc','cicc','cudafe++','ptxas','nvlink','fatbinary','cudafe',
+            'ninja','cmake','delvewheel'
+          )
+          foreach ($n in $names) {
+            Get-Process -Name $n -ErrorAction SilentlyContinue | ForEach-Object {
+              try { $_ | Stop-Process -Force -ErrorAction Stop; Write-Host "  killed stale $($_.ProcessName) (pid $($_.Id))" } catch {}
+            }
+          }
+          # Anything whose executable lives inside the trees we are about to delete (e.g. a venv
+          # python.exe, or a tool copied into the checkout) - by definition a leftover, since this
+          # job has not populated those trees yet.
+          $normRoots = @($roots | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | ForEach-Object { $_.TrimEnd('\') })
+          if ($normRoots.Count -gt 0) {
+            Get-Process -ErrorAction SilentlyContinue | ForEach-Object {
+              $proc = $_
+              $exe = $null; try { $exe = $proc.Path } catch {}
+              if ($exe) {
+                foreach ($r in $normRoots) {
+                  if ($exe -like "$r\*") {
+                    try { $proc | Stop-Process -Force -ErrorAction Stop; Write-Host "  killed stale $($proc.ProcessName) (pid $($proc.Id)) under $r" } catch {}
+                    break
+                  }
+                }
+              }
+            }
+          }
+        }
+
+        Write-Host "== WoA strict clean (phase=$($env:INPUT_PHASE)) =="
+
+        # 0) Kill leftover build helpers that could hold a handle on the trees below (the reason a
+        #    crashed job's C:\pt survives even after its contents are emptied). Do this FIRST so the
+        #    subsequent removals can actually succeed.
+        Stop-StaleBuildProcesses @($env:INPUT_PT_ROOT, $env:INPUT_SCRATCH_ROOT)
+
+        # 1) Relocated short-path checkout (PT_ROOT) - never trust a leftover tree.
+        Remove-TreeRobust $env:INPUT_PT_ROOT $strict
+
+        # 2) The GitHub workspace's own job-produced state (the composite action itself
+        #    lives under oot/, and actions/checkout only cleans its own checkout dirs -
+        #    pytorch/ and oot/ - never the workspace ROOT). So scrub named root-level
+        #    subtrees/files that the build+test jobs drop here:
+        #      pytorch/artifact/all-reports : relocated/downloaded checkouts + report trees
+        #      logs                         : the build flow's pip-wheel/delvewheel transcripts
+        #                                     + WHEEL_OUT_ROOT marker (CI_PROJECT_DIR/logs ==
+        #                                     workspace/logs) - stale ones would contaminate the
+        #                                     build-logs artifact or feed a stale wheel marker.
+        #      built_pytorch_sha.txt        : the recorded source SHA (a leaf file).
+        foreach ($sub in @("pytorch", "artifact", "all-reports", "logs", "built_pytorch_sha.txt")) {
+          Remove-TreeRobust (Join-Path $env:GITHUB_WORKSPACE $sub) $strict
+        }
+
+        # 3) Job build scratch (wheels, build temp, delvewheel output, per-job venv + pip cache).
+        Remove-TreeRobust $env:INPUT_SCRATCH_ROOT $strict
+
+        # 4) Any caller-supplied extra paths.
+        if ($env:INPUT_EXTRA_PATHS) {
+          foreach ($p in $env:INPUT_EXTRA_PATHS -split "`n") {
+            Remove-TreeRobust ($p.Trim()) $strict
+          }
+        }
+
+        Write-Host "== WoA strict clean done =="
+
+        # Belt-and-suspenders: ensure a clean exit code regardless of the last native command
+        # (robocopy) that ran above, so the composite step never fails on a benign robocopy code.
+        exit 0

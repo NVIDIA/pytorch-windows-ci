@@ -1,0 +1,141 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: MIT
+
+name: "WoA preflight (build)"
+description: >
+  Assert that the preinstalled Windows-arm64 build toolchain is present before
+  any build work runs - the same-machine guarantee an in-job preflight provides.
+  There is NO runner image and NO per-pipeline CUDA/cuDNN
+  update (decision: pre-existing toolchain), so this only *verifies* paths and
+  fails fast if the runner is misprovisioned; it never installs anything.
+
+  The runner carries only clean ARM64 CPython interpreters (no pre-built venvs -
+  the job builds its own venv via `woa-create-venv`). This preflight verifies the
+  CUDA/cuDNN paths AND that an ARM64-native interpreter exists for the requested
+  Python, catching an x64-only install in seconds instead of after a 40-minute
+  compile (an x64 python3XX.lib fails the torch_python link with __imp_PyMem_Calloc).
+
+inputs:
+  python-version:
+    description: "Python version in dotted form (3.11 | 3.12 | 3.13 | 3.14 | 3.14t). A trailing 't' selects the free-threaded build."
+    required: true
+  python-label:
+    description: "Python label (py311 | py312 | py313 | py314 | py314t) - used in log output."
+    required: false
+    default: ""
+  cuda-path:
+    description: "CUDA 13.4 toolkit root that must exist."
+    required: false
+    default: 'C:\Program Files\NVIDIA\CUDA\v13.4'
+  cudnn-root:
+    description: "cuDNN root that must exist."
+    required: false
+    default: 'C:\Program Files\NVIDIA\CUDNN\v9.25'
+  vcvars-bat:
+    description: "Path to the arm64 vcvarsall.bat that must exist. Empty = skip the MSVC check."
+    required: false
+    default: ""
+
+runs:
+  using: "composite"
+  steps:
+    - name: Verify build toolchain
+      id: check
+      shell: powershell
+      env:
+        INPUT_PY_VERSION: ${{ inputs.python-version }}
+        INPUT_PY_LABEL: ${{ inputs.python-label }}
+        INPUT_CUDA_PATH: ${{ inputs.cuda-path }}
+        INPUT_CUDNN_ROOT: ${{ inputs.cudnn-root }}
+        INPUT_VCVARS_BAT: ${{ inputs.vcvars-bat }}
+      run: |
+        $ErrorActionPreference = "Stop"
+        $missing = @()
+
+        function Require-Path([string]$label, [string]$path) {
+          if ([string]::IsNullOrWhiteSpace($path)) { return }
+          if (Test-Path -LiteralPath $path) {
+            Write-Host "  [ok]      $label -> $path"
+          } else {
+            Write-Host "  [MISSING] $label -> $path"
+            $script:missing += "$label ($path)"
+          }
+        }
+
+        # PE COFF Machine field == 0xAA64 (ARM64). Reads only the header; no interpreter launch needed.
+        function Test-Arm64Exe([string]$exe) {
+          try {
+            $fs = [System.IO.File]::OpenRead($exe)
+            try {
+              $buf = New-Object byte[] 4096
+              [void]$fs.Read($buf, 0, 4096)
+            } finally { $fs.Dispose() }
+            $peOff = [System.BitConverter]::ToUInt32($buf, 0x3C)
+            if ($peOff -le 0 -or $peOff -gt ($buf.Length - 6)) { return $false }
+            return ([System.BitConverter]::ToUInt16($buf, [int]$peOff + 4) -eq 0xAA64)
+          } catch { return $false }
+        }
+
+        # Collect candidate interpreters for a version (py launcher + winget/python.org roots),
+        # -arm64 roots first; return the first ARM64-native one, else the first candidate, else $null.
+        function Resolve-Interpreter([string]$ver, [bool]$ft) {
+          $parts = $ver.Split('.')
+          $tag = '{0}{1}' -f $parts[0], $parts[1]
+          $exeName = if ($ft) { "python${ver}t.exe" } else { 'python.exe' }
+          $launcherArg = if ($ft) { "-${ver}t" } else { "-$ver" }
+          $found = New-Object System.Collections.Generic.List[string]
+          $py = Get-Command 'py' -ErrorAction SilentlyContinue
+          if ($py) {
+            try {
+              $exe = & $py.Source $launcherArg '-c' 'import sys; print(sys.executable)' 2>$null
+              if ($LASTEXITCODE -eq 0 -and -not [string]::IsNullOrWhiteSpace($exe)) {
+                $exe = ([string]$exe).Trim()
+                if (Test-Path -LiteralPath $exe) { $found.Add((Get-Item -LiteralPath $exe).FullName) | Out-Null }
+              }
+            } catch { }
+          }
+          $roots = @(
+            (Join-Path $env:LocalAppData "Programs\Python\Python$tag-arm64"),
+            (Join-Path $env:ProgramFiles "Python$tag-arm64"),
+            "C:\Python$tag-arm64",
+            (Join-Path $env:LocalAppData "Programs\Python\Python$tag"),
+            (Join-Path $env:ProgramFiles "Python$tag"),
+            "C:\Python$tag"
+          )
+          foreach ($r in $roots) {
+            if ([string]::IsNullOrWhiteSpace($r)) { continue }
+            $c = Join-Path $r $exeName
+            if (Test-Path -LiteralPath $c) { $found.Add((Get-Item -LiteralPath $c).FullName) | Out-Null }
+          }
+          foreach ($f in $found) { if (Test-Arm64Exe $f) { return $f } }
+          if ($found.Count -gt 0) { return $found[0] }
+          return $null
+        }
+
+        $label = if ([string]::IsNullOrWhiteSpace($env:INPUT_PY_LABEL)) { $env:INPUT_PY_VERSION } else { $env:INPUT_PY_LABEL }
+        Write-Host "== WoA build preflight (python=$label) =="
+        Require-Path "CUDA 13.4"     $env:INPUT_CUDA_PATH
+        Require-Path "cuDNN"         $env:INPUT_CUDNN_ROOT
+        Require-Path "vcvarsall.bat" $env:INPUT_VCVARS_BAT
+
+        # Clean ARM64 interpreter check. The job builds its own venv from this interpreter, so an
+        # x64-only install is a hard fail here (before the expensive checkout/build).
+        $ver = $env:INPUT_PY_VERSION.Trim()
+        $ft = $false
+        if ($ver.EndsWith('t')) { $ft = $true; $ver = $ver.Substring(0, $ver.Length - 1) }
+        $interp = Resolve-Interpreter $ver $ft
+        if ([string]::IsNullOrWhiteSpace($interp)) {
+          Write-Host "  [MISSING] ARM64 python $($env:INPUT_PY_VERSION) interpreter"
+          $missing += "ARM64 python $($env:INPUT_PY_VERSION) interpreter (winget install Python.Python.$ver --architecture arm64)"
+        } elseif (Test-Arm64Exe $interp) {
+          Write-Host "  [ok]      ARM64 python $($env:INPUT_PY_VERSION) -> $interp"
+        } else {
+          Write-Host "  [NOT ARM64] python $($env:INPUT_PY_VERSION) -> $interp"
+          $missing += "python $($env:INPUT_PY_VERSION) is not ARM64-native ($interp); remove the x64 install and reprovision the arm64 CPython"
+        }
+
+        if ($missing.Count -gt 0) {
+          Write-Host "::error title=WoA build preflight::Runner is missing required preinstalled toolchain: $($missing -join '; ')"
+          exit 1
+        }
+        Write-Host "== build preflight ok =="

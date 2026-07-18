@@ -7,7 +7,8 @@ SPDX-License-Identifier: MIT
 
 Out-of-tree (OOT) GitHub Actions CI that builds and tests
 [`pytorch/pytorch`](https://github.com/pytorch/pytorch) on NVIDIA's self-hosted
-**Windows + RTX** runners, across multiple Python and CUDA toolkit combinations.
+**Windows + RTX** (x86-64) and **Windows-on-Arm (WoA)** runners, across multiple
+Python and CUDA toolkit combinations.
 
 # Overview
 
@@ -26,15 +27,23 @@ there are no GitHub-hosted (cloud) runs.
 > **Full architecture, matrix, and runner model:**
 > [docs/ci-details.md](docs/ci-details.md).
 
+> **Windows-on-Arm (WoA) CI:** see [docs/woa-ci.md](docs/woa-ci.md) for the arm64
+> build/test matrix, runner contract, and operator guide.
+
 # Getting Started
 
-The two top-level workflows run automatically on a nightly schedule. No action
+The two RTX top-level workflows run automatically on a nightly schedule. No action
 is required to run them:
 
 - **`windows-rtx-build-test.yml`** — full source build + test (nightly).
 - **`windows-rtx-wheel-test.yml`** — nightly published-wheel test.
 
 Schedules are documented in [docs/ci-details.md](docs/ci-details.md).
+
+The Windows-on-Arm workflow runs on a nightly schedule:
+
+- **`windows-woa-build-test.yml`** — WoA (arm64) source build + test (nightly
+  `schedule`; no manual trigger). See [docs/woa-ci.md](docs/woa-ci.md).
 
 # Requirements
 
@@ -45,16 +54,24 @@ Schedules are documented in [docs/ci-details.md](docs/ci-details.md).
   driver, MSVC build tools, and the PyTorch test runtime — the workflows do zero
   in-job setup. See [docs/ci-details.md](docs/ci-details.md) for the full image
   contents and label routing.
+- Windows-on-Arm (arm64) runners share a single persistent pool labelled
+  `woa-arm64` for both build and test, with the toolchain preinstalled and a clean
+  per-job venv built in-job. See [docs/woa-ci.md](docs/woa-ci.md) for the runner
+  contract.
 
 # Usage
 
-The nightly schedules run both top-level workflows automatically. The reusable
+The nightly schedules run both RTX top-level workflows automatically. The reusable
 workflows (`_rtx-build.yml`, `_rtx-test.yml`) are called by the two orchestrators
 and are not run directly.
 
 Detailed reference — workflow table, job naming, install paths, default matrix,
 test environment variables, and runner diagnostics — is documented in
 [docs/ci-details.md](docs/ci-details.md).
+
+The Windows-on-Arm orchestrator (`windows-woa-build-test.yml`) similarly calls the
+reusable `_woa-build.yml` / `_woa-test.yml` workflows, which are not run directly.
+Its reference lives in [docs/woa-ci.md](docs/woa-ci.md).
 
 # Performance
 
@@ -95,6 +112,7 @@ Discussion happens through GitHub issues and pull requests on this repository.
 - [RFC-0050: Cross-Repository CI Relay for PyTorch Out-of-Tree Backends](https://github.com/pytorch/rfcs/blob/master/RFC-0050-Cross-Repository-CI-Relay-for-PyTorch-Out-of-Tree-Backends.md)
 - [pytorch/pytorch](https://github.com/pytorch/pytorch)
 - [Detailed CI architecture & reference](docs/ci-details.md)
+- [Windows-on-Arm (WoA) CI guide](docs/woa-ci.md)
 
 # License
 

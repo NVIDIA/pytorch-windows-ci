@@ -1,0 +1,140 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: MIT
+
+name: "WoA preflight (test)"
+description: >
+  Assert that a Windows-arm64 TEST runner is healthy before any test work runs:
+  the CUDA/cuDNN paths exist, an ARM64-native interpreter is present for the
+  requested Python, AND a GPU is visible via `nvidia-smi`. No runner image, no
+  toolkit update, no pre-built venv (the job builds its own via `woa-create-venv`) -
+  verification only, fail fast on a misprovisioned or GPU-less runner.
+
+inputs:
+  python-version:
+    description: "Python version in dotted form (3.11 | 3.12 | 3.13 | 3.14 | 3.14t). A trailing 't' selects the free-threaded build."
+    required: false
+    default: "3.13"
+  python-label:
+    description: "Python label (py311 | py312 | py313 | py314 | py314t) - used in log output."
+    required: false
+    default: ""
+  cuda-path:
+    description: "CUDA 13.4 toolkit root that must exist."
+    required: false
+    default: 'C:\Program Files\NVIDIA\CUDA\v13.4'
+  cudnn-root:
+    description: "cuDNN root that must exist."
+    required: false
+    default: 'C:\Program Files\NVIDIA\CUDNN\v9.25'
+
+runs:
+  using: "composite"
+  steps:
+    - name: Verify test toolchain + GPU
+      id: check
+      shell: powershell
+      env:
+        INPUT_PY_VERSION: ${{ inputs.python-version }}
+        INPUT_PY_LABEL: ${{ inputs.python-label }}
+        INPUT_CUDA_PATH: ${{ inputs.cuda-path }}
+        INPUT_CUDNN_ROOT: ${{ inputs.cudnn-root }}
+      run: |
+        $ErrorActionPreference = "Stop"
+        $missing = @()
+
+        function Require-Path([string]$label, [string]$path) {
+          if ([string]::IsNullOrWhiteSpace($path)) { return }
+          if (Test-Path -LiteralPath $path) {
+            Write-Host "  [ok]      $label -> $path"
+          } else {
+            Write-Host "  [MISSING] $label -> $path"
+            $script:missing += "$label ($path)"
+          }
+        }
+
+        function Test-Arm64Exe([string]$exe) {
+          try {
+            $fs = [System.IO.File]::OpenRead($exe)
+            try {
+              $buf = New-Object byte[] 4096
+              [void]$fs.Read($buf, 0, 4096)
+            } finally { $fs.Dispose() }
+            $peOff = [System.BitConverter]::ToUInt32($buf, 0x3C)
+            if ($peOff -le 0 -or $peOff -gt ($buf.Length - 6)) { return $false }
+            return ([System.BitConverter]::ToUInt16($buf, [int]$peOff + 4) -eq 0xAA64)
+          } catch { return $false }
+        }
+
+        function Resolve-Interpreter([string]$ver, [bool]$ft) {
+          $parts = $ver.Split('.')
+          $tag = '{0}{1}' -f $parts[0], $parts[1]
+          $exeName = if ($ft) { "python${ver}t.exe" } else { 'python.exe' }
+          $launcherArg = if ($ft) { "-${ver}t" } else { "-$ver" }
+          $found = New-Object System.Collections.Generic.List[string]
+          $py = Get-Command 'py' -ErrorAction SilentlyContinue
+          if ($py) {
+            try {
+              $exe = & $py.Source $launcherArg '-c' 'import sys; print(sys.executable)' 2>$null
+              if ($LASTEXITCODE -eq 0 -and -not [string]::IsNullOrWhiteSpace($exe)) {
+                $exe = ([string]$exe).Trim()
+                if (Test-Path -LiteralPath $exe) { $found.Add((Get-Item -LiteralPath $exe).FullName) | Out-Null }
+              }
+            } catch { }
+          }
+          $roots = @(
+            (Join-Path $env:LocalAppData "Programs\Python\Python$tag-arm64"),
+            (Join-Path $env:ProgramFiles "Python$tag-arm64"),
+            "C:\Python$tag-arm64",
+            (Join-Path $env:LocalAppData "Programs\Python\Python$tag"),
+            (Join-Path $env:ProgramFiles "Python$tag"),
+            "C:\Python$tag"
+          )
+          foreach ($r in $roots) {
+            if ([string]::IsNullOrWhiteSpace($r)) { continue }
+            $c = Join-Path $r $exeName
+            if (Test-Path -LiteralPath $c) { $found.Add((Get-Item -LiteralPath $c).FullName) | Out-Null }
+          }
+          foreach ($f in $found) { if (Test-Arm64Exe $f) { return $f } }
+          if ($found.Count -gt 0) { return $found[0] }
+          return $null
+        }
+
+        $label = if ([string]::IsNullOrWhiteSpace($env:INPUT_PY_LABEL)) { $env:INPUT_PY_VERSION } else { $env:INPUT_PY_LABEL }
+        Write-Host "== WoA test preflight (python=$label) =="
+        Require-Path "CUDA 13.4"     $env:INPUT_CUDA_PATH
+        Require-Path "cuDNN"         $env:INPUT_CUDNN_ROOT
+
+        $ver = $env:INPUT_PY_VERSION.Trim()
+        $ft = $false
+        if ($ver.EndsWith('t')) { $ft = $true; $ver = $ver.Substring(0, $ver.Length - 1) }
+        $interp = Resolve-Interpreter $ver $ft
+        if ([string]::IsNullOrWhiteSpace($interp)) {
+          Write-Host "  [MISSING] ARM64 python $($env:INPUT_PY_VERSION) interpreter"
+          $missing += "ARM64 python $($env:INPUT_PY_VERSION) interpreter (winget install Python.Python.$ver --architecture arm64)"
+        } elseif (Test-Arm64Exe $interp) {
+          Write-Host "  [ok]      ARM64 python $($env:INPUT_PY_VERSION) -> $interp"
+        } else {
+          Write-Host "  [NOT ARM64] python $($env:INPUT_PY_VERSION) -> $interp"
+          $missing += "python $($env:INPUT_PY_VERSION) is not ARM64-native ($interp); remove the x64 install and reprovision the arm64 CPython"
+        }
+
+        # GPU visibility - a test runner without a usable GPU is a hard fail.
+        $smi = Get-Command nvidia-smi -ErrorAction SilentlyContinue
+        if (-not $smi) {
+          Write-Host "  [MISSING] nvidia-smi not on PATH"
+          $missing += "nvidia-smi (not found)"
+        } else {
+          & nvidia-smi
+          if ($LASTEXITCODE -ne 0) {
+            Write-Host "  [MISSING] nvidia-smi returned $LASTEXITCODE"
+            $missing += "nvidia-smi (exit $LASTEXITCODE)"
+          } else {
+            Write-Host "  [ok]      nvidia-smi"
+          }
+        }
+
+        if ($missing.Count -gt 0) {
+          Write-Host "::error title=WoA test preflight::Runner is missing required preinstalled toolchain / GPU: $($missing -join '; ')"
+          exit 1
+        }
+        Write-Host "== test preflight ok =="

@@ -6,11 +6,15 @@
     Background runner diagnostics for self-hosted Windows RTX CI.
 
 .DESCRIPTION
-    Writes a one-shot `spec-snapshot.json` (host, CPU, RAM, disk, driver,
-    GPUs, nvcc, Python), then samples host (CPU, RAM, disk, top processes)
-    and GPU (utilisation, memory, temperature, power, clocks) metrics on
-    a fixed interval. Each metric family is written as JSONL into
+    Writes a one-shot `spec-snapshot.json` (coarse: OS, logical core count, RAM,
+    disk totals, driver, GPU compute-capability/memory, nvcc, Python), then samples
+    host (CPU, RAM, disk) and GPU (utilisation, memory, temperature, power, clocks)
+    metrics on a fixed interval. Each metric family is written as JSONL into
     `<OutputDir>`. The loop exits when `-StopFile` exists.
+
+    Intended for public artifact upload, so it deliberately omits identifying
+    detail: no machine hostname, no exact CPU/GPU model strings, and no per-process
+    names/PIDs - only coarse resource metrics.
 
     Has no third-party dependencies; uses only built-in cmdlets plus
     `nvidia-smi` (which is part of the runner image).
@@ -43,17 +47,15 @@ function Invoke-Cli {
 
 function New-SpecSnapshot {
     $os    = Get-CimInstance Win32_OperatingSystem
-    $cpu   = Get-CimInstance Win32_Processor | Select-Object -First 1
     $cores = (Get-CimInstance Win32_Processor | Measure-Object NumberOfLogicalProcessors -Sum).Sum
     $cs    = Get-CimInstance Win32_ComputerSystem
     $diskC = Get-PSDrive C -ErrorAction SilentlyContinue
 
+    # Coarse only (public artifact): no hostname, no exact CPU/GPU model strings.
     [ordered]@{
         timestamp         = (Get-Date).ToString("o")
-        host              = $env:COMPUTERNAME
         os_caption        = $os.Caption
         os_build          = $os.BuildNumber
-        cpu_model         = $cpu.Name
         cpu_cores_logical = $cores
         ram_gb            = [math]::Round($cs.TotalPhysicalMemory / 1GB, 2)
         disk_c_total_gb   = if ($diskC) { [math]::Round(($diskC.Used + $diskC.Free) / 1GB, 2) } else { $null }
@@ -62,7 +64,8 @@ function New-SpecSnapshot {
         env_python        = $env:PYTHON_VERSION
         env_cuda          = $env:CUDA_VERSION
         driver_version    = (Invoke-Cli nvidia-smi @("--query-gpu=driver_version","--format=csv,noheader") | Select-Object -First 1)
-        gpus              = @(Invoke-Cli nvidia-smi @("--query-gpu=name,memory.total,compute_cap","--format=csv,noheader")) | ForEach-Object { $_.Trim() }
+        # compute capability + total memory only (drop GPU model name).
+        gpus              = @(Invoke-Cli nvidia-smi @("--query-gpu=memory.total,compute_cap","--format=csv,noheader")) | ForEach-Object { $_.Trim() }
         python_version    = ((Invoke-Cli python @("--version")) -join "").Trim()
         nvcc_version      = ((Invoke-Cli nvcc   @("--version")) -join "`n").Trim()
     }
@@ -73,15 +76,7 @@ function Get-SystemSample {
     $cpu   = (Get-CimInstance Win32_Processor | Measure-Object -Property LoadPercentage -Average).Average
     $diskC = Get-PSDrive C -ErrorAction SilentlyContinue
 
-    $top = Get-Process | Sort-Object WS -Descending | Select-Object -First 5 | ForEach-Object {
-        [PSCustomObject]@{
-            name  = $_.Name
-            pid   = $_.Id
-            ws_mb = [math]::Round($_.WorkingSet / 1MB, 1)
-            cpu_s = if ($null -ne $_.CPU) { [math]::Round($_.CPU, 2) } else { $null }
-        }
-    }
-
+    # Coarse resource metrics only (public artifact): no per-process names/PIDs.
     [PSCustomObject]@{
         cpu_percent    = if ($null -ne $cpu) { [int]$cpu } else { $null }
         mem_total_mib  = [int]($os.TotalVisibleMemorySize / 1024)
@@ -89,7 +84,6 @@ function Get-SystemSample {
         mem_used_mib   = [int](($os.TotalVisibleMemorySize - $os.FreePhysicalMemory) / 1024)
         disk_c_free_gb = if ($diskC) { [math]::Round($diskC.Free / 1GB, 2) } else { $null }
         disk_c_used_gb = if ($diskC) { [math]::Round($diskC.Used / 1GB, 2) } else { $null }
-        top_processes  = $top
     }
 }
 

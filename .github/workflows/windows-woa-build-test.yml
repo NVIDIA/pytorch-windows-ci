@@ -1,0 +1,238 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: MIT
+
+name: windows-woa-build-test
+
+# Source-build + test CI for pytorch/pytorch on self-hosted Windows-on-Arm
+# (WoA) runners. The arm64 counterpart of `windows-rtx-build-test.yml`:
+# builds the full P0 wheel set from source via the vendored PowerShell library
+# (`_woa-build.yml`), tests every built wheel (`_woa-test.yml`), then rolls up
+# failures (`test-summary`).
+#
+# Scheduled (nightly) only - there is intentionally NO manual/workflow_dispatch
+# trigger; build-test is the sole WoA workflow this repo carries.
+#
+# Shape:
+#
+#   prep (resolve ref @ nightly)
+#       |
+#   build  matrix( python in 3.11/3.12/3.13/3.14/3.14t ), CTK 13.4
+#       |    each: vanilla -> cuda_embed -> torchaudio -> torchvision -> upload
+#       |    (3.14t is the free-threaded / no-GIL build -> cp314t wheels)
+#       |
+#       +-> test  matrix( same python cells, CTK 13.4 )   [needs: build]
+#                 each cell fans out 4 shards internally
+#
+# Runners: one shared PERSISTENT arm64 pool tagged `woa-arm64` for build + test.
+# `test` `needs: build`, so the whole build stage finishes before any test job
+# starts (same mechanism as x86) - which also keeps test jobs from starving the
+# build stage on the shared pool. With per-version testing the test stage fans
+# out to (#python cells) x 4 shards, all on the shared pool, so the full-matrix
+# nightly run serializes on the pool.
+
+on:
+  schedule:
+    # Nightly build + test of the full WoA matrix against pytorch `nightly`.
+    # Manual/workflow_dispatch is intentionally NOT offered for this repo.
+    - cron: "0 5 * * *"
+
+# No `concurrency:` group: the shared arm64 pool runs one job per agent, and the
+# only trigger is the once-a-day schedule, so runs never overlap. A run_id-keyed
+# group would be unique per run and coalesce nothing anyway.
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  # ===========================================================================
+  # Resolve pytorch + the torchaudio/torchvision sources to full commit SHAs ONCE
+  # (over HTTPS) and pin every build + test cell to them. The nightly run tracks
+  # moving branches, so without this each build cell would independently check out
+  # a moving branch and could build DIFFERENT commits mid-run. Resolving here gives
+  # one integrity-checked source triple across the whole run (Git objects are
+  # content-addressed, so a full SHA yields exactly that commit or fails).
+  # `_woa-build.yml` additionally rejects a non-SHA pytorch ref, so the pin is
+  # enforced even when the reusable workflow is called directly.
+  # ===========================================================================
+  prep:
+    name: resolve pytorch ref
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      pytorch-ref: ${{ steps.ref.outputs.pytorch-ref }}
+      torchaudio-ref: ${{ steps.ref.outputs.torchaudio-ref }}
+      torchvision-ref: ${{ steps.ref.outputs.torchvision-ref }}
+    steps:
+      - name: Resolve source refs to commit SHAs
+        id: ref
+        shell: bash
+        env:
+          REF: "nightly"
+          AUDIO_REF: "main"
+          VISION_REF: "main"
+          PYTHON_VERSIONS: ""
+          NUM_SHARDS: "4"
+        run: |
+          set -euo pipefail
+          # Resolve a branch/tag to its commit SHA over HTTPS (a full SHA passes
+          # through unchanged). Prefer a peeled annotated-tag commit
+          # (refs/tags/<x>^{}) when present, else the first matching ref.
+          resolve_ref() {
+            local repo_url="$1" ref="$2" lines sha
+            if [[ "${ref}" =~ ^[0-9a-f]{40}$ ]]; then printf '%s' "${ref}"; return 0; fi
+            lines="$(git ls-remote "${repo_url}" "${ref}" "refs/heads/${ref}" "refs/tags/${ref}" 2>/dev/null || true)"
+            sha="$(printf '%s\n' "${lines}" | awk '/\^\{\}$/ {print $1; exit}')"
+            if [ -z "${sha}" ]; then sha="$(printf '%s\n' "${lines}" | awk 'NF {print $1; exit}')"; fi
+            printf '%s' "${sha}"
+          }
+          require_sha() {
+            if ! [[ "$2" =~ ^[0-9a-f]{40}$ ]]; then
+              echo "::error::Could not resolve $1 ref '$3' to a 40-hex commit SHA (got '${2:-<empty>}')." >&2
+              exit 1
+            fi
+          }
+          sha="$(resolve_ref "https://github.com/pytorch/pytorch" "${REF}")";        require_sha pytorch     "${sha}"       "${REF}"
+          audio_sha="$(resolve_ref "https://github.com/pytorch/audio" "${AUDIO_REF}")";   require_sha torchaudio  "${audio_sha}"  "${AUDIO_REF}"
+          vision_sha="$(resolve_ref "https://github.com/pytorch/vision" "${VISION_REF}")"; require_sha torchvision "${vision_sha}" "${VISION_REF}"
+          echo "Resolved pytorch '${REF}' -> ${sha}, torchaudio '${AUDIO_REF}' -> ${audio_sha}, torchvision '${VISION_REF}' -> ${vision_sha}"
+          {
+            echo "pytorch-ref=${sha}"
+            echo "torchaudio-ref=${audio_sha}"
+            echo "torchvision-ref=${vision_sha}"
+          } >> "$GITHUB_OUTPUT"
+          {
+            echo "## windows-woa-build-test config"
+            echo ""
+            echo "| field | value |"
+            echo "| --- | --- |"
+            echo "| trigger | \`${{ github.event_name }}\` |"
+            echo "| pytorch-ref (input) | \`${REF}\` |"
+            echo "| pytorch-ref (resolved SHA) | \`${sha}\` |"
+            echo "| torchaudio-ref (resolved SHA) | \`${audio_sha}\` |"
+            echo "| torchvision-ref (resolved SHA) | \`${vision_sha}\` |"
+            echo "| python-versions (build + test) | \`${PYTHON_VERSIONS:-(all)}\` |"
+            echo "| test config | \`per-version / cu134\` |"
+            echo "| shards | \`${NUM_SHARDS}\` |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  build:
+    name: woa-${{ matrix.config.label }}-cu134-build
+    needs: prep
+    strategy:
+      fail-fast: false
+      matrix:
+        # One entry per Python build cell (CTK 13.4). The shared `woa-arm64`
+        # runners carry every python venv, so python is NOT in the runner label.
+        config: &config
+          # TEMPORARY: limited to Python 3.13 only. Re-enable the other cells
+          # (3.11 / 3.12 / 3.14 / 3.14t) once they are validated (planned in a
+          # few days). The list feeds BOTH the build and test matrices.
+          # - { version: "3.11", label: "py311" }
+          # - { version: "3.12", label: "py312" }
+          - { version: "3.13", label: "py313" }
+          # - { version: "3.14", label: "py314" }
+          # Free-threaded (no-GIL) 3.14 -> cp314t wheels. The runner venv `py314t`
+          # is backed by python3.14t.exe; the build tooling is driven by the venv,
+          # so no extra build flag is needed here.
+          # - { version: "3.14t", label: "py314t" }
+    uses: ./.github/workflows/_woa-build.yml
+    with:
+      runner-base: woa-arm64
+      python-version: ${{ matrix.config.version }}
+      python-label: ${{ matrix.config.label }}
+      cuda-version: "13.4"
+      cuda-arch-list: "8.9;10.3+PTX;12.0;12.1+PTX"
+      build-environment: win-woa-arm64
+      pytorch-ref: ${{ needs.prep.outputs.pytorch-ref }}
+      # Extensions pinned to the SHAs resolved in prep so every cell builds the
+      # same torchaudio/torchvision source (reproducible across the matrix).
+      torchaudio-ref: ${{ needs.prep.outputs.torchaudio-ref }}
+      torchvision-ref: ${{ needs.prep.outputs.torchvision-ref }}
+      # Must match the paired test cell's `wheel-artifact` for the same label.
+      # No run_attempt in the name: "Re-run failed jobs" bumps run_attempt but does NOT
+      # re-run this already-succeeded build, so the wheel must keep a stable name (scoped
+      # to run_id only) that the re-running test cell can still resolve. The build upload
+      # uses overwrite:true so a full "Re-run all jobs" (build re-runs) replaces it cleanly.
+      wheel-artifact: woa-${{ matrix.config.label }}-cu134-${{ github.run_id }}
+
+  test:
+    name: woa-${{ matrix.config.label }}-cu134-arm64-test
+    needs: build
+    # Run the test matrix even when SOME build cells failed. With a plain `needs: build`
+    # a single failed build cell marks the whole build job `failure` and GitHub auto-skips
+    # every test cell - so a partial build (e.g. py311/py313 pass, py314t fails) would test
+    # nothing. `!cancelled()` overrides that per-matrix auto-skip: each cell (fail-fast:false)
+    # independently downloads its own wheel, so successfully-built cells get tested while a
+    # failed-build cell simply errors at its wheel download (no wheel to test). The
+    # `!= 'skipped'` guard keeps tests off when the build stage was wholesale skipped
+    # (e.g. prep failed, or the repository_dispatch gate parked it).
+    if: ${{ !cancelled() && needs.build.result != 'skipped' }}
+    # One test cell per built Python (reuses the build matrix anchor). Each cell
+    # fans out 4 shards inside _woa-test.yml and consumes its own build artifact.
+    strategy:
+      fail-fast: false
+      matrix:
+        config: *config
+    uses: ./.github/workflows/_woa-test.yml
+    with:
+      runner-base: woa-arm64
+      python-version: ${{ matrix.config.version }}
+      python-label: ${{ matrix.config.label }}
+      cuda-version: "13.4"
+      cuda-arch-list: "8.9;10.3+PTX;12.0;12.1+PTX"
+      build-environment: win-woa-arm64
+      test-config: "default"
+      # Consume exactly this cell's build wheel artifact (same name as _woa-build.yml).
+      # Stable across attempts (no run_attempt) so a test-only re-run still downloads the
+      # wheel the build produced on the original attempt.
+      wheel-artifact: woa-${{ matrix.config.label }}-cu134-${{ github.run_id }}
+
+  # ===========================================================================
+  # Post-test rollup. Renders which test jobs failed (with log links) plus the
+  # de-duplicated cross-shard failing-test list (per-cell + overall). Runs
+  # `if: always()`, informational only - never reports a status of its own.
+  # ===========================================================================
+  test-summary:
+    name: test-summary
+    needs: test
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout this repository (for summary script)
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          fetch-depth: 1
+          show-progress: false
+
+      - name: Aggregate failed test jobs
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh api --paginate \
+            "repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/attempts/${{ github.run_attempt }}/jobs" \
+            -q '.jobs[]' | jq -s '.' > jobs.json
+          python3 scripts/test-summary/aggregate_failures.py \
+            --jobs-json jobs.json \
+            --title "PyTorch WoA test summary (run ${{ github.run_id }})" \
+            >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Download all shard test-reports
+        if: always()
+        continue-on-error: true
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          pattern: test-reports-*
+          path: all-reports
+
+      - name: Aggregate failed tests across shards
+        if: always()
+        shell: bash
+        run: |
+          python3 scripts/test-summary/parse_failures.py \
+            --shards-root all-reports \
+            --title "Aggregate failed tests - all shards (run ${{ github.run_id }})" \
+            >> "$GITHUB_STEP_SUMMARY"

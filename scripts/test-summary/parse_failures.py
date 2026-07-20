@@ -29,7 +29,7 @@ from __future__ import annotations
 import argparse
 import re
 import sys
-from collections import Counter
+from collections import Counter, defaultdict
 from dataclasses import dataclass, field
 from pathlib import Path
 from xml.etree import ElementTree as ET
@@ -652,14 +652,284 @@ def render_markdown(result: ScanResult, title: str, max_rows: int) -> str:
     return "\n".join(lines) + "\n"
 
 
+# --------------------------------------------------------------------------
+# Cross-shard aggregation
+# --------------------------------------------------------------------------
+_SHARD_TOKEN = re.compile(r"shard[-_]?(\d+)", re.IGNORECASE)
+# ``test-reports-<cell>-shard<N>-<run>-<attempt>``: capture the cell (the
+# build-env / python / cuda / arch tuple) and the shard number. The cell is
+# what groups shards into separate per-cell aggregates.
+_CELL_SHARD = re.compile(
+    r"^(?:test-reports-)?(?P<cell>.*?)-?shard[-_]?(?P<shard>\d+)", re.IGNORECASE
+)
+
+
+def _shard_label(name: str) -> str:
+    """Short, human-friendly shard label derived from an artifact/dir name.
+
+    PyTorch test-report artifacts are named
+    ``test-reports-<cell>-shard<N>-<run>-<attempt>``; extract just ``<N>`` for
+    a compact "Shards" column. Falls back to the raw name when no shard token
+    is present.
+    """
+    match = _SHARD_TOKEN.search(name)
+    return match.group(1) if match else name
+
+
+def _cell_label(name: str) -> str:
+    """Cell (matrix cell) an artifact/dir belongs to, for per-cell grouping.
+
+    From ``test-reports-<cell>-shard<N>-<run>-<attempt>`` this returns
+    ``<cell>`` (e.g. ``win-rtx-sm120-py312-cu130-sm120``). When no shard token
+    is present the whole name is treated as its own cell; an empty cell (a bare
+    ``test-reports-shard<N>-...`` with no cell segment) renders as "(default)".
+    """
+    match = _CELL_SHARD.match(name)
+    return match.group("cell") if match else name
+
+
+def _shard_sort_key(label: str) -> tuple[int, object]:
+    """Sort numeric shard labels numerically, everything else after, by name."""
+    return (0, int(label)) if label.isdigit() else (1, label)
+
+
+@dataclass
+class AggregateResult:
+    """Union of per-shard :class:`ScanResult` outcomes, de-duplicated.
+
+    A test that fails in more than one shard (or in repeated rerun reports
+    across shards) collapses to a single :class:`Failure` here, with every
+    contributing shard recorded in :attr:`shards_by_key`.
+    """
+
+    failures: list[Failure] = field(default_factory=list)
+    # dedup_key -> set of shard labels the failure was seen in.
+    shards_by_key: dict[tuple[str, str, str], set[str]] = field(default_factory=dict)
+    passed_keys: set[tuple[str, str, str]] = field(default_factory=set)
+    skipped_keys: set[tuple[str, str, str]] = field(default_factory=set)
+    scanned_shards: int = 0
+
+    @property
+    def _failed_keys(self) -> set[tuple[str, str, str]]:
+        return {f.dedup_key for f in self.failures}
+
+    @property
+    def failed_count(self) -> int:
+        return len(self.failures)
+
+    @property
+    def passed_count(self) -> int:
+        return len(self.passed_keys - self._failed_keys)
+
+    @property
+    def skipped_count(self) -> int:
+        return len(self.skipped_keys - self._failed_keys - self.passed_keys)
+
+    @property
+    def total_count(self) -> int:
+        return self.passed_count + self.failed_count + self.skipped_count
+
+
+def aggregate_shards(
+    shard_dirs: dict[str, Path], *, parse_logs: bool = True
+) -> AggregateResult:
+    """Collect each shard's reports dir and union the results, de-duplicated.
+
+    ``shard_dirs`` maps a unique name (typically the downloaded artifact
+    directory name) to that shard's reports tree. Each shard is scanned
+    independently with :func:`collect` - so per-shard rerun reconciliation is
+    honoured - and the surviving failures are then merged across shards on
+    :attr:`Failure.dedup_key`. The richest record wins (``error`` over
+    ``failure``), matching the single-shard sink.
+    """
+    agg = AggregateResult()
+    sink = _FailureSink()
+    shards_by_key: dict[tuple[str, str, str], set[str]] = defaultdict(set)
+
+    for name in sorted(shard_dirs):
+        label = _shard_label(name)
+        result = collect(shard_dirs[name], parse_logs=parse_logs)
+        agg.scanned_shards += 1
+        agg.passed_keys |= result.passed_keys
+        agg.skipped_keys |= result.skipped_keys
+        for failure in result.failures:
+            sink.add(failure, prefer_error=True)
+            shards_by_key[failure.dedup_key].add(label)
+
+    agg.failures = sink.values()
+    agg.shards_by_key = dict(shards_by_key)
+    return agg
+
+
+def group_shard_dirs_by_cell(
+    shard_dirs: dict[str, Path],
+) -> dict[str, dict[str, Path]]:
+    """Partition shard dirs into ``{cell: {name: path}}`` by :func:`_cell_label`."""
+    groups: dict[str, dict[str, Path]] = defaultdict(dict)
+    for name, path in shard_dirs.items():
+        groups[_cell_label(name)][name] = path
+    return dict(groups)
+
+
+def aggregate_by_cell(
+    shard_dirs: dict[str, Path], *, parse_logs: bool = True
+) -> dict[str, AggregateResult]:
+    """Aggregate each matrix cell separately (union + dedup within the cell)."""
+    groups = group_shard_dirs_by_cell(shard_dirs)
+    return {
+        cell: aggregate_shards(group, parse_logs=parse_logs)
+        for cell, group in groups.items()
+    }
+
+
+def combine_cells(cells: dict[str, AggregateResult]) -> AggregateResult:
+    """Fold per-cell aggregates into one overall union across all cells/shards.
+
+    Reuses the already-scanned per-cell :class:`AggregateResult`s (no rescan).
+    Failures are de-duplicated across cells on :attr:`Failure.dedup_key`, and
+    each contributing shard is recorded as ``<cell>/<shard>`` so the Shards
+    column stays unambiguous when the same shard number exists in many cells.
+    """
+    overall = AggregateResult()
+    sink = _FailureSink()
+    shards_by_key: dict[tuple[str, str, str], set[str]] = defaultdict(set)
+
+    for cell in sorted(cells):
+        agg = cells[cell]
+        overall.scanned_shards += agg.scanned_shards
+        overall.passed_keys |= agg.passed_keys
+        overall.skipped_keys |= agg.skipped_keys
+        for failure in agg.failures:
+            sink.add(failure, prefer_error=True)
+            for shard in agg.shards_by_key.get(failure.dedup_key, set()):
+                shards_by_key[failure.dedup_key].add(
+                    f"{cell}/{shard}" if cell else shard
+                )
+
+    overall.failures = sink.values()
+    overall.shards_by_key = dict(shards_by_key)
+    return overall
+
+
+def _agg_totals_line(agg: AggregateResult) -> str:
+    """One-line union tally across all shards."""
+    return (
+        f"**{agg.total_count} distinct test(s) across {agg.scanned_shards} "
+        f"shard(s):** {agg.passed_count} passed, "
+        f"{agg.failed_count} failed/errored, {agg.skipped_count} skipped."
+    )
+
+
+def _aggregate_body(agg: AggregateResult, max_rows: int) -> list[str]:
+    """Markdown lines for one aggregate (totals + de-duplicated failure table).
+
+    Excludes the section heading so the same body can sit under a top-level
+    ``## title`` (single aggregate) or a per-cell ``### cell`` sub-heading.
+    """
+    lines = [_agg_totals_line(agg), ""]
+
+    if not agg.failures:
+        lines.append(
+            f"All collected tests passed across {agg.scanned_shards} shard(s)."
+        )
+        return lines
+
+    lines.append(
+        f"**{len(agg.failures)} unique failing/errored item(s)** after "
+        f"de-duplicating across {agg.scanned_shards} shard(s)."
+    )
+    lines.append("")
+    lines.append("| # | Kind | Source | Test | Shards | Message |")
+    lines.append("| --- | --- | --- | --- | --- | --- |")
+
+    ordered = sorted(agg.failures, key=lambda f: (f.module, f.classname, f.name))
+    for idx, failure in enumerate(ordered[:max_rows], start=1):
+        message = failure.message.replace("|", "\\|") or "-"
+        shards = ", ".join(
+            sorted(agg.shards_by_key.get(failure.dedup_key, set()), key=_shard_sort_key)
+        ) or "-"
+        lines.append(
+            f"| {idx} | {failure.kind} | {failure.source} "
+            f"| `{failure.qualified_name}` | {shards} | {message} |"
+        )
+
+    if len(ordered) > max_rows:
+        lines.append("")
+        lines.append(f"_... and {len(ordered) - max_rows} more (truncated)._ ")
+
+    return lines
+
+
+def render_aggregate(agg: AggregateResult, title: str, max_rows: int) -> str:
+    """Render a single :class:`AggregateResult` as a Markdown section.
+
+    The failure table lists each failing test exactly once (union across
+    shards) with a ``Shards`` column showing which shards it was seen in.
+    """
+    lines = [f"## {title}", ""]
+
+    if agg.scanned_shards == 0:
+        lines.append("No shard report directories were found.")
+        return "\n".join(lines) + "\n"
+
+    lines.extend(_aggregate_body(agg, max_rows))
+    return "\n".join(lines) + "\n"
+
+
+def render_aggregate_by_cell(
+    cells: dict[str, AggregateResult],
+    title: str,
+    max_rows: int,
+    overall: AggregateResult | None = None,
+) -> str:
+    """Render per-cell aggregate sections under a shared heading.
+
+    Each cell gets its own ``### <cell>`` sub-section with an independent
+    union + de-duplication over just that cell's shards. When ``overall`` is
+    given (typically only when there is more than one cell), an
+    ``### All cells`` section unioning every cell and shard is rendered first.
+    """
+    lines = [f"## {title}", ""]
+
+    if not cells:
+        lines.append("No shard report directories were found.")
+        return "\n".join(lines) + "\n"
+
+    if overall is not None:
+        lines.append("### All cells")
+        lines.append("")
+        lines.extend(_aggregate_body(overall, max_rows))
+        lines.append("")
+
+    for cell in sorted(cells):
+        lines.append(f"### {cell or '(default)'}")
+        lines.append("")
+        lines.extend(_aggregate_body(cells[cell], max_rows))
+        lines.append("")
+
+    return "\n".join(lines).rstrip() + "\n"
+
+
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     """Parse command-line arguments for the failure-summary CLI."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--reports-dir",
         type=Path,
-        required=True,
+        default=None,
         help="Directory tree to scan for JUnit *.xml reports and *.log/*.txt run logs.",
+    )
+    parser.add_argument(
+        "--shards-root",
+        type=Path,
+        default=None,
+        help=(
+            "Parent directory whose immediate subdirectories are each one "
+            "shard's reports tree (e.g. downloaded per-shard artifacts). "
+            "Renders one summary per matrix cell, each unioning and "
+            "de-duplicating failures across that cell's shards. Mutually "
+            "exclusive with --reports-dir."
+        ),
     )
     parser.add_argument(
         "--title",
@@ -694,15 +964,33 @@ def main(argv: list[str] | None = None) -> int:
     """
     args = parse_args(argv)
 
-    reports_dir = args.reports_dir
-    if not reports_dir.is_dir():
-        markdown = (
-            f"## {args.title}\n\n"
-            f"Reports directory `{reports_dir}` does not exist.\n"
-        )
+    if (args.reports_dir is None) == (args.shards_root is None):
+        raise SystemExit("error: pass exactly one of --reports-dir or --shards-root")
+
+    if args.shards_root is not None:
+        root = args.shards_root
+        if not root.is_dir():
+            markdown = (
+                f"## {args.title}\n\n"
+                f"Shards root `{root}` does not exist.\n"
+            )
+        else:
+            shard_dirs = {p.name: p for p in sorted(root.iterdir()) if p.is_dir()}
+            cells = aggregate_by_cell(shard_dirs, parse_logs=not args.no_logs)
+            overall = combine_cells(cells) if len(cells) > 1 else None
+            markdown = render_aggregate_by_cell(
+                cells, args.title, args.max_rows, overall=overall
+            )
     else:
-        result = collect(reports_dir, parse_logs=not args.no_logs)
-        markdown = render_markdown(result, args.title, args.max_rows)
+        reports_dir = args.reports_dir
+        if not reports_dir.is_dir():
+            markdown = (
+                f"## {args.title}\n\n"
+                f"Reports directory `{reports_dir}` does not exist.\n"
+            )
+        else:
+            result = collect(reports_dir, parse_logs=not args.no_logs)
+            markdown = render_markdown(result, args.title, args.max_rows)
 
     if args.output is not None:
         with args.output.open("a", encoding="utf-8") as handle:

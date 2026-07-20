@@ -1,0 +1,380 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: MIT
+
+name: _woa-build
+
+# Reusable Windows-on-Arm (WoA) build workflow. The arm64 analog of
+# `_rtx-build.yml`, driven by the PowerShell build library under
+# `tools/woa-build/**`.
+#
+# One invocation builds ONE Python cell for CTK 13.4 and produces the full P0
+# set of wheels:
+#     torch (vanilla) -> torch (cuda_embed, DLLs embedded)
+#       -> torchaudio -> torchvision
+# The two extensions are P0 but non-blocking: `continue-on-error: true` lets a
+# failed extension keep the run going (build the sibling extension + upload the
+# torch wheel), and a final gate step then reflects any extension failure as a RED
+# build job. So an extension failure SHOWS as a failed job (like a failing test
+# shard) yet never blocks the torch wheel or the other python cells (fail-fast:false).
+#
+# Runners: a single PERSISTENT, shared arm64 pool tagged `woa-arm64` (no runner
+# image, no per-pipeline CTK update). Every runner has MSVC arm64, CUDA 13.4 +
+# cuDNN and the clean ARM64 CPython interpreters (py311..py314 plus free-threaded
+# py314t) preinstalled - but NO pre-built venvs. `woa-preflight-build` verifies the
+# toolchain paths, `woa-create-venv` builds a FRESH throwaway venv for this job from
+# the clean interpreter (public-facing runners: nothing a job installs persists), and
+# `woa-strict-clean` scrubs job-produced state (including that venv) at start and end.
+#
+# The resolved pytorch commit SHA is recorded into `built_pytorch_sha.txt` and
+# shipped in the wheel artifact so the paired test cell pins the exact source.
+
+on:
+  workflow_call:
+    inputs:
+      runner-base:
+        description: "Runner label for the shared WoA build+test pool."
+        type: string
+        required: false
+        default: "woa-arm64"
+      python-version:
+        description: "Python version in dotted form (e.g. 3.13). Exposed as PYTHON_VERSION."
+        type: string
+        required: true
+      python-label:
+        description: "Python label (py311 | py312 | py313 | py314 | py314t); selects the venv + names the artifact."
+        type: string
+        required: true
+      cuda-version:
+        description: "CUDA toolkit version in dotted form (13.4). Exposed as CUDA_VERSION."
+        type: string
+        required: false
+        default: "13.4"
+      cuda-arch-list:
+        description: "TORCH_CUDA_ARCH_LIST for the arm64 wheel."
+        type: string
+        required: false
+        default: "8.9;10.3+PTX;12.0;12.1+PTX"
+      build-environment:
+        description: "Logical name used in BUILD_ENVIRONMENT and the artifact name."
+        type: string
+        required: false
+        default: "win-woa-arm64"
+      pytorch-ref:
+        description: "pytorch/pytorch commit to build. MUST be a full 40-hex commit SHA (enforced below). The orchestrator prep resolves branches/tags to a SHA; direct callers must pass a SHA (required, no default, so a symbolic ref cannot slip past the guard)."
+        type: string
+        required: true
+      torchaudio-ref:
+        description: "torchaudio (pytorch/audio) commit to build. Resolved to a SHA by the orchestrator prep; empty = clone the remote default branch (direct-caller fallback)."
+        type: string
+        required: false
+        default: ""
+      torchvision-ref:
+        description: "torchvision (pytorch/vision) commit to build. Resolved to a SHA by the orchestrator prep; empty = clone the remote default branch (direct-caller fallback)."
+        type: string
+        required: false
+        default: ""
+      wheel-artifact:
+        description: >
+          Artifact name to publish the wheels + built_pytorch_sha.txt under.
+          Pass the same value on the paired `_woa-test.yml` call. Empty = skip.
+        type: string
+        required: false
+        default: ""
+
+      # ---- workflow_dispatch matrix filter (see _rtx-build.yml rationale) ----
+      python-versions:
+        description: "Comma-separated allowlist of python versions; empty = no filter."
+        type: string
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: build
+    # Token-exact match (comma-delimited) so "3.14" does not also match "3.14t".
+    if: >
+      inputs.python-versions == '' ||
+      contains(format(',{0},', inputs.python-versions), format(',{0},', inputs.python-version))
+    runs-on:
+      - ${{ inputs.runner-base }}
+    timeout-minutes: 360
+    env:
+      BUILD_ENVIRONMENT: ${{ inputs.build-environment }}
+      TORCH_CUDA_ARCH_LIST: ${{ inputs.cuda-arch-list }}
+      # Extension (torchaudio/torchvision) arch for the ctk134_py313 build variant.
+      # The cpp_extension arch allowlist rejects the 'f' family suffix, so
+      # the torch list stays suffix-free (explicit 12.1, not 12.0f); the CMAKE arch
+      # list uses the compact family form (89 Ada, 103a, 120f covers 12.0/12.1).
+      # Read directly by the vendored ExtensionBuildPipeline via Resolve-CiEnv.
+      EXT_WIN_CMAKE_CUDA_ARCHITECTURES: "89;103a;120f"
+      EXT_WIN_TORCH_CUDA_ARCH_LIST: ${{ inputs.cuda-arch-list }}
+      PYTHON_VERSION: ${{ inputs.python-version }}
+      PYTHON_LABEL: ${{ inputs.python-label }}
+      CUDA_VERSION: ${{ inputs.cuda-version }}
+      BUILD_TEST: "1"
+      DISTUTILS_USE_SDK: "1"
+      # Pinned extension source commits (resolved by the orchestrator prep); empty
+      # falls back to the remote default branch. Read by the vendored extension
+      # pipeline via Resolve-CiEnv.
+      TORCHAUDIO_WIN_GIT_REF: ${{ inputs.torchaudio-ref }}
+      TORCHVISION_WIN_GIT_REF: ${{ inputs.torchvision-ref }}
+      # ---- WoA preinstall contract (single-drive C: runners; see docs/woa-ci-plan.md) ----
+      # Expected install paths on every woa-arm64 runner: CTK/cuDNN under
+      # C:\Program Files\NVIDIA, tools/vcpkg/APL under C:\DevToolKit.
+      WOA_CUDA_PATH: 'C:\Program Files\NVIDIA\CUDA\v13.4'
+      WOA_CUDNN_ROOT: 'C:\Program Files\NVIDIA\CUDNN\v9.25'
+      # arm64 MSVC entry point verified by woa-preflight-build (fail fast if absent).
+      WOA_VCVARS_BAT: 'C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvarsarm64.bat'
+      # Short relocated checkout root + job scratch on C: (MAX_PATH + space; runners are C: only).
+      PT_ROOT: 'C:\pt'
+      WOA_SCRATCH: 'C:\ci\woa\scratch'
+      # The per-job venv is built fresh here (under scratch, so strict-clean wipes it) and
+      # the pip cache is pinned inside scratch too - no cross-job wheel cache survives on
+      # these public-facing runners (avoids a shared-cache poisoning vector).
+      WOA_VENV_DIR: 'C:\ci\woa\scratch\venv'
+      PIP_CACHE_DIR: 'C:\ci\woa\scratch\pipcache'
+    steps:
+      # Keep the OOT tooling in oot/ so the parallel pytorch checkout can't
+      # trample it, and so the composite actions resolve at ./oot/.github/...
+      - name: Checkout OOT tooling repo
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          path: oot
+          show-progress: false
+          # Don't leave the job token in oot/.git/config while the build (and any
+          # third-party build code) runs; this checkout only needs read access now.
+          persist-credentials: false
+
+      # Persistent shared runner -> scrub any leftover job state BEFORE work.
+      - name: Strict clean (pre)
+        uses: ./oot/.github/actions/woa-strict-clean
+        with:
+          phase: pre
+          pt-root: ${{ env.PT_ROOT }}
+          scratch-root: ${{ env.WOA_SCRATCH }}
+
+      # Verify the preinstalled toolchain + a clean ARM64 interpreter for this python
+      # label (NO install, NO CTK update). Fails fast on a misprovisioned runner.
+      - name: Preflight build toolchain
+        id: preflight
+        uses: ./oot/.github/actions/woa-preflight-build
+        with:
+          python-version: ${{ inputs.python-version }}
+          python-label: ${{ inputs.python-label }}
+          cuda-path: ${{ env.WOA_CUDA_PATH }}
+          cudnn-root: ${{ env.WOA_CUDNN_ROOT }}
+          vcvars-bat: ${{ env.WOA_VCVARS_BAT }}
+
+      # Build a FRESH, throwaway venv for this job from the clean interpreter and install the
+      # WoA BUILD deps (woa-base.txt + woa-build.txt, strict - no test harness/domain stack).
+      # It lives under scratch so strict-clean wipes it at job end - the runner keeps only
+      # clean interpreters.
+      - name: Create job venv
+        id: venv
+        uses: ./oot/.github/actions/woa-create-venv
+        with:
+          role: build
+          python-version: ${{ inputs.python-version }}
+          python-label: ${{ inputs.python-label }}
+          venv-path: ${{ env.WOA_VENV_DIR }}\${{ inputs.python-label }}
+
+      - name: Start runner diagnostics
+        id: diag
+        uses: ./oot/.github/actions/start-runner-diagnostics
+
+      - name: Enable git long paths
+        shell: bash
+        run: git config --global core.longpaths true
+
+      # Enforce commit SHA pinning: the source checkout MUST be a full 40-hex
+      # commit SHA (not a moving branch/tag). The orchestrator resolves the ref in
+      # prep; this guard also protects direct reusable-workflow callers. A full SHA
+      # makes the checkout deterministic and integrity-checked (Git objects are
+      # content-addressed) across every build cell.
+      - name: Enforce commit SHA pinning
+        shell: bash
+        env:
+          PYTORCH_REF: ${{ inputs.pytorch-ref }}
+        run: |
+          set -euo pipefail
+          if ! [[ "${PYTORCH_REF}" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error title=Unpinned pytorch source::pytorch-ref must be a full 40-hex commit SHA for a pinned, integrity-checked checkout; got '${PYTORCH_REF}'. The orchestrator prep resolves branches/tags to a SHA before calling this workflow." >&2
+            exit 1
+          fi
+          echo "pytorch source is SHA-pinned: ${PYTORCH_REF}"
+
+      # actions/checkout clones over HTTPS/TLS (no SSH; credentials not persisted).
+      # `ref` is a full commit SHA (see the guard above), so the fetch is pinned.
+      - name: Checkout pytorch/pytorch
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          repository: pytorch/pytorch
+          ref: ${{ inputs.pytorch-ref }}
+          submodules: recursive
+          fetch-depth: 1
+          show-progress: false
+          path: pytorch
+          persist-credentials: false
+
+      # MAX_PATH mitigation: relocate the deep pytorch tree to the short root
+      # PT_ROOT (C:\pt). Same-volume move is an atomic rename; the strict-clean
+      # above already emptied C:\pt.
+      - name: Relocate pytorch checkout to a short path
+        shell: cmd
+        run: |
+          move "%GITHUB_WORKSPACE%\pytorch" "%PT_ROOT%"
+          if errorlevel 1 (
+            echo ::error::Failed to relocate pytorch checkout to %PT_ROOT%
+            exit /b 1
+          )
+          echo Relocated pytorch checkout to %PT_ROOT%
+
+      - name: Record built SHA
+        shell: bash
+        run: |
+          set -euo pipefail
+          sha=$(git -C "${PT_ROOT}" rev-parse HEAD)
+          echo "$sha" > built_pytorch_sha.txt
+          echo "Built from pytorch/pytorch @ $sha"
+
+      # ---- P0 build chain (PowerShell library vendored in Phase 2) -----------
+      # Each step activates the fresh per-job venv built by `woa-create-venv`, then calls
+      # the vendored entrypoint. Wheels are written into WOA_SCRATCH\dist.
+      - name: Build torch wheel (vanilla + cuda_embed)
+        shell: pwsh
+        env:
+          VENV_ACTIVATE: ${{ steps.venv.outputs.venv-activate }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          $out = Join-Path $env:WOA_SCRATCH "dist"
+          & "$env:GITHUB_WORKSPACE\oot\tools\woa-build\torch-build-flow.ps1" `
+            -PytorchRoot $env:PT_ROOT -OutputDir $out -VenvActivate $env:VENV_ACTIVATE
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      # Extensions are P0 but NON-BLOCKING: continue-on-error lets a failed extension
+      # keep the run going (build the sibling + upload the torch wheel); the
+      # "Reflect extension build status" gate below turns any extension failure into a
+      # RED build job afterwards, so the failure SHOWS without blocking the torch wheel
+      # or other cells. The step ids feed that gate's outcome check.
+      - name: Build torchaudio (extension)
+        id: torchaudio
+        continue-on-error: true
+        shell: pwsh
+        env:
+          VENV_ACTIVATE: ${{ steps.venv.outputs.venv-activate }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          $out = Join-Path $env:WOA_SCRATCH "dist"
+          & "$env:GITHUB_WORKSPACE\oot\tools\woa-build\torchaudio\build-pipeline.ps1" `
+            -OutputDir $out -VenvActivate $env:VENV_ACTIVATE
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Build torchvision (extension)
+        id: torchvision
+        continue-on-error: true
+        shell: pwsh
+        env:
+          VENV_ACTIVATE: ${{ steps.venv.outputs.venv-activate }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          $out = Join-Path $env:WOA_SCRATCH "dist"
+          & "$env:GITHUB_WORKSPACE\oot\tools\woa-build\torchvision\build-pipeline.ps1" `
+            -OutputDir $out -VenvActivate $env:VENV_ACTIVATE
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Stage wheels + sha into artifact dir
+        shell: bash
+        run: |
+          set -euo pipefail
+          dist="${WOA_SCRATCH}/dist"
+          mkdir -p artifact
+          shopt -s nullglob
+          wheels=("$dist"/*.whl)
+          if [ ${#wheels[@]} -eq 0 ]; then
+            echo "::error::No wheels produced under ${dist}." >&2
+            exit 1
+          fi
+          cp "${wheels[@]}" built_pytorch_sha.txt artifact/
+          ls -la artifact
+
+      - name: Publish wheels + sha artifact
+        if: inputs.wheel-artifact != ''
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: ${{ inputs.wheel-artifact }}
+          path: artifact
+          if-no-files-found: error
+          retention-days: 14
+          # The name is stable across run attempts (run_id only, no run_attempt) so a
+          # test-only "Re-run failed jobs" can still find it. overwrite lets a full
+          # "Re-run all jobs" (which re-runs this build) replace the prior attempt's
+          # artifact instead of failing with a 409 name collision.
+          overwrite: true
+
+      # Reflect extension build status: the extensions ran with continue-on-error so a
+      # failure did NOT skip the sibling extension or the wheel upload above. Now that the
+      # torch wheel is published, fail the build job if either extension failed, so the
+      # status SHOWS the failure (same principle as a failing test shard). This is still
+      # non-blocking: fail-fast:false on the build matrix keeps the other python cells
+      # running, and the torch wheel + artifact are already uploaded. Runs on always() so
+      # the outcome is surfaced even if a later always() step misbehaves; a skipped
+      # extension (e.g. torch build failed earlier) is not a failure.
+      - name: Reflect extension build status
+        if: always()
+        shell: bash
+        env:
+          TORCHAUDIO_OUTCOME: ${{ steps.torchaudio.outcome }}
+          TORCHVISION_OUTCOME: ${{ steps.torchvision.outcome }}
+        run: |
+          set -euo pipefail
+          failed=""
+          [ "${TORCHAUDIO_OUTCOME}" = "failure" ]  && failed="${failed} torchaudio"
+          [ "${TORCHVISION_OUTCOME}" = "failure" ] && failed="${failed} torchvision"
+          if [ -n "${failed}" ]; then
+            echo "::error title=Extension build failed::P0 extension(s) failed:${failed}. The torch wheel was still built + uploaded and the other python cells are unaffected (non-blocking); failing this build job so its status reflects the extension failure." >&2
+            exit 1
+          fi
+          echo "extensions ok (or skipped): torchaudio=${TORCHAUDIO_OUTCOME}, torchvision=${TORCHVISION_OUTCOME}"
+
+      - name: Stop runner diagnostics
+        if: always()
+        uses: ./oot/.github/actions/stop-runner-diagnostics
+        with:
+          output-dir: ${{ steps.diag.outputs.output-dir }}
+
+      - name: Upload runner diagnostics
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: runner-diagnostics-woa-build-${{ inputs.python-label }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ steps.diag.outputs.output-dir }}/**
+          if-no-files-found: warn
+          retention-days: 14
+
+      # Detailed build transcripts (pip-wheel / delvewheel per stage + the WHEEL_OUT_ROOT
+      # marker) that the flow writes under $CI_PROJECT_DIR/logs (== workspace/logs). These
+      # are the same lines now streamed live to the job log via Invoke-CmdLogged|Out-Host,
+      # but a durable artifact lets you download them post-run for triage even if the job
+      # log is truncated or the runner rebooted mid-build. Runs on success AND failure.
+      - name: Upload build logs
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: build-logs-woa-${{ inputs.python-label }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ github.workspace }}/logs/**
+          if-no-files-found: warn
+          retention-days: 14
+
+      # Post-job strict scrub of everything this job produced/downloaded. Runs
+      # even on failure; skipped only on a hard runner shutdown (bypasses always()).
+      - name: Strict clean (post)
+        if: always()
+        uses: ./oot/.github/actions/woa-strict-clean
+        with:
+          phase: post
+          pt-root: ${{ env.PT_ROOT }}
+          scratch-root: ${{ env.WOA_SCRATCH }}
+          extra-paths: ${{ github.workspace }}/artifact

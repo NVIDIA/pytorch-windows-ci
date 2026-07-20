@@ -219,3 +219,11 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Vendored WoA build/test library: the generic `build/` and `env/` ignores above
+# would otherwise swallow tools/woa-build/shared/build and .../shared/env (source,
+# not build artifacts). Re-include them explicitly (their parent dir is not ignored).
+!tools/woa-build/shared/build/
+!tools/woa-build/shared/build/**
+!tools/woa-build/shared/env/
+!tools/woa-build/shared/env/**

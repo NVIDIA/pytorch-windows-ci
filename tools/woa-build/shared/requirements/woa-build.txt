@@ -1,0 +1,13 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: MIT
+
+# WoA CI - STRICT build-only extras (installed into the BUILD venv, on top of woa-base.txt).
+#
+# The build cell compiles torch (vanilla -> cuda_embed) + the torchaudio/torchvision
+# extensions; it does NOT run pytest, so the test harness + domain deps are excluded.
+# Installed as a strict `pip install -r` pass - any failure aborts the build.
+#
+# `delvewheel` embeds the CUDA DLLs into the cuda_embed torch wheel (build stage only).
+# See woa-base.txt for the version strategy (unpinned).
+
+delvewheel

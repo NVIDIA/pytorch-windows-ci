@@ -755,6 +755,171 @@ def test_first_line_truncates():
 
 
 # --------------------------------------------------------------------------
+# Cross-shard aggregation
+# --------------------------------------------------------------------------
+def _shard(root: Path, name: str, files: dict[str, str]) -> Path:
+    d = root / name
+    d.mkdir(parents=True)
+    for fname, content in files.items():
+        _write(d, fname, content)
+    return d
+
+
+def test_shard_label_extracts_number():
+    assert pf._shard_label("test-reports-cellA-shard3-99-1") == "3"
+    assert pf._shard_label("test-reports-shard12-1-1") == "12"
+    assert pf._shard_label("no-token-here") == "no-token-here"
+
+
+def test_aggregate_unions_and_dedups(tmp_path):
+    # The same failing tests appear in two shards; the union lists each once,
+    # with both shards recorded.
+    s1 = _shard(tmp_path, "test-reports-cellA-shard1-9-1", {"r.xml": FAILING_REPORT})
+    s2 = _shard(tmp_path, "test-reports-cellA-shard2-9-1", {"r.xml": FAILING_REPORT})
+
+    agg = pf.aggregate_shards({p.name: p for p in (s1, s2)})
+
+    assert agg.scanned_shards == 2
+    names = sorted(f.name for f in agg.failures)
+    assert names == ["test_err", "test_fail"]  # deduped across the two shards
+    key = next(f.dedup_key for f in agg.failures if f.name == "test_fail")
+    assert agg.shards_by_key[key] == {"1", "2"}
+    assert agg.failed_count == 2
+    assert agg.skipped_count == 1  # test_skip, unioned once
+
+
+def test_aggregate_distinct_failures_and_passes(tmp_path):
+    # Shard 1 fails; shard 2 only passes. Failures come from shard 1 alone,
+    # and shard 2's pass contributes to the passed tally.
+    s1 = _shard(tmp_path, "test-reports-shard1-9-1", {"r.xml": FAILING_REPORT})
+    s2 = _shard(tmp_path, "test-reports-shard2-9-1", {"r.xml": PASSING_REPORT})
+
+    agg = pf.aggregate_shards({p.name: p for p in (s1, s2)})
+
+    assert agg.failed_count == 2
+    key = next(f.dedup_key for f in agg.failures if f.name == "test_fail")
+    assert agg.shards_by_key[key] == {"1"}
+    assert agg.passed_count == 1  # test_passes from shard 2
+
+
+def test_render_aggregate_shows_shards_column(tmp_path):
+    s1 = _shard(tmp_path, "test-reports-shard1-9-1", {"r.xml": FAILING_REPORT})
+    s2 = _shard(tmp_path, "test-reports-shard2-9-1", {"r.xml": FAILING_REPORT})
+    agg = pf.aggregate_shards({p.name: p for p in (s1, s2)})
+
+    out = pf.render_aggregate(agg, "Aggregate", 200)
+
+    assert "distinct test(s) across 2 shard(s)" in out
+    assert "2 unique failing/errored item(s)" in out
+    assert "| Shards |" in out
+    assert "1, 2" in out  # a failure seen in both shards
+
+
+def test_render_aggregate_no_shards():
+    out = pf.render_aggregate(pf.AggregateResult(), "Aggregate", 200)
+    assert "No shard report directories were found." in out
+
+
+def test_render_aggregate_all_passed(tmp_path):
+    s1 = _shard(tmp_path, "test-reports-shard1-9-1", {"r.xml": PASSING_REPORT})
+    agg = pf.aggregate_shards({s1.name: s1})
+    out = pf.render_aggregate(agg, "Aggregate", 200)
+    assert "All collected tests passed across 1 shard(s)." in out
+
+
+# --------------------------------------------------------------------------
+# Per-cell aggregation
+# --------------------------------------------------------------------------
+def test_cell_label_extraction():
+    assert (
+        pf._cell_label("test-reports-win-rtx-sm89-py312-cu130-sm89-shard1-99-1")
+        == "win-rtx-sm89-py312-cu130-sm89"
+    )
+    assert (
+        pf._cell_label("test-reports-win-rtx-sm120-py312-cu132-sm120-shard5-99-1")
+        == "win-rtx-sm120-py312-cu132-sm120"
+    )
+    # No cell segment -> empty (renders as "(default)").
+    assert pf._cell_label("test-reports-shard3-99-1") == ""
+
+
+def test_group_shard_dirs_by_cell(tmp_path):
+    names = [
+        "test-reports-cellA-shard1-9-1",
+        "test-reports-cellA-shard2-9-1",
+        "test-reports-cellB-shard1-9-1",
+    ]
+    groups = pf.group_shard_dirs_by_cell({n: tmp_path / n for n in names})
+    assert set(groups) == {"cellA", "cellB"}
+    assert len(groups["cellA"]) == 2
+    assert len(groups["cellB"]) == 1
+
+
+def test_aggregate_by_cell_separates_cells(tmp_path):
+    a1 = _shard(tmp_path, "test-reports-cellA-shard1-9-1", {"r.xml": FAILING_REPORT})
+    a2 = _shard(tmp_path, "test-reports-cellA-shard2-9-1", {"r.xml": FAILING_REPORT})
+    b1 = _shard(tmp_path, "test-reports-cellB-shard1-9-1", {"r.xml": AOTI_REPORT})
+
+    cells = pf.aggregate_by_cell({p.name: p for p in (a1, a2, b1)})
+
+    assert set(cells) == {"cellA", "cellB"}
+    # cellA: test_fail deduped across its two shards.
+    key = next(f.dedup_key for f in cells["cellA"].failures if f.name == "test_fail")
+    assert cells["cellA"].shards_by_key[key] == {"1", "2"}
+    # cellB: only its own single failure, from shard 1.
+    assert cells["cellB"].failed_count == 1
+    b_key = cells["cellB"].failures[0].dedup_key
+    assert cells["cellB"].shards_by_key[b_key] == {"1"}
+
+
+def test_render_aggregate_by_cell_has_per_cell_sections(tmp_path):
+    a1 = _shard(tmp_path, "test-reports-cellA-shard1-9-1", {"r.xml": FAILING_REPORT})
+    b1 = _shard(tmp_path, "test-reports-cellB-shard1-9-1", {"r.xml": AOTI_REPORT})
+    cells = pf.aggregate_by_cell({p.name: p for p in (a1, b1)})
+
+    out = pf.render_aggregate_by_cell(cells, "Aggregate", 200)
+
+    assert "## Aggregate" in out
+    assert "### cellA" in out
+    assert "### cellB" in out
+    assert "| Shards |" in out
+
+
+def test_render_aggregate_by_cell_empty():
+    out = pf.render_aggregate_by_cell({}, "Aggregate", 200)
+    assert "No shard report directories were found." in out
+
+
+def test_combine_cells_unions_across_cells(tmp_path):
+    # Same failing test appears in two different cells.
+    a1 = _shard(tmp_path, "test-reports-cellA-shard1-9-1", {"r.xml": FAILING_REPORT})
+    b1 = _shard(tmp_path, "test-reports-cellB-shard2-9-1", {"r.xml": FAILING_REPORT})
+    cells = pf.aggregate_by_cell({p.name: p for p in (a1, b1)})
+
+    overall = pf.combine_cells(cells)
+
+    assert overall.scanned_shards == 2
+    # test_fail is deduped to a single row across both cells.
+    key = next(f.dedup_key for f in overall.failures if f.name == "test_fail")
+    assert overall.shards_by_key[key] == {"cellA/1", "cellB/2"}
+
+
+def test_render_aggregate_by_cell_includes_overall(tmp_path):
+    a1 = _shard(tmp_path, "test-reports-cellA-shard1-9-1", {"r.xml": FAILING_REPORT})
+    b1 = _shard(tmp_path, "test-reports-cellB-shard1-9-1", {"r.xml": AOTI_REPORT})
+    cells = pf.aggregate_by_cell({p.name: p for p in (a1, b1)})
+    overall = pf.combine_cells(cells)
+
+    out = pf.render_aggregate_by_cell(cells, "Aggregate", 200, overall=overall)
+
+    assert "### All cells" in out
+    assert "### cellA" in out
+    assert "### cellB" in out
+    # "All cells" is rendered before the individual cells.
+    assert out.index("### All cells") < out.index("### cellA")
+
+
+# --------------------------------------------------------------------------
 # CLI
 # --------------------------------------------------------------------------
 def test_main_missing_dir_writes_notice(tmp_path, capsys):
@@ -762,6 +927,31 @@ def test_main_missing_dir_writes_notice(tmp_path, capsys):
     captured = capsys.readouterr().out
     assert rc == 0
     assert "does not exist" in captured
+
+
+def test_main_shards_root_renders_aggregate(tmp_path):
+    root = tmp_path / "all-reports"
+    _shard(root, "test-reports-shard1-9-1", {"r.xml": FAILING_REPORT})
+    _shard(root, "test-reports-shard2-9-1", {"r.xml": FAILING_REPORT})
+    out_file = tmp_path / "summary.md"
+
+    rc = pf.main(
+        ["--shards-root", str(root), "--title", "Aggregate", "--output", str(out_file)]
+    )
+
+    assert rc == 0
+    content = out_file.read_text(encoding="utf-8")
+    assert "unique failing/errored item(s)" in content
+    assert "1, 2" in content
+
+
+def test_main_requires_exactly_one_source(tmp_path):
+    # Neither source -> error.
+    with pytest.raises(SystemExit):
+        pf.main(["--title", "T"])
+    # Both sources -> error.
+    with pytest.raises(SystemExit):
+        pf.main(["--reports-dir", str(tmp_path), "--shards-root", str(tmp_path)])
 
 
 def test_main_writes_to_output_file(tmp_path):

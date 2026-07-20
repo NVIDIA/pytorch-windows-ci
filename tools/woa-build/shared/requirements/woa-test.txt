@@ -1,0 +1,23 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: MIT
+
+# WoA CI - STRICT test harness (installed into the TEST venv, on top of woa-base.txt).
+#
+# The pytest harness + reporters that drive test/run_test.py. Pure-Python and portable
+# across interpreters, so these are strict - any failure aborts the test venv. The
+# heavier / less-portable domain deps live in woa-test-extended.txt (best-effort).
+# See woa-base.txt for the version strategy (unpinned).
+
+pytest
+pytest-cpp
+pytest-flakefinder
+pytest-rerunfailures
+pytest-subtests
+pytest-timeout
+pytest-xdist
+hypothesis
+expecttest
+xdoctest
+parameterized
+junitparser
+unittest-xml-reporting

@@ -20,7 +20,7 @@
         DistutilsUseSdk          = '1'
         UseCuda                  = '1'
         UseCudnn                 = '1'
-        UseMkldnn                = '0'
+        UseMkldnn                = '1'
         UseMkldnnAcl             = '0'
         UseMagma                 = '0'
         UseLapack                = '1'

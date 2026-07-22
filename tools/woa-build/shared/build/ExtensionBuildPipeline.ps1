@@ -223,6 +223,17 @@ function Invoke-PytorchExtensionBuild {
     if ($LASTEXITCODE -ne 0) { throw "pip install CUDA-embedded torch wheel failed with exit $LASTEXITCODE" }
     Write-CiPhase -State 'PASS' -Phase "${phase}_pip_install_torch_cuda_embed" -Component $component
 
+    # Extension pip wheel runs with --no-build-isolation, so the build backend must already be
+    # present in this venv. A fresh 3.12+ venv seeds only pip, and torch pulls setuptools unpinned
+    # (>=81, which dropped pkg_resources), breaking vision/setup.py's `import pkg_resources`. Install
+    # the same strict base requirements as the job venv (setuptools>=70.1,<80 -> 79.0.1 + numpy/wheel)
+    # so the extension build venv matches the known-good build contract.
+    $baseReqs = Join-Path $PSScriptRoot '..\requirements\woa-base.txt'
+    Write-CiPhase -State 'START' -Phase "${phase}_pip_install_build_reqs" -Component $component -Detail $baseReqs
+    python -m pip install -r $baseReqs
+    if ($LASTEXITCODE -ne 0) { throw "pip install -r $baseReqs failed with exit $LASTEXITCODE" }
+    Write-CiPhase -State 'PASS' -Phase "${phase}_pip_install_build_reqs" -Component $component
+
     # 4. Shallow checkout (pinned SHA when provided) with long-path support; cd into the source.
     $remoteUrl = Get-ExtensionGitRemoteUrl -ExtName $ExtName
     $gitRef    = Get-ExtensionGitRef -ExtName $ExtName

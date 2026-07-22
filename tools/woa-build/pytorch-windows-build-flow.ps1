@@ -218,7 +218,7 @@ function Invoke-PytorchWindowsWheelStages {
     $skipCudaEmbed = (Test-EnvTruthy 'PYTORCH_WIN_BUILD_SKIP_CUDA_EMBED') -or ($BuildSubset -eq 'VanillaOnly')
 
     if ($BuildSubset -in @('Both', 'CudaEmbedOnly') -and -not $skipCudaEmbed) {
-        Invoke-PytorchWindowsWheelCudaEmbed -CheckoutRoot $CheckoutRoot
+        Invoke-PytorchWindowsWheelCudaEmbed
         return
     }
 

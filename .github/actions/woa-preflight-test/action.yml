@@ -133,27 +133,60 @@ runs:
           }
         }
 
-        # Git Bash guard: the WoA test workflow's `shell: bash` steps need Git for Windows.
-        # When it is absent from PATH, GitHub Actions silently falls back to the WSL launcher
-        # at %WINDIR%\System32\bash.exe, which has no `git` and fails every bash step with a
-        # cryptic "exit code 1". Catch it here with an actionable message.
+        # Git Bash guard + self-heal: the WoA test workflow's `shell: bash` steps need Git for
+        # Windows. GitHub Actions' `shell: bash` just takes the FIRST `bash` on the job's PATH.
+        # On a self-hosted WoA runner whose *service* environment still lists %WINDIR%\System32
+        # ahead of Git\bin - e.g. the machine PATH was fixed but the runner service was never
+        # restarted to pick it up (a service snapshots its env at start; an interactive
+        # `where.exe bash` does NOT reflect the service) - that first hit is the WSL launcher at
+        # System32\bash.exe, which has no `git` and fails every bash step with a cryptic
+        # "exit code 1". Rather than depend on a fleet-wide "reorder PATH + restart the service"
+        # ritual, locate the real Git bash and prepend its dir to GITHUB_PATH so every later step
+        # resolves it. This installs nothing (Git is preinstalled) - it only corrects PATH
+        # ordering for this job. Only fail if Git for Windows is genuinely absent.
         $system32Bash = Join-Path $env:WINDIR 'System32\bash.exe'
+
+        function Test-GitBash([string]$exe) {
+          if ([string]::IsNullOrWhiteSpace($exe)) { return $false }
+          if (-not (Test-Path -LiteralPath $exe)) { return $false }
+          if ($exe -ieq $system32Bash) { return $false }
+          $gv = (& $exe -lc 'git --version' 2>$null | Out-String).Trim()
+          return ($LASTEXITCODE -eq 0 -and $gv -match 'git version')
+        }
+
+        # 1) The first non-stub bash already on PATH, if any.
         $bashPath = Get-Command bash -All -ErrorAction SilentlyContinue |
-          Select-Object -First 1 -ExpandProperty Source
-        if ([string]::IsNullOrWhiteSpace($bashPath)) {
-          Write-Host "  [MISSING] bash (Git Bash)"
-          $missing += "Git Bash not on PATH; install Git for Windows (winget install --id Git.Git --architecture arm64) and restart the runner service"
-        } elseif ($bashPath -ieq $system32Bash) {
-          Write-Host "  [WSL STUB] bash -> $bashPath"
-          $missing += "bash resolves to the WSL stub ($bashPath); put '...\Git\bin' ahead of System32 on the machine PATH and restart the runner service"
-        } else {
-          $gv = (& $bashPath -lc 'git --version' 2>$null | Out-String).Trim()
-          if ($LASTEXITCODE -eq 0 -and $gv -match 'git version') {
-            Write-Host "  [ok]      bash -> $bashPath ($gv)"
-          } else {
-            Write-Host "  [BROKEN]  bash -> $bashPath (git unavailable under it)"
-            $missing += "git not runnable under bash ($bashPath); repair the Git for Windows install"
+          Select-Object -ExpandProperty Source |
+          Where-Object { $_ -ine $system32Bash } |
+          Select-Object -First 1
+
+        # 2) Fall back to well-known Git for Windows install locations (and the dir derived from
+        #    `git` itself), so a stale/mis-ordered service PATH can't hide a good Git install.
+        if (-not (Test-GitBash $bashPath)) {
+          $candidates = @(
+            $env:ProgramW6432, $env:ProgramFiles, ${env:ProgramFiles(x86)}, $env:LocalAppData
+          ) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } |
+              ForEach-Object { Join-Path $_ 'Git\bin\bash.exe' }
+          $git = Get-Command git -ErrorAction SilentlyContinue
+          if ($git) {
+            $candidates += Join-Path (Split-Path -Parent (Split-Path -Parent $git.Source)) 'bin\bash.exe'
           }
+          $bashPath = $candidates | Where-Object { Test-GitBash $_ } | Select-Object -First 1
+        }
+
+        if (Test-GitBash $bashPath) {
+          Write-Host "  [ok]      bash -> $bashPath"
+          # If PATH would still resolve `bash` to something else (the WSL stub), prepend
+          # Git\bin for every subsequent step so `shell: bash` uses Git bash.
+          $firstOnPath = (Get-Command bash -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty Source)
+          if ($firstOnPath -ine $bashPath) {
+            $gitBin = Split-Path -Parent $bashPath
+            Add-Content -LiteralPath $env:GITHUB_PATH -Value $gitBin
+            Write-Host "  [fixup]   prepended '$gitBin' to GITHUB_PATH (PATH was resolving bash -> $firstOnPath)"
+          }
+        } else {
+          Write-Host "  [MISSING] Git Bash"
+          $missing += "Git for Windows bash not found (install: winget install --id Git.Git --architecture arm64); PATH resolves bash -> '$((Get-Command bash -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty Source))'"
         }
 
         if ($missing.Count -gt 0) {

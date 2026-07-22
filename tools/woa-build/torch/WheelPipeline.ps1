@@ -215,7 +215,7 @@ function Invoke-PytorchWindowsWheelCudaEmbed {
             throw "VanillaTorchWheelPath does not exist: $VanillaTorchWheelPath"
         }
         if ([string]::IsNullOrWhiteSpace($WheelOutRoot)) {
-            $WheelOutRoot = Split-Path -LiteralPath $VanillaTorchWheelPath -Parent
+            $WheelOutRoot = [System.IO.Path]::GetDirectoryName($VanillaTorchWheelPath)
         }
     }
     if ([string]::IsNullOrWhiteSpace($WheelOutRoot)) {
@@ -269,7 +269,7 @@ function Invoke-PytorchWindowsWheelCudaEmbed {
     Update-TorchWheelRecord -WheelRootDir $unpackDir
     Write-CiPhase -State "PASS" -Phase "cuda_embed_record"
 
-    $embedWhl = Join-Path $embeddedWheelDir (Split-Path -LiteralPath $vanillaTorchWhl -Leaf)
+    $embedWhl = Join-Path $embeddedWheelDir ([System.IO.Path]::GetFileName($vanillaTorchWhl))
     Write-CiPhase -State "START" -Phase "cuda_embed_repack" -Detail $embedWhl
     Compress-TorchWheelArchive -SourceDir $unpackDir -WheelPath $embedWhl
     Write-CiPhase -State "PASS" -Phase "cuda_embed_repack"

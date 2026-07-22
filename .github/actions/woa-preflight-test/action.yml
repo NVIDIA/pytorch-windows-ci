@@ -133,6 +133,29 @@ runs:
           }
         }
 
+        # Git Bash guard: the WoA test workflow's `shell: bash` steps need Git for Windows.
+        # When it is absent from PATH, GitHub Actions silently falls back to the WSL launcher
+        # at %WINDIR%\System32\bash.exe, which has no `git` and fails every bash step with a
+        # cryptic "exit code 1". Catch it here with an actionable message.
+        $system32Bash = Join-Path $env:WINDIR 'System32\bash.exe'
+        $bashPath = Get-Command bash -All -ErrorAction SilentlyContinue |
+          Select-Object -First 1 -ExpandProperty Source
+        if ([string]::IsNullOrWhiteSpace($bashPath)) {
+          Write-Host "  [MISSING] bash (Git Bash)"
+          $missing += "Git Bash not on PATH; install Git for Windows (winget install --id Git.Git --architecture arm64) and restart the runner service"
+        } elseif ($bashPath -ieq $system32Bash) {
+          Write-Host "  [WSL STUB] bash -> $bashPath"
+          $missing += "bash resolves to the WSL stub ($bashPath); put '...\Git\bin' ahead of System32 on the machine PATH and restart the runner service"
+        } else {
+          $gv = (& $bashPath -lc 'git --version' 2>$null | Out-String).Trim()
+          if ($LASTEXITCODE -eq 0 -and $gv -match 'git version') {
+            Write-Host "  [ok]      bash -> $bashPath ($gv)"
+          } else {
+            Write-Host "  [BROKEN]  bash -> $bashPath (git unavailable under it)"
+            $missing += "git not runnable under bash ($bashPath); repair the Git for Windows install"
+          }
+        }
+
         if ($missing.Count -gt 0) {
           Write-Host "::error title=WoA test preflight::Runner is missing required preinstalled toolchain / GPU: $($missing -join '; ')"
           exit 1

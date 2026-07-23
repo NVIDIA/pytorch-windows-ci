@@ -9,8 +9,9 @@ name: windows-woa-build-test
 # (`_woa-build.yml`), tests every built wheel (`_woa-test.yml`), then rolls up
 # failures (`test-summary`).
 #
-# Scheduled (nightly) only - there is intentionally NO manual/workflow_dispatch
-# trigger; build-test is the sole WoA workflow this repo carries.
+# Runs nightly on a schedule; also exposes a manual workflow_dispatch whose only
+# input selects the target runner. build-test is the sole WoA workflow this repo
+# carries.
 #
 # Shape:
 #
@@ -33,12 +34,20 @@ name: windows-woa-build-test
 on:
   schedule:
     # Nightly build + test of the full WoA matrix against pytorch `nightly`.
-    # Manual/workflow_dispatch is intentionally NOT offered for this repo.
     - cron: "0 5 * * *"
+  # Manual runs additionally expose a single knob - the runner label to target
+  # (runner-selection ported from the internal WoA CI). The nightly schedule
+  # above is unaffected.
+  workflow_dispatch:
+    inputs:
+      runner-base:
+        description: "Runner label to target. 'woa-arm64' = shared pool (build + shards scatter across it). Pass a single-machine label (e.g. woa-ci-02) to pin the ENTIRE run - build and every test shard - to one box."
+        required: false
+        default: "woa-arm64"
 
 # No `concurrency:` group: the shared arm64 pool runs one job per agent, and the
-# only trigger is the once-a-day schedule, so runs never overlap. A run_id-keyed
-# group would be unique per run and coalesce nothing anyway.
+# nightly schedule plus the occasional manual dispatch do not overlap in
+# practice. A run_id-keyed group would be unique per run and coalesce nothing anyway.
 
 permissions:
   contents: read
@@ -138,7 +147,7 @@ jobs:
           # - { version: "3.14t", label: "py314t" }
     uses: ./.github/workflows/_woa-build.yml
     with:
-      runner-base: woa-arm64
+      runner-base: ${{ inputs.runner-base || 'woa-arm64' }}
       python-version: ${{ matrix.config.version }}
       python-label: ${{ matrix.config.label }}
       cuda-version: "13.4"
@@ -176,7 +185,7 @@ jobs:
         config: *config
     uses: ./.github/workflows/_woa-test.yml
     with:
-      runner-base: woa-arm64
+      runner-base: ${{ inputs.runner-base || 'woa-arm64' }}
       python-version: ${{ matrix.config.version }}
       python-label: ${{ matrix.config.label }}
       cuda-version: "13.4"

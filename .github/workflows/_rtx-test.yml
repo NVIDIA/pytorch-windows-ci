@@ -371,6 +371,15 @@ jobs:
           fi
           python -c "import torch; print('torch', torch.__version__, 'cuda', torch.version.cuda); assert torch.cuda.is_available()"
 
+      # Inductor / torch.compile on Windows needs the Triton Windows wheel;
+      # it is not part of the torch wheel and is not assumed on the runner image.
+      - name: Install triton-windows
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install "triton-windows==3.7.1.post27"
+          python -c "import triton; print('triton', triton.__version__)"
+
       # Seed our own test-time stats into pytorch's .additional_ci_files so
       # run_test.py shards deterministically from data we control instead of
       # downloading test-infra stats (or falling back to round-robin). All 5

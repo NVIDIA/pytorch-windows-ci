@@ -11,3 +11,11 @@
 # See woa-base.txt for the version strategy (unpinned).
 
 delvewheel
+
+# PyTorch's PEP 517 build backend. Its pyproject.toml sets
+# `build-backend = "scikit_build_core.build"` with build-system.requires including
+# scikit-build-core>=1.0. The wheel build runs `pip wheel . --no-build-isolation`, so pip
+# does NOT provision build-system.requires itself - the backend must be preinstalled here.
+# scikit-build-core drives CMake + Ninja (both preinstalled on the runner) and pulls its own
+# deps (pathspec, packaging). Unpinned per the woa-base.txt strategy.
+scikit-build-core

@@ -18,12 +18,15 @@
 @{
     Domain   = 'BuildToolchain'
     Defaults = @{
+        # VS 2026 BuildTools. Its install root is major version 18 (not the '2026' year folder
+        # 2022 and earlier used) and it no longer sits under the '(x86)' Program Files prefix.
+        #
         # vcvarsall.bat path used by callers that pick the architecture themselves
         # (the test shard imports arm64 via VcvarsAllBat + VcvarsArch).
-        VcvarsAllBat    = 'C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvarsall.bat'
+        VcvarsAllBat    = 'C:\Program Files\Microsoft Visual Studio\18\BuildTools\VC\Auxiliary\Build\vcvarsall.bat'
         VcvarsArch      = 'arm64'
         # Direct vcvarsarm64.bat used by Initialize-PytorchWindowsCompilerAndBuildEnvironment.
-        VcvarsBat       = 'C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvarsarm64.bat'
+        VcvarsBat       = 'C:\Program Files\Microsoft Visual Studio\18\BuildTools\VC\Auxiliary\Build\vcvarsarm64.bat'
 
         # CUDA 13.4 + cuDNN 9.25 on C: (single-drive runners). These are the install paths
         # each woa-arm64 runner is expected to provide: CUDA at

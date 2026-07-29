@@ -287,7 +287,7 @@ wipes it, so nothing a job installs can leak into the next job.
 | cuDNN lib / include / bin | `...\lib\13.4\arm64` / `...\include\13.4` / `...\bin\13.4\arm64` |
 | APL include / lib | `C:\DevToolKit\APL\armpl_26.01\include` / `...\lib` |
 | vcpkg libuv | `C:\DevToolKit\vcpkg\packages\libuv_arm64-windows` |
-| MSVC vcvars (arm64) | `C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\...` (`WOA_VCVARS_BAT`), invoked with `arm64` |
+| MSVC vcvars (arm64) | `C:\Program Files\Microsoft Visual Studio\18\BuildTools\...` (`WOA_VCVARS_BAT`), invoked with `arm64` — VS 2026 is major version 18 |
 | `TORCH_CUDA_ARCH_LIST` (torch) | `8.9;10.3+PTX;12.0;12.1+PTX` |
 | extension arch (`EXT_WIN_TORCH_CUDA_ARCH_LIST` / `EXT_WIN_CMAKE_CUDA_ARCHITECTURES`) | `8.9;10.3+PTX;12.0;12.1+PTX` / `89;103a;120f` (suffix-free torch list — cpp_extension rejects the `12.0f` family suffix) |
 

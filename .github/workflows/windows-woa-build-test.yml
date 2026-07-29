@@ -63,6 +63,7 @@ jobs:
       pytorch-ref: ${{ steps.ref.outputs.pytorch-ref }}
       torchaudio-ref: ${{ steps.ref.outputs.torchaudio-ref }}
       torchvision-ref: ${{ steps.ref.outputs.torchvision-ref }}
+      nightly-date: ${{ steps.ref.outputs.nightly-date }}
     steps:
       - name: Resolve source refs to commit SHAs
         id: ref
@@ -95,11 +96,13 @@ jobs:
           sha="$(resolve_ref "https://github.com/pytorch/pytorch" "${REF}")";        require_sha pytorch     "${sha}"       "${REF}"
           audio_sha="$(resolve_ref "https://github.com/pytorch/audio" "${AUDIO_REF}")";   require_sha torchaudio  "${audio_sha}"  "${AUDIO_REF}"
           vision_sha="$(resolve_ref "https://github.com/pytorch/vision" "${VISION_REF}")"; require_sha torchvision "${vision_sha}" "${VISION_REF}"
+          nightly_date="$(date -u +%Y%m%d)"
           echo "Resolved pytorch '${REF}' -> ${sha}, torchaudio '${AUDIO_REF}' -> ${audio_sha}, torchvision '${VISION_REF}' -> ${vision_sha}"
           {
             echo "pytorch-ref=${sha}"
             echo "torchaudio-ref=${audio_sha}"
             echo "torchvision-ref=${vision_sha}"
+            echo "nightly-date=${nightly_date}"
           } >> "$GITHUB_OUTPUT"
           {
             echo "## windows-woa-build-test config"
@@ -111,6 +114,7 @@ jobs:
             echo "| pytorch-ref (resolved SHA) | \`${sha}\` |"
             echo "| torchaudio-ref (resolved SHA) | \`${audio_sha}\` |"
             echo "| torchvision-ref (resolved SHA) | \`${vision_sha}\` |"
+            echo "| nightly wheel date | \`${nightly_date}\` |"
             echo "| python-versions (build + test) | \`${PYTHON_VERSIONS:-(all)}\` |"
             echo "| test config | \`per-version / cu134\` |"
             echo "| shards | \`${NUM_SHARDS}\` |"
@@ -138,13 +142,14 @@ jobs:
           # - { version: "3.14t", label: "py314t" }
     uses: ./.github/workflows/_woa-build.yml
     with:
-      runner-base: woa-arm64
+      runner-base: ${{ inputs.runner-base || 'woa-arm64' }}
       python-version: ${{ matrix.config.version }}
       python-label: ${{ matrix.config.label }}
       cuda-version: "13.4"
       cuda-arch-list: "8.9;10.3+PTX;12.0;12.1+PTX"
       build-environment: win-woa-arm64
       pytorch-ref: ${{ needs.prep.outputs.pytorch-ref }}
+      nightly-date: ${{ needs.prep.outputs.nightly-date }}
       # Extensions pinned to the SHAs resolved in prep so every cell builds the
       # same torchaudio/torchvision source (reproducible across the matrix).
       torchaudio-ref: ${{ needs.prep.outputs.torchaudio-ref }}
@@ -176,7 +181,7 @@ jobs:
         config: *config
     uses: ./.github/workflows/_woa-test.yml
     with:
-      runner-base: woa-arm64
+      runner-base: ${{ inputs.runner-base || 'woa-arm64' }}
       python-version: ${{ matrix.config.version }}
       python-label: ${{ matrix.config.label }}
       cuda-version: "13.4"

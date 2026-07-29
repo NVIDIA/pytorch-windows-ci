@@ -249,10 +249,18 @@ jobs:
       - name: Set nightly torch wheel version
         shell: pwsh
         run: |
+          $ErrorActionPreference = "Stop"
           if ($env:NIGHTLY_DATE -notmatch '^\d{8}$') {
             throw "nightly-date must use yyyyMMdd format; got '$env:NIGHTLY_DATE'"
           }
-          $base = (Get-Content "$env:PT_ROOT\version.txt" -Raw).Trim() -replace 'a0$', ''
+          $versionFile = "$env:PT_ROOT\version.txt"
+          if (-not (Test-Path -LiteralPath $versionFile)) {
+            throw "version.txt not found at '$versionFile'; cannot derive the nightly wheel version"
+          }
+          $base = (Get-Content $versionFile -Raw).Trim() -replace 'a0$', ''
+          if ([string]::IsNullOrWhiteSpace($base)) {
+            throw "version.txt at '$versionFile' is empty; cannot derive the nightly wheel version"
+          }
           $cuda = $env:CUDA_VERSION -replace '\.', ''
           $version = "${base}.dev$env:NIGHTLY_DATE+cu$cuda"
           "PYTORCH_BUILD_VERSION=$version" >> $env:GITHUB_ENV

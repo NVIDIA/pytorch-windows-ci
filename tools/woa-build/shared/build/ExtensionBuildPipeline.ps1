@@ -247,6 +247,13 @@ function Invoke-PytorchExtensionBuild {
     Set-Location -LiteralPath $repoRoot
     Write-CiPhase -State 'PASS' -Phase "${phase}_git_clone" -Component $component
 
+    $nightlyDate = Resolve-CiEnv -Name 'NIGHTLY_DATE'
+    if (-not [string]::IsNullOrWhiteSpace($nightlyDate)) {
+        $baseVersion = (Get-Content -LiteralPath (Join-Path $repoRoot 'version.txt') -Raw).Trim() -replace 'a0$', ''
+        $cudaLabel = (Resolve-CiEnv -Name 'CUDA_VERSION') -replace '\.', ''
+        Set-CiEnv -Name 'BUILD_VERSION' -Value "${baseVersion}.dev${nightlyDate}+cu${cudaLabel}" | Out-Null
+    }
+
     $logsDir = Get-ExtensionLogsDir
     New-Item -ItemType Directory -Path $logsDir -Force | Out-Null
     # Record the resolved source (URL + pinned ref) alongside the checked-out HEAD SHA so the

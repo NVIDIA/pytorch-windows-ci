@@ -63,6 +63,10 @@ on:
         description: "pytorch/pytorch commit to build. MUST be a full 40-hex commit SHA (enforced below). The orchestrator prep resolves branches/tags to a SHA; direct callers must pass a SHA (required, no default, so a symbolic ref cannot slip past the guard)."
         type: string
         required: true
+      nightly-date:
+        description: "Nightly wheel version date in yyyyMMdd format."
+        type: string
+        required: true
       torchaudio-ref:
         description: "torchaudio (pytorch/audio) commit to build. Resolved to a SHA by the orchestrator prep; empty = clone the remote default branch (direct-caller fallback)."
         type: string
@@ -114,6 +118,7 @@ jobs:
       PYTHON_VERSION: ${{ inputs.python-version }}
       PYTHON_LABEL: ${{ inputs.python-label }}
       CUDA_VERSION: ${{ inputs.cuda-version }}
+      NIGHTLY_DATE: ${{ inputs.nightly-date }}
       BUILD_TEST: "1"
       DISTUTILS_USE_SDK: "1"
       # Pinned extension source commits (resolved by the orchestrator prep); empty
@@ -127,7 +132,8 @@ jobs:
       WOA_CUDA_PATH: 'C:\Program Files\NVIDIA\CUDA\v13.4'
       WOA_CUDNN_ROOT: 'C:\Program Files\NVIDIA\CUDNN\v9.25'
       # arm64 MSVC entry point verified by woa-preflight-build (fail fast if absent).
-      WOA_VCVARS_BAT: 'C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvarsarm64.bat'
+      # VS 2026 BuildTools: install root is major version 18, outside the '(x86)' prefix.
+      WOA_VCVARS_BAT: 'C:\Program Files\Microsoft Visual Studio\18\BuildTools\VC\Auxiliary\Build\vcvarsarm64.bat'
       # Short relocated checkout root + job scratch on C: (MAX_PATH + space; runners are C: only).
       PT_ROOT: 'C:\pt'
       WOA_SCRATCH: 'C:\ci\woa\scratch'
@@ -240,6 +246,19 @@ jobs:
           echo "$sha" > built_pytorch_sha.txt
           echo "Built from pytorch/pytorch @ $sha"
 
+      - name: Set nightly torch wheel version
+        shell: pwsh
+        run: |
+          if ($env:NIGHTLY_DATE -notmatch '^\d{8}$') {
+            throw "nightly-date must use yyyyMMdd format; got '$env:NIGHTLY_DATE'"
+          }
+          $base = (Get-Content "$env:PT_ROOT\version.txt" -Raw).Trim() -replace 'a0$', ''
+          $cuda = $env:CUDA_VERSION -replace '\.', ''
+          $version = "${base}.dev$env:NIGHTLY_DATE+cu$cuda"
+          "PYTORCH_BUILD_VERSION=$version" >> $env:GITHUB_ENV
+          "PYTORCH_BUILD_NUMBER=1" >> $env:GITHUB_ENV
+          Write-Host "Building torch $version"
+
       # ---- P0 build chain (PowerShell library vendored in Phase 2) -----------
       # Each step activates the fresh per-job venv built by `woa-create-venv`, then calls
       # the vendored entrypoint. Wheels are written into WOA_SCRATCH\dist.
@@ -297,6 +316,13 @@ jobs:
             echo "::error::No wheels produced under ${dist}." >&2
             exit 1
           fi
+          expected=".dev${NIGHTLY_DATE}+cu${CUDA_VERSION//./}"
+          for wheel in "${wheels[@]}"; do
+            if [[ "$(basename "$wheel")" != *"${expected}-"* ]]; then
+              echo "::error::Wheel does not use nightly naming '${expected}': $(basename "$wheel")" >&2
+              exit 1
+            fi
+          done
           cp "${wheels[@]}" built_pytorch_sha.txt artifact/
           ls -la artifact
 

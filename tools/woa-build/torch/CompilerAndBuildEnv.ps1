@@ -60,6 +60,7 @@ function Initialize-PytorchWindowsCompilerAndBuildEnvironment {
     Set-CiEnv -Name 'USE_MKLDNN'                  -Value (Resolve-CiEnv -Name 'PYTORCH_WIN_BUILD_USE_MKLDNN')                  | Out-Null
     Set-CiEnv -Name 'USE_MKLDNN_ACL'              -Value (Resolve-CiEnv -Name 'PYTORCH_WIN_BUILD_USE_MKLDNN_ACL')              | Out-Null
     Set-CiEnv -Name 'USE_MAGMA'                   -Value (Resolve-CiEnv -Name 'PYTORCH_WIN_BUILD_USE_MAGMA')                   | Out-Null
+    Set-CiEnv -Name 'SLEEF_DISABLE_SVE'           -Value (Resolve-CiEnv -Name 'PYTORCH_WIN_BUILD_SLEEF_DISABLE_SVE')           | Out-Null
     Set-CiEnv -Name 'BLAS'                        -Value (Resolve-CiEnv -Name 'PYTORCH_WIN_BUILD_BLAS')                        | Out-Null
     Set-CiEnv -Name 'USE_LAPACK'                  -Value (Resolve-CiEnv -Name 'PYTORCH_WIN_BUILD_USE_LAPACK')                  | Out-Null
     Set-CiEnv -Name 'APL_INCLUDE_DIR'             -Value (Resolve-CiEnv -Name 'PYTORCH_WIN_BUILD_APL_INCLUDE_DIR')             | Out-Null
@@ -69,9 +70,9 @@ function Initialize-PytorchWindowsCompilerAndBuildEnvironment {
     Set-CiEnv -Name 'CMAKE_C_COMPILER'            -Value (Resolve-CiEnv -Name 'PYTORCH_WIN_BUILD_CMAKE_C_COMPILER')            | Out-Null
     Set-CiEnv -Name 'CMAKE_CXX_COMPILER'          -Value (Resolve-CiEnv -Name 'PYTORCH_WIN_BUILD_CMAKE_CXX_COMPILER')          | Out-Null
     Set-CiEnv -Name 'TORCH_CUDA_ARCH_LIST'        -Value (Resolve-CiEnv -Name 'PYTORCH_WIN_BUILD_TORCH_CUDA_ARCH_LIST')        | Out-Null
-    # Generator selection MUST precede CMAKE_ARGS. The default is Ninja; CMAKE_ARGS defaults to
-    # empty because Ninja rejects the '-A ARM64' platform flag (the ARM64 target comes from the
-    # imported vcvars). Set-CiEnv unsets CMAKE_ARGS when the resolved value is '' on Windows.
+    # Generator selection MUST precede CMAKE_ARGS. The default is Ninja; CMAKE_ARGS disables SLEEF
+    # SVE but omits the '-A ARM64' platform flag because Ninja rejects it (the ARM64 target comes
+    # from the imported vcvars environment).
     Set-CiEnv -Name 'CMAKE_GENERATOR'             -Value (Resolve-CiEnv -Name 'PYTORCH_WIN_BUILD_CMAKE_GENERATOR')             | Out-Null
     Set-CiEnv -Name 'CMAKE_ARGS'                  -Value (Resolve-CiEnv -Name 'PYTORCH_WIN_BUILD_CMAKE_ARGS')                  | Out-Null
     Set-CiEnv -Name 'CFLAGS'                      -Value (Resolve-CiEnv -Name 'PYTORCH_WIN_BUILD_CFLAGS')                      | Out-Null

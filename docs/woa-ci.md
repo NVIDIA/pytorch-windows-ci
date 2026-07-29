@@ -121,6 +121,13 @@ touched. All checkouts use `persist-credentials: false`.
 The distributable torch wheel is the `cuda_embed` one (CUDA DLLs embedded); the
 test job installs it in preference to any vanilla wheel.
 
+Wheels are versioned to match upstream pytorch nightlies:
+`<base>.dev<yyyyMMdd>+cu<cudaver>` (e.g. `torch-2.10.0.dev20260713+cu134-...whl`),
+where `<base>` comes from pytorch's `version.txt` (trailing `a0` stripped),
+`<yyyyMMdd>` is the run's `nightly-date`, and `<cudaver>` is the CUDA version with
+dots removed. The build fails fast if any produced wheel does not carry this
+`.dev<date>+cu<ver>` suffix.
+
 ## Reading results
 
 The **`test-summary`** job (always runs, never reports a status of its own) writes

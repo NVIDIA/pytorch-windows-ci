@@ -46,7 +46,10 @@ name: windows-rtx-build-test
 
 on:
   schedule:
-    - cron: "0 3 * * *"
+    # GitHub attributes a scheduled run to whoever last pushed a change to this
+    # cron expression, so it must be (re)pushed by an account with a verified
+    # email or every run fails at startup.
+    - cron: "5 3 * * *"
   workflow_dispatch:
     inputs:
       pytorch-pr:

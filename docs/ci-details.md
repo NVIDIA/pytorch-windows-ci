@@ -29,7 +29,7 @@ There are no GitHub-hosted (cloud) runs anywhere in this repo.
 The two top-level workflows run automatically on a nightly `schedule`:
 
 - **`windows-rtx-build-test.yml`** — full source build + test (nightly at
-  `0 3 * * *` / 08:30 IST).
+  `5 3 * * *` / 08:35 IST).
 - **`windows-rtx-wheel-test.yml`** — nightly published-wheel smoke test
   (`0 17 * * *` / 22:30 IST), installing the matching `download.pytorch.org`
   nightly wheel rather than building from source.
@@ -76,7 +76,7 @@ the sm120 test cell for Python 3.13 + CUDA 13.0 needs an image registered as
 | Workflow | Purpose | Triggers | Compute |
 | --- | --- | --- | --- |
 | `windows-rtx-wheel-test.yml`           | Each test cell checks out `pytorch/pytorch` at `pytorch-ref` (default `nightly`) via `actions/checkout@v7` (which resolves the branch to a concrete commit), records the actual HEAD SHA + commit date into the cell's job summary, then greps `download.pytorch.org/whl/nightly/torch/` for the wheel whose filename carries that exact `devYYYYMMDD` tag together with the matrix `cu<label>` / `cp<pyshort>` tags and `pip install`s the resolved absolute URL before running `.ci/pytorch/win-test.sh`. Fails fast if no matching wheel exists, so the wheel under test always shares its commit date with the pytorch source on disk. No preflight job, no artifact transit. | `schedule` (`0 17 * * *` = 22:30 IST) | `_rtx-test.yml` (sm89 + sm120 in one matrix) |
-| `windows-rtx-build-test.yml`            | Full source build (multi-arch wheel) + test, scheduled nightly. Also carries the parked path for real RFC-0050 PR-time events. | `schedule` (`0 3 * * *` = 08:30 IST) | `prep` -> `_rtx-build.yml` -> `_rtx-test.yml` (sm89 + sm120 in one matrix) |
+| `windows-rtx-build-test.yml`            | Full source build (multi-arch wheel) + test, scheduled nightly. Also carries the parked path for real RFC-0050 PR-time events. | `schedule` (`5 3 * * *` = 08:35 IST) | `prep` -> `_rtx-build.yml` -> `_rtx-test.yml` (sm89 + sm120 in one matrix) |
 
 Both nightly workflows fan out across `(config)` for builds and
 `(config x arch)` for tests. **Sharding is not a top-level axis on either

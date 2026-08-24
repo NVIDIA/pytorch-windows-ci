@@ -286,7 +286,7 @@ jobs:
       # Actions artifact storage. Lands files under `artifact/...`.
       - name: Download wheel artifact
         if: inputs.wheel-artifact != ''
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: ${{ inputs.wheel-artifact }}
           path: artifact
@@ -675,7 +675,7 @@ jobs:
       # the original `if: always()` condition below.
       - name: Upload runner diagnostics
         if: false
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: runner-diagnostics-${{ inputs.build-environment }}-${{ inputs.python-label }}-${{ inputs.cuda-label }}-shard${{ matrix.shard }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ steps.diag.outputs.output-dir }}/**
@@ -683,13 +683,13 @@ jobs:
           retention-days: 14
 
       # Archive the raw test-reports tree (JUnit XML plus any crash / log
-      # files the harness drops there). upload-artifact@v4 stores the folder
-      # and serves it as a single `<name>.zip` on download. The name is unique
+      # files the harness drops there). upload-artifact stores the folder and
+      # serves it as a single `<name>.zip` on download. The name is unique
       # per cell+shard+run+attempt so the 5 parallel shards never collide
-      # (v4 forbids two jobs uploading the same artifact name).
+      # (v4 and later forbid two jobs uploading the same artifact name).
       - name: Upload test-reports archive
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: test-reports-${{ inputs.build-environment }}-${{ inputs.python-label }}-${{ inputs.cuda-label }}-${{ inputs.arch-name }}-shard${{ matrix.shard }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ env.PT_ROOT }}/test/test-reports/**

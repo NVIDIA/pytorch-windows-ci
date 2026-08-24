@@ -662,11 +662,27 @@ jobs:
           ) &
           watchdog_pid=$!
 
+          # AWS_EC2_METADATA_DISABLED stops the doomed S3 telemetry upload from
+          # stalling, but it still runs and still narrates itself once per test
+          # file. That was 1010 lines - 2.2% of the output - in a measured shard
+          # log, for work that cannot ever succeed, so drop just those lines.
+          # Matching is fixed-string and pins the "Unable to locate credentials"
+          # reason, so an upload failing for any other reason is still printed
+          # rather than swallowed.
+          #
           # `set +e` around the pipeline so a red shard still reaches the
           # watchdog teardown below. PIPESTATUS[0] is win-test.sh's own exit
-          # code, unmasked by `tee`.
+          # code, unmasked by the later stages. `--line-buffered` keeps the live
+          # job log streaming instead of arriving in grep-sized blocks.
           set +e
           bash .ci/pytorch/win-test.sh 2>&1 \
+            | grep -v --line-buffered -F \
+                -e 'Failed to parse and upload json test reports: Unable to locate credentials' \
+                -e 'Parsing testcases for test report:' \
+                -e 'Found job id:' \
+                -e 'GITHUB_RUN_ID, GITHUB_RUN_ATTEMPT, or ARTIFACTS_FILE_SUFFIX not set, not uploading' \
+                -e 'Uploading artifacts took' \
+                -e 'SCRIBE_GRAPHQL_ACCESS_TOKEN is NOT set' \
             | tee "test/test-reports/run_test_shard${SHARD_NUMBER}.log"
           rc=${PIPESTATUS[0]}
           set -e

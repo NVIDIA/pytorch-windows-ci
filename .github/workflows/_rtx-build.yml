@@ -137,7 +137,38 @@ jobs:
       # This (OOT) repo carries `tools/pytorch-build/win-build.sh` and its
       # helpers (the upstream-faithful build flow). Keep it in `oot/` so the
       # parallel pytorch checkout below doesn't trample it.
+      # Retried in three explicit attempts: actions/checkout gives up after
+      # ~90s of internal git-fetch retries, which is shorter than an
+      # observed github.com connectivity blip on this pool, and every later
+      # `uses: ./oot/...` local action plus the whole build flow lives in
+      # this tree.
       - name: Checkout OOT tooling repo
+        id: oot_checkout_1
+        continue-on-error: true
+        uses: actions/checkout@v7
+        with:
+          path: oot
+
+      - name: Wait before OOT checkout retry
+        if: steps.oot_checkout_1.outcome == 'failure'
+        shell: bash
+        run: sleep 60
+
+      - name: Checkout OOT tooling repo (retry 2)
+        id: oot_checkout_2
+        if: steps.oot_checkout_1.outcome == 'failure'
+        continue-on-error: true
+        uses: actions/checkout@v7
+        with:
+          path: oot
+
+      - name: Wait before final OOT checkout retry
+        if: steps.oot_checkout_1.outcome == 'failure' && steps.oot_checkout_2.outcome == 'failure'
+        shell: bash
+        run: sleep 120
+
+      - name: Checkout OOT tooling repo (retry 3)
+        if: steps.oot_checkout_1.outcome == 'failure' && steps.oot_checkout_2.outcome == 'failure'
         uses: actions/checkout@v7
         with:
           path: oot
@@ -155,10 +186,34 @@ jobs:
         with:
           repository: pytorch/pytorch
           ref: ${{ inputs.pytorch-ref }}
-          submodules: recursive
+          # Fetched by the retried step below instead - actions/checkout
+          # aborts the whole step on the first submodule error with no retry
+          # for that phase, and pytorch's recursive tree reaches deep
+          # third-party hosts (third_party/flash-attention -> aiter ->
+          # ROCm/composable_kernel) where one transient connect failure
+          # discards an otherwise good clone.
+          submodules: false
           fetch-depth: 1
           show-progress: false
           path: pytorch
+
+      - name: Fetch pytorch submodules (retried)
+        if: github.event_name != 'repository_dispatch'
+        shell: bash
+        working-directory: pytorch
+        run: |
+          set -uo pipefail
+          for attempt in 1 2 3; do
+            if git submodule update --init --recursive --depth 1 --jobs 4; then
+              echo "pytorch submodules ready (attempt ${attempt})"
+              exit 0
+            fi
+            delay=$((attempt * 60))
+            echo "::warning::Submodule fetch attempt ${attempt} failed; retrying in ${delay}s."
+            sleep "${delay}"
+          done
+          echo "::error::pytorch submodule fetch failed after 3 attempts." >&2
+          exit 1
 
       - name: Record built SHA
         shell: bash

@@ -214,7 +214,43 @@ jobs:
         shell: bash
         run: git config --global core.longpaths true
 
+      # Retried in three explicit attempts. actions/checkout only retries
+      # the git fetch internally (3 tries, ~90s total) and then fails the
+      # step, which on this pool is shorter than an observed github.com
+      # connectivity blip. Losing THIS checkout is disproportionately
+      # expensive: every later `uses: ./oot/...` local action and the
+      # summary script live in this tree, so a single missed clone turns
+      # one network error into a pile of misleading "Can't find action.yml"
+      # / "can't open file parse_failures.py" failures.
       - name: Checkout repository (runner-diagnostics actions)
+        id: oot_checkout_1
+        continue-on-error: true
+        uses: actions/checkout@v7
+        with:
+          path: oot
+          show-progress: false
+
+      - name: Wait before OOT checkout retry
+        if: steps.oot_checkout_1.outcome == 'failure'
+        shell: bash
+        run: sleep 60
+
+      - name: Checkout repository (retry 2)
+        id: oot_checkout_2
+        if: steps.oot_checkout_1.outcome == 'failure'
+        continue-on-error: true
+        uses: actions/checkout@v7
+        with:
+          path: oot
+          show-progress: false
+
+      - name: Wait before final OOT checkout retry
+        if: steps.oot_checkout_1.outcome == 'failure' && steps.oot_checkout_2.outcome == 'failure'
+        shell: bash
+        run: sleep 120
+
+      - name: Checkout repository (retry 3)
+        if: steps.oot_checkout_1.outcome == 'failure' && steps.oot_checkout_2.outcome == 'failure'
         uses: actions/checkout@v7
         with:
           path: oot
@@ -252,13 +288,40 @@ jobs:
           repository: pytorch/pytorch
           ref: ${{ steps.ref.outputs.ref }}
           path: pytorch
-          submodules: recursive
+          # Submodules are deliberately NOT fetched by this action - the
+          # retried step below does it instead. actions/checkout aborts the
+          # entire step on the first submodule fetch error and exposes no
+          # retry for that phase, and pytorch's recursive tree reaches deep
+          # third-party hosts (third_party/flash-attention -> aiter ->
+          # ROCm/composable_kernel) where one transient connect failure was
+          # killing shards ~55 minutes into checkout, after the main clone
+          # had already succeeded.
+          submodules: false
           fetch-depth: 1
           show-progress: true
           # This checkout is read-only (the tree is relocated to C:\pt and
           # only built/tested, never pushed), so it does not need a GitHub
           # token persisted in .git/config.
           persist-credentials: false
+
+      # `--jobs 4` also cuts a large chunk off the serial ~55min recursive
+      # clone this replaces.
+      - name: Fetch pytorch submodules (retried)
+        shell: bash
+        working-directory: pytorch
+        run: |
+          set -uo pipefail
+          for attempt in 1 2 3; do
+            if git submodule update --init --recursive --depth 1 --jobs 4; then
+              echo "pytorch submodules ready (attempt ${attempt})"
+              exit 0
+            fi
+            delay=$((attempt * 60))
+            echo "::warning::Submodule fetch attempt ${attempt} failed; retrying in ${delay}s."
+            sleep "${delay}"
+          done
+          echo "::error::pytorch submodule fetch failed after 3 attempts." >&2
+          exit 1
 
       # Windows MAX_PATH (260) mitigation, root cause fix. The runner image
       # already sets the LongPathsEnabled registry flag (packer
@@ -433,8 +496,12 @@ jobs:
           bash .ci/pytorch/win-test.sh 2>&1 \
             | tee "test/test-reports/run_test_shard${SHARD_NUMBER}.log"
 
+      # The output-dir guard doubles as an "OOT tree is present" check: when
+      # the monitor never started there is no local action to run either, and
+      # attempting it only adds a bogus "Can't find action.yml" error on top
+      # of the real failure.
       - name: Stop runner diagnostics
-        if: always()
+        if: always() && steps.diag.outputs.output-dir != ''
         uses: ./oot/.github/actions/stop-runner-diagnostics
         with:
           output-dir: ${{ steps.diag.outputs.output-dir }}
@@ -449,7 +516,16 @@ jobs:
         if: always()
         shell: bash
         run: |
-          python "${GITHUB_WORKSPACE}/oot/scripts/test-summary/parse_failures.py" \
+          set -euo pipefail
+          parser="${GITHUB_WORKSPACE}/oot/scripts/test-summary/parse_failures.py"
+          # If the shard died before/inside the OOT checkout there is nothing
+          # to parse with. Say so once instead of failing this step too and
+          # burying the real error under a `can't open file` traceback.
+          if [ ! -f "$parser" ]; then
+            echo "::warning::$parser missing (OOT checkout did not complete); skipping shard summary."
+            exit 0
+          fi
+          python "$parser" \
             --reports-dir "${{ env.PT_ROOT }}/test/test-reports" \
             --title "Failed tests - ${{ inputs.build-environment }} - ${{ inputs.python-label }}/${{ inputs.cuda-label }} - ${{ inputs.arch-name }} - shard ${{ matrix.shard }}/5" \
             >> "$GITHUB_STEP_SUMMARY"

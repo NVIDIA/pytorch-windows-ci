@@ -200,11 +200,17 @@ jobs:
       # ~168min of run_test time) but far enough under `timeout-minutes`
       # that the watchdog always wins the race against the job cap. 195min.
       RUN_TEST_TIMEOUT_SEC: "11700"
-      # Per-test cap handed to pytest-timeout. Individual pytorch tests run
-      # in seconds to a couple of minutes, so 30min only ever trips on a
-      # genuinely wedged test - and then it dumps every thread's stack,
-      # which is exactly the evidence a silent hang otherwise denies us.
-      PER_TEST_TIMEOUT_SEC: "1800"
+      # Per-test cap handed to pytest-timeout, sized from the JUnit reports of
+      # run 32095352519: across 278,992 test cases the slowest single test was
+      # test_multiprocessing::test_fs_sharing at 7.8min, only two exceeded 5min,
+      # none reached 10min, and p99.99 was 68s. 15min is ~2x the observed worst
+      # case - enough headroom for a slower runner or a loaded machine, while
+      # still cutting the time a wedged test can burn. When it trips it dumps
+      # every thread's stack, which is the evidence a silent hang otherwise
+      # denies us. Also matches PerTestTimeoutSec in the WoA path's
+      # tools/woa-build/shared/env/defaults/test-runtime.psd1, so both arches
+      # fail a wedged test on the same clock.
+      PER_TEST_TIMEOUT_SEC: "900"
       # Short physical path the pytorch checkout is relocated to right after
       # checkout. The runner workspace lives at
       #   C:\actions-runner\_work\pytorch-windows-ci\pytorch-windows-ci\pytorch

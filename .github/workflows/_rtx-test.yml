@@ -179,6 +179,17 @@ jobs:
       VC_VERSION: ""
       PYTORCH_TEST_WITH_SLOW: "0"
       CI: "1"
+      # Harden every pip invocation in the job against transient index /
+      # CDN failures - including the ones we do not call ourselves, i.e.
+      # the `pip install -r .ci/docker/requirements-ci.txt` buried in
+      # pytorch's own setup_pytorch_env.bat. pip reads these from the
+      # environment, so they apply to nested batch scripts too. pip's
+      # default 15s socket timeout is far too tight for this pool: a
+      # single slow index response returns an empty candidate list, pip
+      # reports "No matching distribution found" for a package that
+      # plainly exists, and the whole requirements resolve is abandoned.
+      PIP_RETRIES: "8"
+      PIP_DEFAULT_TIMEOUT: "60"
       # Short physical path the pytorch checkout is relocated to right after
       # checkout. The runner workspace lives at
       #   C:\actions-runner\_work\pytorch-windows-ci\pytorch-windows-ci\pytorch
@@ -433,6 +444,62 @@ jobs:
             python -m pip install "$wheel"
           fi
           python -c "import torch; print('torch', torch.__version__, 'cuda', torch.version.cuda); assert torch.cuda.is_available()"
+
+      # pytorch's setup_pytorch_env.bat (called from win-test.sh, deep inside
+      # the single test step below) installs .ci/docker/requirements-ci.txt
+      # and then IGNORES the exit code. pip resolves a requirements file
+      # atomically, so one unavailable pin takes the whole set down with it:
+      # a transient index failure on `onnx==1.21.0` left expecttest, numpy
+      # and hypothesis uninstalled, and the shard then died ~400 log lines
+      # later on `ModuleNotFoundError: No module named 'expecttest'` - a
+      # symptom that points nowhere near the cause.
+      #
+      # So install the same requirements here first, with real retries. The
+      # nested install afterwards becomes a fast "already satisfied" no-op,
+      # and even if it does hiccup the environment is already complete.
+      #
+      # Deliberately NOT gated on pip's exit code: this Linux-oriented
+      # requirements file may legitimately fail on a package with no
+      # win_amd64 wheel, which must not fail the shard. The import check
+      # below is the real gate - it fails fast, and names what is missing.
+      - name: Install test-harness dependencies (retried)
+        shell: bash
+        working-directory: ${{ env.PT_ROOT }}
+        run: |
+          set -uo pipefail
+          for attempt in 1 2 3; do
+            echo "--- requirements-ci.txt install, attempt ${attempt}"
+            if python -m pip install -r .ci/docker/requirements-ci.txt; then
+              break
+            fi
+            if [ "${attempt}" -lt 3 ]; then
+              delay=$((attempt * 30))
+              echo "::warning::requirements-ci.txt install attempt ${attempt} failed; retrying in ${delay}s."
+              sleep "${delay}"
+            fi
+          done
+
+          python - <<'PY'
+          import importlib.util
+          import sys
+
+          # Modules that run_test.py / common_utils.py import before they can
+          # report anything useful themselves. Scoped to what
+          # requirements-ci.txt actually pins - pytest-shard and nvidia-ml-py
+          # come from win-test.sh's own pip line, which has not run yet.
+          required = ("expecttest", "numpy", "hypothesis", "psutil", "pytest")
+          missing = [m for m in required if importlib.util.find_spec(m) is None]
+          if missing:
+              print(
+                  "::error::Test harness dependencies missing after 3 install attempts: "
+                  + ", ".join(missing)
+                  + ". The requirements-ci.txt resolve failed (usually a transient index "
+                  "error on an unrelated pin) - re-run the shard.",
+                  file=sys.stderr,
+              )
+              sys.exit(1)
+          print("test-harness imports present:", ", ".join(required))
+          PY
 
       # Seed our own test-time stats into pytorch's .additional_ci_files so
       # run_test.py shards deterministically from data we control instead of

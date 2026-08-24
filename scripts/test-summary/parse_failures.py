@@ -82,6 +82,11 @@ class Failure:
     # Provenance of the record: "xml", "log", or "report" (a crashed /
     # unparsable JUnit file surfaced as a single crash row).
     source: str = "xml"
+    # True for a whole-file ``<file> failed!`` marker from run_test.py, as
+    # opposed to a specific test. Such a marker is the only evidence when a
+    # file dies without itemizing anything, but is redundant once the same
+    # file has itemized failures - see :func:`_drop_redundant_file_markers`.
+    whole_file: bool = False
 
     @property
     def module_path(self) -> str:
@@ -291,6 +296,7 @@ def _failure_from_log_line(line: str) -> Failure | None:
                 message="reported as failed by run_test.py",
                 file=file,
                 source="log",
+                whole_file=True,
             )
     return None
 
@@ -529,6 +535,30 @@ def _is_recovered(key: tuple[str, str, str], result: ScanResult) -> bool:
     return fail_ts is None or ok_ts >= fail_ts
 
 
+def _drop_redundant_file_markers(failures: list[Failure]) -> list[Failure]:
+    """Drop ``<file> failed!`` markers for files that already itemized failures.
+
+    run_test.py prints the marker whenever a test file ends non-green, so a
+    file with itemized failing tests yields both those tests *and* a whole-file
+    row naming the same failure at coarser granularity - one real run had
+    ``test_precompile`` listed alongside the 21 individual tests that caused it.
+
+    The marker is kept when it is the *only* evidence for that file, which is
+    the case it exists for: a build failure, import error, or crash that kills
+    the process before any ``<testcase>`` is written.
+    """
+    itemized = {
+        f.module_path.lower()
+        for f in failures
+        if not f.whole_file and f.module_path
+    }
+    return [
+        f
+        for f in failures
+        if not (f.whole_file and f.module_path.lower() in itemized)
+    ]
+
+
 def collect(reports_dir: Path, *, parse_logs: bool = True) -> ScanResult:
     """Scan ``reports_dir`` for failures across JUnit XML and run logs.
 
@@ -555,15 +585,19 @@ def collect(reports_dir: Path, *, parse_logs: bool = True) -> ScanResult:
     ``FAILED CONSISTENTLY`` (>=3 attempts) - a fail-then-pass instead hits the
     "Test succeeded in new process, continuing" branch and prints no marker,
     so a stale marker cannot survive a successful retry.
+
+    Surviving markers are then filtered by :func:`_drop_redundant_file_markers`
+    so a file is not reported twice - once per failing test and once as a
+    whole-file row.
     """
     result = ScanResult()
     sink = _FailureSink()
     _collect_xml(reports_dir, result, sink)
     if parse_logs:
         _collect_logs(reports_dir, result, sink)
-    result.failures = [
-        f for f in sink.values() if not _is_recovered(f.dedup_key, result)
-    ]
+    result.failures = _drop_redundant_file_markers(
+        [f for f in sink.values() if not _is_recovered(f.dedup_key, result)]
+    )
     return result
 
 

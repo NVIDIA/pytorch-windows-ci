@@ -158,7 +158,12 @@ jobs:
       - ${{ inputs.runner-base }}
       - ${{ inputs.python-label }}
       - ${{ inputs.cuda-label }}
-    timeout-minutes: 210
+    # Raised from 210 so that the in-step watchdog (RUN_TEST_TIMEOUT_SEC
+    # below), not this cap, is always what stops a hung shard. A job-level
+    # timeout is a bad way to catch a hang: GitHub *cancels* the job, so the
+    # shard summary never renders, the test-reports upload races the
+    # cancellation, and the log just stops with no indication of what wedged.
+    timeout-minutes: 240
     env:
       # ---- carried from the matrix cell -------------------------------
       BUILD_ENVIRONMENT: ${{ inputs.build-environment }}
@@ -190,6 +195,16 @@ jobs:
       # plainly exists, and the whole requirements resolve is abandoned.
       PIP_RETRIES: "8"
       PIP_DEFAULT_TIMEOUT: "60"
+      # Wall-clock cap for the whole win-test.sh run, enforced in-step. Set
+      # comfortably above the long-pole shard (shard 1 has been observed at
+      # ~168min of run_test time) but far enough under `timeout-minutes`
+      # that the watchdog always wins the race against the job cap. 195min.
+      RUN_TEST_TIMEOUT_SEC: "11700"
+      # Per-test cap handed to pytest-timeout. Individual pytorch tests run
+      # in seconds to a couple of minutes, so 30min only ever trips on a
+      # genuinely wedged test - and then it dumps every thread's stack,
+      # which is exactly the evidence a silent hang otherwise denies us.
+      PER_TEST_TIMEOUT_SEC: "1800"
       # Short physical path the pytorch checkout is relocated to right after
       # checkout. The runner workspace lives at
       #   C:\actions-runner\_work\pytorch-windows-ci\pytorch-windows-ci\pytorch
@@ -479,6 +494,12 @@ jobs:
             fi
           done
 
+          # Not in requirements-ci.txt, but PYTEST_ADDOPTS below passes
+          # --timeout to every pytest invocation, and an unrecognised
+          # argument would fail every single test file. So this install is
+          # load-bearing and the import check must cover it.
+          python -m pip install "pytest-timeout==2.3.1"
+
           python - <<'PY'
           import importlib.util
           import sys
@@ -486,8 +507,9 @@ jobs:
           # Modules that run_test.py / common_utils.py import before they can
           # report anything useful themselves. Scoped to what
           # requirements-ci.txt actually pins - pytest-shard and nvidia-ml-py
-          # come from win-test.sh's own pip line, which has not run yet.
-          required = ("expecttest", "numpy", "hypothesis", "psutil", "pytest")
+          # come from win-test.sh's own pip line, which has not run yet -
+          # plus pytest_timeout, installed just above.
+          required = ("expecttest", "numpy", "hypothesis", "psutil", "pytest", "pytest_timeout")
           missing = [m for m in required if importlib.util.find_spec(m) is None]
           if missing:
               print(
@@ -537,6 +559,15 @@ jobs:
           GITHUB_RUN_ID: ${{ github.run_id }}
           GITHUB_RUN_NUMBER: ${{ github.run_number }}
           GITHUB_RUN_ATTEMPT: ${{ github.run_attempt }}
+          # ---- per-test hang guard. run_test.py hands every test file to
+          # ---- pytest, and pytest reads PYTEST_ADDOPTS itself, so this
+          # ---- reaches all of them without patching upstream's args. The
+          # ---- `thread` method is the only one that works on Windows
+          # ---- (signal-based alarms are POSIX-only); it dumps all thread
+          # ---- stacks and then hard-exits the process, which is what lets
+          # ---- run_test.py record the file as failed and move on instead
+          # ---- of blocking its worker pool forever.
+          PYTEST_ADDOPTS: "--timeout=${{ env.PER_TEST_TIMEOUT_SEC }} --timeout-method=thread"
         # Tee the harness output into the test-reports tree so the summary
         # parser can recover failures that never make it into JUnit XML
         # (hard crashes, collection/import errors, whole-file aborts). The
@@ -556,12 +587,55 @@ jobs:
         # derives from $PWD - stays well under MAX_PATH. No subst/drive aliasing
         # is needed (and would not work: setuptools' realpath() canonicalises
         # aliases back to the long physical path).
+        #
+        # Backstop watchdog. Four shards were lost to the job cap in a single
+        # run, and in every case run_test.py had already finished its last
+        # test file and then sat silent for 100-120 minutes: two test files
+        # were dispatched to its multiprocessing pool, never returned, and
+        # the parent waited on them forever. PYTEST_ADDOPTS above should now
+        # break that class of hang from the inside; this catches whatever it
+        # cannot reach (a wedged pool, a driver-level GPU hang, anything that
+        # never gets far enough to be a "test" at all).
+        #
+        # Killing python.exe rather than just the win-test.sh child is
+        # deliberate: the grandchildren hold the write end of the pipe into
+        # `tee`, so killing only the shell would leave `tee` blocked and the
+        # step hung anyway. Killing repeatedly is deliberate too - win-test.sh
+        # is a long sequence of python invocations and a single sweep can
+        # leave it limping on to the next one instead of unwinding.
         run: |
           set -o pipefail
           mkdir -p test/test-reports
 
+          watchdog_marker="${RUNNER_TEMP}/win-test-watchdog-fired"
+          rm -f "$watchdog_marker"
+          (
+            sleep "${RUN_TEST_TIMEOUT_SEC}"
+            : > "$watchdog_marker"
+            echo "::error::Watchdog: win-test.sh made no progress within ${RUN_TEST_TIMEOUT_SEC}s; killing test processes so the shard fails cleanly."
+            while true; do
+              taskkill //F //T //IM python.exe >/dev/null 2>&1 || true
+              sleep 20
+            done
+          ) &
+          watchdog_pid=$!
+
+          # `set +e` around the pipeline so a red shard still reaches the
+          # watchdog teardown below. PIPESTATUS[0] is win-test.sh's own exit
+          # code, unmasked by `tee`.
+          set +e
           bash .ci/pytorch/win-test.sh 2>&1 \
             | tee "test/test-reports/run_test_shard${SHARD_NUMBER}.log"
+          rc=${PIPESTATUS[0]}
+          set -e
+
+          kill "$watchdog_pid" 2>/dev/null || true
+
+          if [ -f "$watchdog_marker" ]; then
+            echo "::error::Shard timed out after ${RUN_TEST_TIMEOUT_SEC}s. The tail of the log above is where it stopped making progress."
+            exit 1
+          fi
+          exit "$rc"
 
       # The output-dir guard doubles as an "OOT tree is present" check: when
       # the monitor never started there is no local action to run either, and

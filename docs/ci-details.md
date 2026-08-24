@@ -207,6 +207,56 @@ off the pytorch-internal infra (no AWS, no `filter-test-configs`, no
 | step | `PR_NUMBER`, `SHA1` | `repository_dispatch` payload or PR context |
 | step | `GITHUB_REPOSITORY` / `_WORKFLOW` / `_JOB` / `_RUN_ID` / `_RUN_NUMBER` / `_RUN_ATTEMPT` | `github.*` context |
 
+## Test sharding
+
+`test/run_test.py` assigns test files to the 5 shards itself, using per-file
+timings it reads from `<pytorch>/.additional_ci_files/test-times.json`. Upstream
+that file is downloaded from test-infra, which has no data for an out-of-tree
+build env — hence the benign warning every shard logs:
+
+```
+Gathered no stats from artifacts for win-rtx-sm89 build env and default
+test config. Using default job name and default test config instead.
+```
+
+The fallback to `default`/`default` is the intended path here: the
+`Seed test-time stats` step runs `scripts/test-stats/seed_test_stats.py`, which
+copies our committed `scripts/test-stats/data/*.json` into that folder under
+exactly those keys. Every shard reads the same committed JSON, so all 5 agree on
+the split without coordinating.
+
+Timings matter more than they look. `calculate_shards` bin-packs by cost only
+when a file's time is known; for an unknown file it falls back to round-robin
+(`_get_min_sharded_job` in `tools/testing/test_selections.py`), which ignores
+cost entirely. It also splits any file over a 10-minute `THRESHOLD` into
+`ceil(duration / 600)` pytest shards spread across jobs — so with times,
+`test_meta` becomes 13 pieces of ~9.4 min instead of one atomic 2-hour file that
+pins whichever shard draws it.
+
+### Refreshing the stats
+
+The data is a snapshot and drifts as the upstream suite changes; new files simply
+have no time and get round-robined, so it degrades gradually rather than breaking.
+To regenerate from a completed run:
+
+1. Download each shard's log for one `(config, arch)` cell — either
+   `gh api repos/NVIDIA/pytorch-windows-ci/actions/jobs/<job-id>/logs`, or the
+   `run_test_shard<N>.log` inside that shard's `test-reports-*` artifact.
+2. Optionally extract the `test-reports-*` artifacts too; they are the only
+   source of per-class times.
+3. Run the generator, passing **every** shard of the run so that pytest-sharded
+   files are seen whole:
+
+```bash
+python scripts/test-stats/gen_test_stats.py \
+  --log-dir ./logs --report-dir ./reports/shard1 ... --report-dir ./reports/shard5
+```
+
+4. Commit the regenerated `scripts/test-stats/data/*.json`.
+
+Use a run whose shards all completed: a cancelled shard truncates its log, and
+the generator can only scale a partially-observed file back up to an estimate.
+
 ## Runner diagnostics
 
 Each test job spawns `scripts/runner-diagnostics/monitor.ps1` (resolved by
@@ -249,4 +299,10 @@ Pipe the JSONL files through `jq` / `pandas` to plot pressure around a failure.
 scripts/
   runner-diagnostics/
     monitor.ps1                      # background sampler (host + GPU JSONL)
+  test-stats/
+    seed_test_stats.py               # copy data/*.json into <pytorch>/.additional_ci_files
+    gen_test_stats.py                # rebuild data/*.json from a completed run's logs/reports
+    data/
+      test-times.json                # per-file seconds -> drives shard bin-packing
+      test-class-times.json          # per-class seconds (partial-file TestRuns only)
 ```

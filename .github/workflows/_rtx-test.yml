@@ -184,6 +184,24 @@ jobs:
       VC_VERSION: ""
       PYTORCH_TEST_WITH_SLOW: "0"
       CI: "1"
+      # `CI` above is what switches on run_test.py's S3 telemetry upload:
+      # --upload-artifacts-while-running defaults to IS_CI and has no negating
+      # flag, so after every test file handle_complete() calls
+      # parse_xml_and_upload_json(), which puts the report into pytorch's own
+      # `gha-artifacts` bucket via boto3. We hold no credentials for someone
+      # else's bucket, so it can only ever fail - but on a non-AWS host boto3
+      # first probes the EC2 instance-metadata service at 169.254.169.254
+      # looking for them, and that probe can stall for minutes. It runs once
+      # per test file, so a single stall wedges the shard with no output. The
+      # WoA path hit exactly this (3h+ before the watchdog killed it) and
+      # guards it the same way - see Set-RunTestTelemetryGuardEnv in
+      # tools/woa-build/shared/test/TestShardRunner.ps1.
+      #
+      # Disabling the probe makes the doomed upload raise NoCredentialsError
+      # immediately instead of hanging. run_test.py's only other network step,
+      # the disabled/slow-test download, is an anonymous public HTTPS GET and
+      # is unaffected.
+      AWS_EC2_METADATA_DISABLED: "true"
       # Harden every pip invocation in the job against transient index /
       # CDN failures - including the ones we do not call ourselves, i.e.
       # the `pip install -r .ci/docker/requirements-ci.txt` buried in

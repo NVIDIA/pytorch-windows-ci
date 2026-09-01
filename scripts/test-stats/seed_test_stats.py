@@ -293,15 +293,23 @@ def seed(
         if not quiet:
             jobs = sorted(data.keys())
             n_default = len(data.get("default", {}).get("default", {}))
-            note = (
-                f", backfilled {added} unmeasured file(s) at {value:.1f}s"
-                if added
-                else ""
-            )
             print(
                 f"seeded {dest} from {src} "
-                f"(jobs={jobs}, default/default entries={n_default}{note})"
+                f"(jobs={jobs}, default/default entries={n_default})"
             )
+            # Stated unconditionally, and as an explicit count of what is left
+            # unbounded, so a healthy run carries positive proof rather than
+            # the absence of a warning. On a run that never hangs this line is
+            # the only evidence the per-file timeout is armed at all: nothing
+            # logs an armed timeout, only one that fires ("Command took >Nmin").
+            if src_name == _FALLBACK_TEST_TIMES and backfill:
+                unbounded = len(discovered - set(data["default"]["default"]))
+                at = f" at {value:.1f}s" if added else ""
+                print(
+                    f"  timeout coverage: {len(discovered)} test file(s) in the "
+                    f"checkout, {added} backfilled{at}, "
+                    f"{unbounded} left without a time"
+                )
     if backfill and not discovered and not quiet:
         print(
             "warning: no test files discovered under <pytorch>/test; every file "

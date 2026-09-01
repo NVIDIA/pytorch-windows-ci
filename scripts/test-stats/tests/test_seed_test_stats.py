@@ -422,6 +422,54 @@ def test_main_accepts_backfill_flags(tmp_path, valid_times, valid_class_times):
     assert written["default"]["default"]["test_new"] == 99.0
 
 
+# --------------------------------------------------------------------------- #
+# Observability
+#
+# Nothing logs an *armed* per-file timeout - only one that fires ("Command took
+# >Nmin"). So on a run that never hangs, this line is the only positive evidence
+# the bound is in place, which is why it is printed unconditionally.
+# --------------------------------------------------------------------------- #
+def test_coverage_line_printed_even_when_nothing_backfilled(
+    tmp_path, capsys, valid_times, valid_class_times
+):
+    data_dir = _make_data_dir(tmp_path, valid_times, valid_class_times)
+    root = _make_pytorch_root(tmp_path)
+    _add_test_files(root, "test_foo.py", "test_bar.py")  # both already measured
+
+    seed_mod.seed(root, data_dir)
+
+    out = capsys.readouterr().out
+    assert "timeout coverage: 2 test file(s) in the checkout" in out
+    assert "0 backfilled" in out
+    assert "0 left without a time" in out
+
+
+def test_coverage_line_reports_backfilled_count(
+    tmp_path, capsys, valid_times, valid_class_times
+):
+    data_dir = _make_data_dir(tmp_path, valid_times, valid_class_times)
+    root = _make_pytorch_root(tmp_path)
+    _add_test_files(root, "test_foo.py", "inductor/test_new.py")
+
+    seed_mod.seed(root, data_dir)
+
+    out = capsys.readouterr().out
+    assert "1 backfilled at" in out
+    assert "0 left without a time" in out
+
+
+def test_no_coverage_line_when_backfill_disabled(
+    tmp_path, capsys, valid_times, valid_class_times
+):
+    data_dir = _make_data_dir(tmp_path, valid_times, valid_class_times)
+    root = _make_pytorch_root(tmp_path)
+    _add_test_files(root, "test_foo.py")
+
+    seed_mod.seed(root, data_dir, backfill=False)
+
+    assert "timeout coverage" not in capsys.readouterr().out
+
+
 def test_repo_shipped_data_is_valid():
     """The data files committed in the repo must satisfy the contract."""
     data_dir = _SCRIPT.parent / "data"

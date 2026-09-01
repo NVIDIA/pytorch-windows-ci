@@ -233,11 +233,55 @@ cost entirely. It also splits any file over a 10-minute `THRESHOLD` into
 `test_meta` becomes 13 pieces of ~9.4 min instead of one atomic 2-hour file that
 pins whichever shard draws it.
 
+### A missing time also removes the timeout
+
+Balance is the visible effect; the timeout is the dangerous one. `run_test.py`
+runs each test file in a subprocess and arms that subprocess's timeout only when
+it knows how long the file should take:
+
+```python
+timeout = (... THRESHOLD * timeout_multiplier
+           if should_retry
+           and isinstance(test_module, ShardedTest)
+           and test_module.time is not None
+           else ... None)
+```
+
+`test_module.time` comes from `test-times.json` via
+`test_selections.get_duration`, which returns `None` for a file it has never
+seen. So **a file absent from the stats runs with no timeout at all.**
+
+That is what cost this CI seven shards across four runs. In each case one CUDA
+test deadlocked — `TestMemPool::test_graph_capture_pre_capture_stream_use` in
+`test_cuda`, `_foreach_minimum` and `max_unpool1d` in `test_meta` — its file
+never returned, the parent blocked in `pool.join()`, and the orphaned process
+tree held the test step's stdout pipe open so the step could not end. GitHub
+cancelled 70–120 minutes later. The runs recorded no failing test and no stack,
+because the parent waits in `Process.join()` → `WaitForSingleObject(INFINITE)`,
+which on Windows does not respond to Ctrl-C; only the idle pool workers ever
+printed a traceback.
+
+Three bounds now apply, outermost last:
+
+| Bound | Where | Value |
+| --- | --- | --- |
+| per test | `PYTEST_ADDOPTS=--timeout=... --timeout-method=thread` | 15 min, dumps every thread's stack |
+| per test file | `run_test.py` subprocess timeout (`THRESHOLD * 3`), armed by the seeded times | 30 min, exit 124, names the test in flight |
+| per shard | in-step watchdog (`RUN_TEST_TIMEOUT_SEC`) | 195 min, kills `python.exe` so the step fails cleanly |
+
+Because the per-file bound depends on the stats being complete,
+`seed_test_stats.py` backfills an entry for every `test_*.py` in the checkout
+that our data has never measured, using the median of the times we do have. The
+value only has to be non-`None` to arm the timeout; the median keeps the guess
+neutral for packing. The step prints how many it invented — `backfilled N
+unmeasured file(s)` — and a steadily climbing `N` is the cue to regenerate.
+`--no-backfill` restores the old, unbounded behaviour.
+
 ### Refreshing the stats
 
-The data is a snapshot and drifts as the upstream suite changes; new files simply
-have no time and get round-robined, so it degrades gradually rather than breaking.
-To regenerate from a completed run:
+The data is a snapshot and drifts as the upstream suite changes. Drift now costs
+accuracy rather than safety: an unmeasured file is backfilled, so it is packed
+from a guess but still bounded. To regenerate from a completed run:
 
 1. Download each shard's log for one `(config, arch)` cell — either
    `gh api repos/NVIDIA/pytorch-windows-ci/actions/jobs/<job-id>/logs`, or the
@@ -262,8 +306,8 @@ the generator can only scale a partially-observed file back up to an estimate.
 Each test job spawns `scripts/runner-diagnostics/monitor.ps1` (resolved by
 `start-runner-diagnostics` from `$GITHUB_ACTION_PATH`) in the background while
 `.ci/pytorch/win-test.sh` runs in the foreground. It writes one artifact per
-cell, `runner-diagnostics-<env>-<py>-<cu>-<run_id>-<attempt>`, 14-day retention,
-containing:
+shard, `runner-diagnostics-<env>-<py>-<cu>-shard<N>-<run_id>-<attempt>`, 14-day
+retention, containing:
 
 ```
 spec-snapshot.json   host / CPU / RAM / disk / driver / GPU / Python / nvcc
@@ -273,6 +317,11 @@ monitor.log          start / stop bookends + sample count
 ```
 
 Pipe the JSONL files through `jq` / `pandas` to plot pressure around a failure.
+
+The test-job upload is deliberately on even though the build job's is off. When a
+shard stalls, these samples are what separate "one test deadlocked on a healthy
+box" from "the box was thrashing" — and the two need different fixes. Diagnosing
+the seven lost shards above had to proceed without them.
 
 ## RFC-0050 mapping
 

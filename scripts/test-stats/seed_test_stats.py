@@ -25,6 +25,33 @@ Expected JSON structure (identical to test-infra's generated stats):
 ``["default"][test_config]`` and finally ``["default"]["default"]``. The
 ``default/default`` entry is therefore required - it is the only key guaranteed
 to be hit regardless of ``JOB_NAME`` / ``BUILD_ENVIRONMENT`` / ``TEST_CONFIG``.
+
+Note [A missing time also removes the timeout]
+    These files do more than balance shards. ``run_test.py`` arms the timeout on
+    the subprocess it runs each test file in only when it knows how long that
+    file should take::
+
+        timeout = (... THRESHOLD * timeout_multiplier
+                   if should_retry
+                   and isinstance(test_module, ShardedTest)
+                   and test_module.time is not None
+                   else ... None)
+
+    ``test_module.time`` comes from these files (via
+    ``test_selections.get_duration``, which returns ``None`` for a file it has
+    never seen). So a file absent from ``test-times.json`` runs with
+    ``timeout=None`` - unbounded. One deadlocked CUDA test then hangs its file
+    forever, the parent's ``pool.join()`` waits on it, the orphaned process tree
+    holds the step's stdout pipe open, and the shard burns to the job cap
+    producing no failure and no stack. Seven shards were lost that way in four
+    runs before this was understood.
+
+    Because we track pytorch nightly, upstream keeps adding test files that our
+    measured stats have never seen - 11 of the 654 files in one run - and every
+    one of them was unbounded. :func:`backfill_missing_times` closes that by
+    giving each discovered file an entry, so ``time`` is never ``None`` and the
+    timeout is always armed. The value only has to be non-``None`` to arm it;
+    the median of what we did measure keeps the guess neutral for sharding.
 """
 
 from __future__ import annotations
@@ -33,6 +60,7 @@ import argparse
 import ast
 import json
 import shutil
+import statistics
 import sys
 from pathlib import Path
 from typing import Any
@@ -43,6 +71,10 @@ _FALLBACK_TEST_TIMES = "test-times.json"
 _FALLBACK_TEST_CLASS_TIMES = "test-class-times.json"
 
 _DEFAULT_DATA_DIR = Path(__file__).resolve().parent / "data"
+
+# pytorch's tools/testing/test_selections.THRESHOLD. Only used as a last-resort
+# backfill value when we have no measured times to take a median of.
+_THRESHOLD_SECONDS = 600
 
 
 class SeedError(Exception):
@@ -167,11 +199,60 @@ def validate_stats(data: dict[str, Any], source: Path) -> None:
                 )
 
 
+def discover_test_files(pytorch_root: Path) -> set[str]:
+    """Return the test-file keys pytorch's sharder uses, e.g. ``inductor/test_aoti_pdl``.
+
+    Mirrors ``tools/testing/discover_tests.py``: every ``test_*.py`` under
+    ``test/``, keyed by its path relative to ``test/`` with the suffix dropped
+    and separators normalised to ``/``.
+
+    Deliberately over-inclusive. run_test.py selects a subset of these, and an
+    entry for a file that is never selected costs nothing - it is only read by
+    lookups keyed on the files actually being run. Missing an entry, on the
+    other hand, silently disarms that file's timeout (see Note [A missing time
+    also removes the timeout]), so erring wide is the safe direction.
+    """
+    test_dir = pytorch_root / "test"
+    if not test_dir.is_dir():
+        return set()
+    return {
+        path.relative_to(test_dir).with_suffix("").as_posix()
+        for path in test_dir.rglob("test_*.py")
+        if path.is_file()
+    }
+
+
+def backfill_missing_times(
+    payload: dict[str, Any],
+    discovered: set[str],
+    *,
+    default_time: float | None = None,
+) -> tuple[int, float]:
+    """Give every discovered file an entry in ``payload``. Returns ``(added, value)``.
+
+    ``payload`` is the ``default/default`` mapping and is mutated in place.
+    ``default_time`` overrides the value used; otherwise it is the median of the
+    times we actually measured, which keeps a guessed file from skewing shard
+    packing in either direction. Falls back to pytorch's own 600s sharding
+    threshold when there is nothing measured to take a median of.
+    """
+    measured = [v for v in payload.values() if isinstance(v, (int, float)) and v > 0]
+    if default_time is None:
+        default_time = statistics.median(measured) if measured else float(_THRESHOLD_SECONDS)
+
+    missing = discovered - set(payload)
+    for name in missing:
+        payload[name] = default_time
+    return len(missing), default_time
+
+
 def seed(
     pytorch_root: Path,
     data_dir: Path,
     *,
     quiet: bool = False,
+    default_time: float | None = None,
+    backfill: bool = True,
 ) -> tuple[Path, Path]:
     """Copy our stats into the pytorch checkout. Returns the two written paths."""
     if not pytorch_root.is_dir():
@@ -185,6 +266,8 @@ def seed(
     dest_dir = pytorch_root / folder
     dest_dir.mkdir(parents=True, exist_ok=True)
 
+    discovered = discover_test_files(pytorch_root) if backfill else set()
+
     written: list[Path] = []
     for src_name, dest_name in (
         (_FALLBACK_TEST_TIMES, times_name),
@@ -194,15 +277,38 @@ def seed(
         data = load_stats(src)
         validate_stats(data, src)
         dest = dest_dir / dest_name
-        shutil.copyfile(src, dest)
+
+        # Only the file times gate the timeout; class times are consulted only
+        # for partial-file runs and never decide whether `time` is None.
+        added, value = 0, 0.0
+        if src_name == _FALLBACK_TEST_TIMES and discovered:
+            added, value = backfill_missing_times(
+                data["default"]["default"], discovered, default_time=default_time
+            )
+            dest.write_text(json.dumps(data, indent=2, sort_keys=True), encoding="utf-8")
+        else:
+            shutil.copyfile(src, dest)
+
         written.append(dest)
         if not quiet:
             jobs = sorted(data.keys())
             n_default = len(data.get("default", {}).get("default", {}))
+            note = (
+                f", backfilled {added} unmeasured file(s) at {value:.1f}s"
+                if added
+                else ""
+            )
             print(
                 f"seeded {dest} from {src} "
-                f"(jobs={jobs}, default/default entries={n_default})"
+                f"(jobs={jobs}, default/default entries={n_default}{note})"
             )
+    if backfill and not discovered and not quiet:
+        print(
+            "warning: no test files discovered under <pytorch>/test; every file "
+            "pytorch adds after our stats were generated will run without a "
+            "per-file timeout.",
+            file=sys.stderr,
+        )
     return written[0], written[1]
 
 
@@ -227,6 +333,20 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         action="store_true",
         help="Suppress per-file summary output.",
     )
+    parser.add_argument(
+        "--default-time",
+        type=float,
+        default=None,
+        help="Seconds to record for a test file we have never measured "
+        "(default: the median of the measured times). Any value arms the "
+        "per-file timeout; this only tunes the sharding guess.",
+    )
+    parser.add_argument(
+        "--no-backfill",
+        action="store_true",
+        help="Do not invent entries for unmeasured test files. Restores the "
+        "old behaviour, in which such files run with no per-file timeout.",
+    )
     return parser.parse_args(argv)
 
 
@@ -234,7 +354,13 @@ def main(argv: list[str] | None = None) -> int:
     """Run the seeding CLI; return 0 on success or 1 on a ``SeedError``."""
     args = parse_args(argv)
     try:
-        seed(args.pytorch_root, args.data_dir, quiet=args.quiet)
+        seed(
+            args.pytorch_root,
+            args.data_dir,
+            quiet=args.quiet,
+            default_time=args.default_time,
+            backfill=not args.no_backfill,
+        )
     except SeedError as exc:
         print(f"::error::seed_test_stats: {exc}", file=sys.stderr)
         return 1

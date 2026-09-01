@@ -201,7 +201,7 @@ jobs:
       # that the watchdog always wins the race against the job cap. 195min.
       RUN_TEST_TIMEOUT_SEC: "11700"
       # Per-test cap handed to pytest-timeout, sized from the JUnit reports of
-      # run 32095352519: across 278,992 test cases the slowest single test was
+      # a real run : across 278,992 test cases the slowest single test was
       # test_multiprocessing::test_fs_sharing at 7.8min, only two exceeded 5min,
       # none reached 10min, and p99.99 was 68s. 15min is ~2x the observed worst
       # case - enough headroom for a slower runner or a loaded machine, while
@@ -533,6 +533,13 @@ jobs:
       # run_test.py shards deterministically from data we control instead of
       # downloading test-infra stats (or falling back to round-robin). All 5
       # shards read the same committed JSON, so the sharding is consistent.
+      #
+      # This also decides whether a hung test file can ever be killed: a file
+      # with no recorded time gets no subprocess timeout at all, which is how
+      # seven shards were lost. The seeding script backfills a time for every
+      # test file in the checkout precisely so none is left unbounded, and it
+      # prints how many it had to invent - a number that climbing steadily is
+      # the signal to regenerate the committed stats (docs/ci-details.md).
       - name: Seed test-time stats (deterministic sharding)
         shell: bash
         run: |
@@ -594,14 +601,25 @@ jobs:
         # is needed (and would not work: setuptools' realpath() canonicalises
         # aliases back to the long physical path).
         #
-        # Backstop watchdog. Four shards were lost to the job cap in a single
-        # run, and in every case run_test.py had already finished its last
-        # test file and then sat silent for 100-120 minutes: two test files
-        # were dispatched to its multiprocessing pool, never returned, and
-        # the parent waited on them forever. PYTEST_ADDOPTS above should now
-        # break that class of hang from the inside; this catches whatever it
-        # cannot reach (a wedged pool, a driver-level GPU hang, anything that
-        # never gets far enough to be a "test" at all).
+        # Backstop watchdog. Seven shards across four runs were lost to the job
+        # cap, every one the same way: a single CUDA test deadlocked
+        # (TestMemPool::test_graph_capture_pre_capture_stream_use in test_cuda,
+        # _foreach_minimum and max_unpool1d in test_meta), its file never
+        # returned to run_test.py's pool, the parent blocked in pool.join(), and
+        # the orphaned process tree held this step's stdout pipe open so the
+        # step could not even end. GitHub cancelled 70-120 minutes later with no
+        # failure recorded and no stack: the parent sits in Process.join() ->
+        # WaitForSingleObject(INFINITE), which on Windows ignores Ctrl-C, so
+        # only the idle pool workers ever printed a traceback.
+        #
+        # Nothing bounded any of it, because run_test.py arms the timeout on the
+        # subprocess it runs each file in only when it knows that file's
+        # expected duration (`test_module.time is not None`) - and the seeded
+        # stats were empty, so it knew none of them. Seeding real test times
+        # (see "Seed test-time stats") re-arms that 30min per-file bound, and
+        # PYTEST_ADDOPTS above adds a tighter 15min per-test bound with thread
+        # stacks. This watchdog remains the last resort for a hang that reaches
+        # neither: one before pytest starts, or in CUDA teardown after it ends.
         #
         # Killing python.exe rather than just the win-test.sh child is
         # deliberate: the grandchildren hold the write end of the pipe into
@@ -677,10 +695,14 @@ jobs:
             --title "Failed tests - ${{ inputs.build-environment }} - ${{ inputs.python-label }}/${{ inputs.cuda-label }} - ${{ inputs.arch-name }} - shard ${{ matrix.shard }}/5" \
             >> "$GITHUB_STEP_SUMMARY"
 
-      # DISABLED: GitHub Actions artifact upload. Re-enable by restoring
-      # the original `if: always()` condition below.
+      # Enabled deliberately, despite the build job's copy being disabled.
+      # Diagnosing the seven lost shards meant reconstructing host state from
+      # test logs alone, because these samples - ~12KB of memory, CPU and GPU
+      # timeseries per shard - were the one artifact the test jobs never kept.
+      # They are what distinguishes "one test deadlocked" from "the box was
+      # thrashing", and the answer changes the fix.
       - name: Upload runner diagnostics
-        if: false
+        if: always() && steps.diag.outputs.output-dir != ''
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: runner-diagnostics-${{ inputs.build-environment }}-${{ inputs.python-label }}-${{ inputs.cuda-label }}-shard${{ matrix.shard }}-${{ github.run_id }}-${{ github.run_attempt }}

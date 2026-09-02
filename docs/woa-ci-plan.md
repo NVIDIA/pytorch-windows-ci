@@ -132,7 +132,11 @@ Composite actions (persistent-runner hygiene + toolchain presence checks):
 
 Reused **as-is**: `scripts/test-summary/parse_failures.py` (+ cross-shard
 aggregate — per-cell + overall), `start/stop-runner-diagnostics`,
-`scripts/test-stats/seed_test_stats.py` (if applicable to arm64).
+`scripts/test-stats/seed_test_stats.py` (seeded before the test step so
+`run_test.py` shards by cost instead of round robin; the committed times are
+x86-derived, so arm64 shards from an approximate but correctly-ordered cost
+model — regenerate from arm64 shard logs with `gen_test_stats.py` when
+available).
 
 **Dropped from the source CI:** the toolkit auto-update (decision: no
 per-pipeline CTK update), UNC publish, `report_triage` (summary only).

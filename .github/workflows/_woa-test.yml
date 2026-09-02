@@ -291,6 +291,23 @@ jobs:
             if ($LASTEXITCODE -ne 0) { throw "import $ext smoke test failed with exit $LASTEXITCODE" }
           }
 
+      # Seed our own test-time stats into pytorch's .additional_ci_files so
+      # run_test.py shards by cost instead of falling back to round robin
+      # ("Failed to find test times file ... Using round robin sharding").
+      # Round robin ignores cost, so one shard collects the multi-hour files
+      # and sets the whole cell's critical path. All shards read the same
+      # committed JSON, so the split is consistent across them.
+      - name: Seed test-time stats (deterministic sharding)
+        shell: powershell
+        env:
+          VENV_ACTIVATE: ${{ steps.venv.outputs.venv-activate }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          & $env:VENV_ACTIVATE
+          python "$env:GITHUB_WORKSPACE\oot\scripts\test-stats\seed_test_stats.py" `
+            --pytorch-root $env:PT_ROOT
+          if ($LASTEXITCODE -ne 0) { throw "seed_test_stats.py failed with exit $LASTEXITCODE" }
+
       - name: Start runner diagnostics
         id: diag
         uses: ./oot/.github/actions/start-runner-diagnostics

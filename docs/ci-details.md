@@ -200,6 +200,20 @@ off the pytorch-internal infra (no AWS, no `filter-test-configs`, no
 | job  | `BUILD_ENVIRONMENT`, `PYTHON_VERSION`, `CUDA_VERSION`, `TORCH_CUDA_ARCH_LIST` | matrix cell |
 | job  | `USE_CUDA=1`, `INSTALL_WINDOWS_SDK=0`, `CONTINUE_THROUGH_ERROR=1`, `PYTORCH_TEST_WITH_SLOW=0`, `CI=1` | static |
 | job  | `VC_PRODUCT=BuildTools`, `VC_YEAR=2022`, `VS_VERSION=17.4.1`, `VC_VERSION=""` | MSVC tooling info |
+| job  | `PIP_RETRIES=8`, `PIP_DEFAULT_TIMEOUT=60` | ours — pip resilience for the test-harness install |
+| job  | `PER_TEST_TIMEOUT_SEC=900`, `RUN_TEST_TIMEOUT_SEC=11700` | ours — the two inner bounds in [A missing time also removes the timeout](#a-missing-time-also-removes-the-timeout) |
+| job  | `AWS_EC2_METADATA_DISABLED=true` | ours — see below |
+
+`AWS_EC2_METADATA_DISABLED` is there because `run_test.py` tries to upload each
+batch of test reports to pytorch's S3 bucket. There are no credentials on these
+runners, so the upload cannot succeed and does not need to — nothing reads it.
+But `boto3`, finding no credentials, next asks the EC2 instance metadata
+service for them, and on a host that is not an EC2 instance there is nothing
+listening on `169.254.169.254` to refuse the connection. It waits for the
+connect to time out instead, once per batch. Setting this makes `boto3` skip
+that probe and give up at once. The test step also filters the resulting
+`Failed to parse and upload json test reports: Unable to locate credentials`
+line out of the log, since the upload is expected to fail.
 | step | `SHARD_NUMBER` | `_rtx-test.yml`'s internal `matrix.shard` |
 | step | `NUM_TEST_SHARDS` | static (`"5"`, matches the shard list length) |
 | step | `TEST_CONFIG` | `inputs.test-config` (default `"default"`) |
@@ -230,8 +244,8 @@ when a file's time is known; for an unknown file it falls back to round-robin
 (`_get_min_sharded_job` in `tools/testing/test_selections.py`), which ignores
 cost entirely. It also splits any file over a 10-minute `THRESHOLD` into
 `ceil(duration / 600)` pytest shards spread across jobs — so with times,
-`test_meta` becomes 13 pieces of ~9.4 min instead of one atomic 2-hour file that
-pins whichever shard draws it.
+`test_meta` becomes 15 pieces of ~9.5 min instead of one atomic 2.4-hour file
+that pins whichever shard draws it.
 
 ### A missing time also removes the timeout
 
@@ -273,9 +287,20 @@ Because the per-file bound depends on the stats being complete,
 `seed_test_stats.py` backfills an entry for every `test_*.py` in the checkout
 that our data has never measured, using the median of the times we do have. The
 value only has to be non-`None` to arm the timeout; the median keeps the guess
-neutral for packing. The step prints how many it invented — `backfilled N
-unmeasured file(s)` — and a steadily climbing `N` is the cue to regenerate.
-`--no-backfill` restores the old, unbounded behaviour.
+neutral for packing. `--no-backfill` restores the old, unbounded behaviour.
+
+The step states the result on every run, so the invariant is checkable from the
+log rather than inferred:
+
+```
+timeout coverage: 1271 test file(s) in the checkout, 633 backfilled at 15.6s,
+0 left without a time
+```
+
+The last number is the one that matters and should always be `0`. The middle
+one counts the whole `test/` tree, most of which this CI never selects, so it
+is a poor drift signal — for that, compare the files a run actually executed
+against the committed data.
 
 ### Refreshing the stats
 

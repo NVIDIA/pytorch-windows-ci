@@ -184,7 +184,47 @@ jobs:
           python-label: ${{ inputs.python-label }}
           venv-path: ${{ env.WOA_VENV_DIR }}\${{ inputs.python-label }}
 
+      # Retried in three attempts. The action's own five retries all reuse a
+      # single blob-storage redirect URL inside one attempt, so when that URL
+      # goes bad mid-transfer they fail together and take the shard with them
+      # before it runs a test (seen on the rtx path, same artifact shape).
+      # Only a fresh attempt asks for a new redirect.
       - name: Download wheels artifact
+        id: wheel_1
+        continue-on-error: true
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: ${{ inputs.wheel-artifact }}
+          path: artifact
+
+      # Clear the half-extracted tree first: the next step reads
+      # `artifact/built_pytorch_sha.txt`, and a truncated wheel would
+      # otherwise resurface later as an install or import error.
+      - name: Wait before wheels download retry
+        if: steps.wheel_1.outcome == 'failure'
+        shell: bash
+        run: |
+          rm -rf artifact
+          sleep 60
+
+      - name: Download wheels artifact (retry 2)
+        id: wheel_2
+        if: steps.wheel_1.outcome == 'failure'
+        continue-on-error: true
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: ${{ inputs.wheel-artifact }}
+          path: artifact
+
+      - name: Wait before final wheels download retry
+        if: steps.wheel_1.outcome == 'failure' && steps.wheel_2.outcome == 'failure'
+        shell: bash
+        run: |
+          rm -rf artifact
+          sleep 120
+
+      - name: Download wheels artifact (retry 3)
+        if: steps.wheel_1.outcome == 'failure' && steps.wheel_2.outcome == 'failure'
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: ${{ inputs.wheel-artifact }}

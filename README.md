@@ -16,8 +16,7 @@ This repository hosts GitHub Actions workflows that build and test PyTorch on
 NVIDIA's Windows runners. It implements the downstream half of
 [RFC-0050: Cross-Repository CI Relay for PyTorch Out-of-Tree Backends](https://github.com/pytorch/rfcs/blob/master/RFC-0050-Cross-Repository-CI-Relay-for-PyTorch-Out-of-Tree-Backends.md).
 
-Upstream covers a single configuration (Python 3.12, CUDA 12.8); this repo
-deliberately expands the matrix to catch regressions across multiple Python and
+This repo expands the support matrix to catch regressions across multiple Python and
 CUDA toolkit combinations before they show up upstream. PyTorch's in-tree
 `.ci/pytorch/*.sh` scripts perform the builds and tests; this repository
 provides workflow wiring, runner selection, diagnostics, and cross-repository

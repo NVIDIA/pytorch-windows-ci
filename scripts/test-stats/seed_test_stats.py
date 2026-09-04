@@ -26,32 +26,59 @@ Expected JSON structure (identical to test-infra's generated stats):
 ``default/default`` entry is therefore required - it is the only key guaranteed
 to be hit regardless of ``JOB_NAME`` / ``BUILD_ENVIRONMENT`` / ``TEST_CONFIG``.
 
-Note [A missing time also removes the timeout]
-    These files do more than balance shards. ``run_test.py`` arms the timeout on
-    the subprocess it runs each test file in only when it knows how long that
-    file should take::
+Note [A missing time also loses the cost-based placement]
+    A file with no recorded time is not merely costed badly - it is taken out of
+    the packing algorithm altogether. ``calculate_shards`` assigns each piece to
+    the shard with the least accumulated time, but only when it knows the cost::
 
-        timeout = (... THRESHOLD * timeout_multiplier
-                   if should_retry
-                   and isinstance(test_module, ShardedTest)
-                   and test_module.time is not None
-                   else ... None)
+        def _get_min_sharded_job(sharded_jobs, test):
+            if test.time is None:
+                nonlocal round_robin_index
+                job = sharded_jobs[round_robin_index % len(sharded_jobs)]
+                round_robin_index += 1
+                return job
+            return min(sharded_jobs, key=lambda j: j.get_total_time())
 
-    ``test_module.time`` comes from these files (via
-    ``test_selections.get_duration``, which returns ``None`` for a file it has
-    never seen). So a file absent from ``test-times.json`` runs with
-    ``timeout=None`` - unbounded. One deadlocked CUDA test then hangs its file
-    forever, the parent's ``pool.join()`` waits on it, the orphaned process tree
-    holds the step's stdout pipe open, and the shard burns to the job cap
-    producing no failure and no stack. Seven shards were lost that way in four
-    runs before this was understood.
+    ``test.time`` comes from these files (via ``test_selections.get_duration``,
+    which returns ``None`` for a file it has never seen), so an absent file is
+    handed out by index regardless of how long it takes. It also never gets
+    pytest-sharded, since that split is driven by the same duration - so a big
+    unknown file lands whole on whichever shard the counter happens to point at.
 
-    Because we track pytorch nightly, upstream keeps adding test files that our
-    measured stats have never seen - 11 of the 654 files in one run - and every
-    one of them was unbounded. :func:`backfill_missing_times` closes that by
-    giving each discovered file an entry, so ``time`` is never ``None`` and the
-    timeout is always armed. The value only has to be non-``None`` to arm it;
-    the median of what we did measure keeps the guess neutral for sharding.
+    Because we track pytorch nightly, upstream keeps adding test files our
+    measured stats have never seen - 11 of the 654 files in one run.
+    :func:`backfill_missing_times` gives each discovered file an entry so none
+    of them falls into that path. The median of what we did measure keeps the
+    guess neutral: it neither drags a new file to the front of the packing order
+    nor hides it at the back.
+
+Note [Do not rely on the per-file timeout on Windows]
+    A recorded time also arms ``run_test.py``'s 30min timeout on the subprocess
+    it runs each file in (``THRESHOLD * timeout_multiplier`` when
+    ``test_module.time is not None``), and an earlier version of this file
+    claimed that as the reason to backfill. It is not, because on Windows that
+    timeout cannot kill anything - an upstream defect in pytorch, not a
+    misconfiguration on our side, and not one an environment variable can fix.
+
+    When it expires, ``torch.testing._internal.common_utils``'s
+    ``wait_for_process`` calls ``p.send_signal(signal.SIGINT)`` - annotated
+    upstream as "send SIGINT to give pytest a chance to make xml", which holds
+    on POSIX; the function has no platform branch at all.
+    ``Popen.send_signal`` on Windows accepts only ``SIGTERM`` /
+    ``CTRL_C_EVENT`` / ``CTRL_BREAK_EVENT``, so ``SIGINT`` (2) raises
+    ``ValueError``; that escapes before the ``p.kill()`` below it, and the
+    handler's ``finally: p.wait()`` then blocks forever on a child that is
+    still running. The timeout therefore converts a hung child into a
+    permanently blocked parent. Corroborated by absence: ``retry_shell``'s
+    "Command took >Nmin, returning 124" appears in none of the ~9800 shard logs
+    collected so far. It is armed only for the serial pytest invocation anyway,
+    because ``should_retry`` is false once ``-n`` is in the command.
+
+    Seeding does not make this worse - unseeded, ``timeout=None`` produces the
+    same unbounded wait - but the bounds that actually hold a hung shard are
+    pytest-timeout (``PYTEST_ADDOPTS``, whose timer thread runs inside the child
+    and hard-exits it, needing no signal) and the workflow's own taskkill
+    watchdog. See the watchdog comment in ``.github/workflows/_rtx-test.yml``.
 """
 
 from __future__ import annotations
@@ -209,8 +236,9 @@ def discover_test_files(pytorch_root: Path) -> set[str]:
     Deliberately over-inclusive. run_test.py selects a subset of these, and an
     entry for a file that is never selected costs nothing - it is only read by
     lookups keyed on the files actually being run. Missing an entry, on the
-    other hand, silently disarms that file's timeout (see Note [A missing time
-    also removes the timeout]), so erring wide is the safe direction.
+    other hand, drops that file out of cost-based packing and onto the
+    round-robin counter (see Note [A missing time also loses the cost-based
+    placement]), so erring wide is the safe direction.
     """
     test_dir = pytorch_root / "test"
     if not test_dir.is_dir():
@@ -298,23 +326,23 @@ def seed(
                 f"(jobs={jobs}, default/default entries={n_default})"
             )
             # Stated unconditionally, and as an explicit count of what is left
-            # unbounded, so a healthy run carries positive proof rather than
-            # the absence of a warning. On a run that never hangs this line is
-            # the only evidence the per-file timeout is armed at all: nothing
-            # logs an armed timeout, only one that fires ("Command took >Nmin").
+            # without a time, so a healthy run carries positive proof rather
+            # than the absence of a warning. Nothing downstream logs the
+            # sharding decision, so this line is the only evidence that every
+            # file was placed on cost rather than by the round-robin counter.
             if src_name == _FALLBACK_TEST_TIMES and backfill:
-                unbounded = len(discovered - set(data["default"]["default"]))
+                uncosted = len(discovered - set(data["default"]["default"]))
                 at = f" at {value:.1f}s" if added else ""
                 print(
-                    f"  timeout coverage: {len(discovered)} test file(s) in the "
+                    f"  sharding coverage: {len(discovered)} test file(s) in the "
                     f"checkout, {added} backfilled{at}, "
-                    f"{unbounded} left without a time"
+                    f"{uncosted} left without a time"
                 )
     if backfill and not discovered and not quiet:
         print(
             "warning: no test files discovered under <pytorch>/test; every file "
-            "pytorch adds after our stats were generated will run without a "
-            "per-file timeout.",
+            "pytorch adds after our stats were generated will be sharded by "
+            "round-robin instead of by cost.",
             file=sys.stderr,
         )
     return written[0], written[1]
@@ -346,14 +374,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         type=float,
         default=None,
         help="Seconds to record for a test file we have never measured "
-        "(default: the median of the measured times). Any value arms the "
-        "per-file timeout; this only tunes the sharding guess.",
+        "(default: the median of the measured times). Any value keeps the file "
+        "in cost-based packing; this only tunes how good the guess is.",
     )
     parser.add_argument(
         "--no-backfill",
         action="store_true",
         help="Do not invent entries for unmeasured test files. Restores the "
-        "old behaviour, in which such files run with no per-file timeout.",
+        "old behaviour, in which such files are sharded by round-robin.",
     )
     return parser.parse_args(argv)
 

@@ -285,10 +285,10 @@ def test_main_failure_returns_one(tmp_path, valid_times, valid_class_times):
 # --------------------------------------------------------------------------- #
 # discover_test_files / backfill_missing_times
 #
-# A file with no entry gets test_module.time == None, which is what disarms
-# run_test.py's per-file timeout - see Note [A missing time also removes the
-# timeout]. These cover the guarantee that no discovered file is left without
-# one.
+# A file with no entry gets test.time == None, which drops it out of
+# cost-based packing and onto the round-robin counter - see Note [A missing
+# time also loses the cost-based placement]. These cover the guarantee that no
+# discovered file is left without a time.
 # --------------------------------------------------------------------------- #
 def test_discover_finds_nested_test_files(tmp_path):
     root = _make_pytorch_root(tmp_path)
@@ -425,9 +425,9 @@ def test_main_accepts_backfill_flags(tmp_path, valid_times, valid_class_times):
 # --------------------------------------------------------------------------- #
 # Observability
 #
-# Nothing logs an *armed* per-file timeout - only one that fires ("Command took
-# >Nmin"). So on a run that never hangs, this line is the only positive evidence
-# the bound is in place, which is why it is printed unconditionally.
+# Nothing downstream logs the sharding decision, so this line is the only
+# positive evidence that every file was placed on cost rather than by the
+# round-robin counter, which is why it is printed unconditionally.
 # --------------------------------------------------------------------------- #
 def test_coverage_line_printed_even_when_nothing_backfilled(
     tmp_path, capsys, valid_times, valid_class_times
@@ -439,7 +439,7 @@ def test_coverage_line_printed_even_when_nothing_backfilled(
     seed_mod.seed(root, data_dir)
 
     out = capsys.readouterr().out
-    assert "timeout coverage: 2 test file(s) in the checkout" in out
+    assert "sharding coverage: 2 test file(s) in the checkout" in out
     assert "0 backfilled" in out
     assert "0 left without a time" in out
 
@@ -467,7 +467,7 @@ def test_no_coverage_line_when_backfill_disabled(
 
     seed_mod.seed(root, data_dir, backfill=False)
 
-    assert "timeout coverage" not in capsys.readouterr().out
+    assert "sharding coverage" not in capsys.readouterr().out
 
 
 def test_repo_shipped_data_is_valid():

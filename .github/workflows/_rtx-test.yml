@@ -213,11 +213,20 @@ jobs:
       # plainly exists, and the whole requirements resolve is abandoned.
       PIP_RETRIES: "8"
       PIP_DEFAULT_TIMEOUT: "60"
-      # Wall-clock cap for the whole win-test.sh run, enforced in-step. Set
-      # comfortably above the long-pole shard (shard 1 has been observed at
-      # ~168min of run_test time) but far enough under `timeout-minutes`
-      # that the watchdog always wins the race against the job cap. 195min.
-      RUN_TEST_TIMEOUT_SEC: "11700"
+      # Wall-clock cap for the whole win-test.sh run, enforced in-step - and,
+      # per the watchdog comment below, the only bound that reliably fires on
+      # Windows for a hang outside a running test. Sized from the 19 measurable
+      # shards of a full run: the slowest guarded step was 112min, and that one
+      # included a 15min per-test timeout plus its retry; the slowest without a
+      # hang was 106min. 165min is 1.47x the worst observed, leaving room for
+      # pytorch's test count to grow and for the unresolved 1.5-1.8x shard
+      # imbalance, while staying far enough under `timeout-minutes` that the
+      # watchdog always wins the race against the job cap.
+      #
+      # Lowered from 195min, which was sized against a "~168min of run_test
+      # time" observation from before the seeding balanced the shards - so it
+      # was costing an extra 45min on every shard it had to kill.
+      RUN_TEST_TIMEOUT_SEC: "9900"
       # Per-test cap handed to pytest-timeout, sized from the JUnit reports of
       # a real run : across 278,992 test cases the slowest single test was
       # test_multiprocessing::test_fs_sharing at 7.8min, only two exceeded 5min,
@@ -596,12 +605,17 @@ jobs:
       # downloading test-infra stats (or falling back to round-robin). All 5
       # shards read the same committed JSON, so the sharding is consistent.
       #
-      # This also decides whether a hung test file can ever be killed: a file
-      # with no recorded time gets no subprocess timeout at all, which is how
-      # seven shards were lost. The seeding script backfills a time for every
-      # test file in the checkout precisely so none is left unbounded, and it
-      # prints how many it had to invent - a number that climbing steadily is
-      # the signal to regenerate the committed stats (docs/ci-details.md).
+      # A file with no recorded time is also placed badly, not just costed
+      # badly: calculate_shards gives up on cost entirely for it and hands it
+      # out by index (`_get_min_sharded_job` round-robins when `test.time is
+      # None`). So the script backfills a time for every test file in the
+      # checkout, and prints how many it had to invent - a number that climbing
+      # steadily is the signal to regenerate the committed stats
+      # (docs/ci-details.md).
+      #
+      # A recorded time is also what arms run_test.py's own 30min per-file
+      # subprocess timeout - but do not count on that bound, because it cannot
+      # kill anything on Windows. See the watchdog comment below.
       - name: Seed test-time stats (deterministic sharding)
         shell: bash
         run: |
@@ -674,14 +688,37 @@ jobs:
         # WaitForSingleObject(INFINITE), which on Windows ignores Ctrl-C, so
         # only the idle pool workers ever printed a traceback.
         #
-        # Nothing bounded any of it, because run_test.py arms the timeout on the
-        # subprocess it runs each file in only when it knows that file's
+        # Nothing bounded any of it. run_test.py does arm a 30min timeout on the
+        # subprocess it runs each file in, but only when it knows that file's
         # expected duration (`test_module.time is not None`) - and the seeded
-        # stats were empty, so it knew none of them. Seeding real test times
-        # (see "Seed test-time stats") re-arms that 30min per-file bound, and
-        # PYTEST_ADDOPTS above adds a tighter 15min per-test bound with thread
-        # stacks. This watchdog remains the last resort for a hang that reaches
-        # neither: one before pytest starts, or in CUDA teardown after it ends.
+        # stats were empty, so it knew none of them.
+        #
+        # Supplying times re-arms that bound, but it is inert on Windows and
+        # must not be relied on. This is an upstream defect in pytorch, not
+        # something we configure: torch.testing._internal.common_utils's
+        # wait_for_process handles its own timeout with
+        # `p.send_signal(signal.SIGINT)` ("send SIGINT to give pytest a chance
+        # to make xml" - sound on POSIX), and the function carries no platform
+        # branch at all. Popen.send_signal on Windows accepts only SIGTERM /
+        # CTRL_C_EVENT / CTRL_BREAK_EVENT, so SIGINT (2) raises ValueError. That
+        # escapes before the `p.kill()` below it, and the handler's
+        # `finally: p.wait()` then waits forever on a child that is still
+        # running - turning a hung child into a permanently blocked parent,
+        # which is the exact symptom above. Nothing we can set fixes it from
+        # outside; it needs a patch upstream (or to the installed torch).
+        # Confirmed by absence: retry_shell's "Command took >Nmin, returning
+        # 124" does not appear in any of the ~9800 shard logs collected so far.
+        # The bound is also armed only for the serial pytest invocation, since
+        # `should_retry` is false once `-n` is in the command.
+        #
+        # Two bounds do work, because neither needs a signal. PYTEST_ADDOPTS
+        # above caps a single test at 15min: its timer thread runs inside the
+        # child, dumps every thread's stack and hard-exits, so run_test.py sees
+        # an ordinary exit code, records the failure and carries on. And this
+        # watchdog, which uses taskkill. pytest-timeout only covers a running
+        # test, so this watchdog is the sole bound for a hang during import or
+        # collection, in CUDA teardown after the last test, or between the
+        # serial and parallel invocations.
         #
         # Killing python.exe rather than just the win-test.sh child is
         # deliberate: the grandchildren hold the write end of the pipe into

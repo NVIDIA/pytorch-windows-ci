@@ -353,7 +353,7 @@ no `get-workflow-job-id`):
 | job  | `USE_CUDA=1`, `INSTALL_WINDOWS_SDK=0`, `CONTINUE_THROUGH_ERROR=1`, `PYTORCH_TEST_WITH_SLOW=0`, `CI=1` | static |
 | job  | `VC_PRODUCT=BuildTools`, `VC_YEAR=2022`, `VS_VERSION=17.4.1`, `VC_VERSION=""` | MSVC tooling info |
 | job  | `PIP_RETRIES=8`, `PIP_DEFAULT_TIMEOUT=60` | pip resilience for the test-harness install |
-| job  | `PER_TEST_TIMEOUT_SEC=900`, `RUN_TEST_TIMEOUT_SEC=9900` | the two bounds that hold a hung shard - see [Where the bounds actually hold](#where-the-bounds-actually-hold) |
+| job  | `PER_TEST_TIMEOUT_SEC=900`, `RUN_TEST_TIMEOUT_SEC=9900` | the two bounds that hold a hung shard - see [Timeout bounds](#timeout-bounds) |
 | job  | `AWS_EC2_METADATA_DISABLED=true` | suppresses a dead S3 telemetry probe - see below |
 | step | `SHARD_NUMBER` | `_rtx-test.yml`'s internal `matrix.shard` |
 | step | `NUM_TEST_SHARDS` | static (`"5"`, matches the shard list length) |
@@ -391,123 +391,59 @@ copies our committed `scripts/test-stats/data/*.json` into that folder under
 exactly those keys. Every shard reads the same committed JSON, so all 5 agree on
 the split without coordinating.
 
-Timings matter more than they look. `calculate_shards` bin-packs by cost only
-when a file's time is known; for an unknown file it falls back to round-robin
+Timings do two things beyond balance. `calculate_shards` bin-packs by cost only
+for a file whose time is known; an unknown file falls back to round-robin
 (`_get_min_sharded_job` in `tools/testing/test_selections.py`), which ignores
-cost entirely. It also splits any file over a 10-minute `THRESHOLD` into
-`ceil(duration / 600)` pytest shards spread across jobs - so with times,
-`test_meta` becomes 15 pieces of ~9.5 min instead of one atomic 2.4-hour file
-that pins whichever shard draws it.
+cost. And any file over the 10-minute `THRESHOLD` is split into
+`ceil(duration / 600)` pytest shards spread across jobs, so `test_meta` runs as
+15 pieces of ~9.5 min rather than one atomic 2.4-hour file.
 
-### Where the bounds actually hold
-
-Balance is not the only thing the timings affect. `run_test.py` runs each test
-file in a subprocess and arms that subprocess's timeout only when it knows how
-long the file should take:
-
-```python
-timeout = (... THRESHOLD * timeout_multiplier
-           if should_retry
-           and isinstance(test_module, ShardedTest)
-           and test_module.time is not None
-           else ... None)
-```
-
-`test_module.time` comes from `test-times.json` via
-`test_selections.get_duration`, which returns `None` for a file it has never
-seen - so an absent file gets `timeout=None`.
-
-**Do not rely on that bound on Windows: it cannot kill anything.** This is an
-upstream defect in pytorch rather than anything we configure - and not one we
-can work around with an environment variable. When the timeout expires,
-`torch.testing._internal.common_utils`'s `wait_for_process` does this:
-
-```python
-except subprocess.TimeoutExpired:
-    p.send_signal(signal.SIGINT)   # ValueError on Windows
-    ...
-    else:
-        p.kill()                   # never reached
-    raise
-finally:
-    p.wait()                       # unbounded, on a live child
-```
-
-`Popen.send_signal` on Windows accepts only `SIGTERM`, `CTRL_C_EVENT` (0) and
-`CTRL_BREAK_EVENT`. `SIGINT` is 2, so it raises `ValueError: Unsupported
-signal: 2`, which escapes before `p.kill()` runs - and the `finally: p.wait()`
-then waits forever on the child that is still going. The timeout converts a
-hung child into a permanently blocked parent, which is the symptom that cost
-this CI seven shards across four runs.
-
-The upstream comment on that line reads *"send SIGINT to give pytest a chance
-to make xml"*, which is correct on POSIX, and the function has no platform
-branch anywhere in it - so the Windows path was simply never the one being
-reasoned about. Corroborated by absence: `retry_shell`'s `Command took >Nmin,
-returning 124` appears in none of the ~9,800 shard logs collected so far. The
-bound is armed only for the serial pytest invocation in any case, since
-`should_retry` is false once `-n` is in the command.
-
-In those seven shards one CUDA test deadlocked -
-`TestMemPool::test_graph_capture_pre_capture_stream_use` in `test_cuda`,
-`_foreach_minimum` and `max_unpool1d` in `test_meta` - its file never returned,
-the parent blocked in `pool.join()`, and the orphaned process tree held the
-test step's stdout pipe open so the step could not end. GitHub cancelled 70-120
-minutes later, recording no failing test and no stack.
-
-So of the three bounds, only two do anything, and the reason is the same for
-both: neither needs to signal another process.
-
-| Bound | Where | Effect |
-| --- | --- | --- |
-| per test | `PYTEST_ADDOPTS=--timeout=... --timeout-method=thread` | 15 min. Works - the timer thread runs *inside* the child, dumps every thread's stack and hard-exits, so `run_test.py` sees a normal exit code and carries on |
-| per test file | `run_test.py` subprocess timeout (`THRESHOLD * 3`) | 30 min nominally. **Inert on Windows** (above), and serial-invocation only |
-| per shard | in-step watchdog (`RUN_TEST_TIMEOUT_SEC`) | 165 min. Works - uses `taskkill`. Fails the whole shard, so it is a genuine last resort |
-
-`pytest-timeout` covers only a test that is running, which leaves the watchdog
-as the sole bound for the rest of a shard's life:
-
-| Window | pytest-timeout | per-file | watchdog |
-| --- | --- | --- | --- |
-| inside a test (setup, call, teardown) | yes | inert | yes |
-| import and collection, before the first test | no | inert | yes |
-| session teardown, interpreter exit, CUDA context destruction | no | inert | yes |
-| between the serial and parallel invocations | n/a | inert | yes |
-
-Both of the middle rows are observed, not hypothetical. In one lost shard
-`test_meta` printed its full session summary (`35160 passed, 27511 skipped,
-1598 xfailed in 5140.09s`) and then never exited; in another, `test_sparse_csr`
-logged `Retrying single test...` and the replacement pytest never reached
-`test session starts`. Both are provably stuck processes rather than truncated
-logs: `run_test.py` renames each file's `*_toprint.log` to `*_<hex>_.log` only
-once the subprocess returns, and both artifacts still carry the `_toprint`
-name.
-
-`RUN_TEST_TIMEOUT_SEC` is 165 min because the slowest guarded step across the 19
-measurable shards of a full run was 112 min - and that one included a 15-minute
-per-test timeout and its retry; the slowest clean shard was 106 min. That is
-1.47x headroom, which absorbs pytorch's growing test count and the unresolved
-1.5-1.8x shard imbalance.
-
-Because a file with no recorded time is dropped out of cost-based packing
-altogether (`_get_min_sharded_job` hands it out by index), `seed_test_stats.py`
-backfills an entry for every `test_*.py` in the checkout that our data has never
-measured, using the median of the times we do have. The median keeps the guess
-neutral: it neither drags a new file to the front of the packing order nor hides
-it at the back. `--no-backfill` restores the old round-robin behaviour.
-
-The step states the result on every run, so the invariant is checkable from the
-log rather than inferred:
+So that no file drops out of cost-based packing, `seed_test_stats.py` backfills
+an entry for every `test_*.py` in the checkout that our data has never measured,
+at the median of the times we do have. `--no-backfill` disables the backfill.
+Each run states the outcome:
 
 ```
 sharding coverage: 1271 test file(s) in the checkout, 633 backfilled at 15.6s,
 0 left without a time
 ```
 
-The last number is the one that matters and should always be `0`. The middle
-one counts the whole `test/` tree, most of which this CI never selects, so it
-is a poor drift signal - for that, compare the files a run actually executed
-against the committed data.
+The last number should always be `0`. The middle one counts the whole `test/`
+tree, most of which this CI never selects, so it is a poor drift signal - for
+that, compare the files a run actually executed against the committed data.
+
+### Timeout bounds
+
+Three bounds apply to a test shard, at descending granularity.
+
+| Bound | Where | Value | On expiry |
+| --- | --- | --- | --- |
+| per test | `PYTEST_ADDOPTS=--timeout=... --timeout-method=thread` | 15 min | fails that test; the shard carries on |
+| per test file | `run_test.py`'s own subprocess timeout (`THRESHOLD * 3`) | 30 min | **nothing - inert on Windows, see below** |
+| per shard | in-step watchdog (`RUN_TEST_TIMEOUT_SEC`) | 165 min | `taskkill`s the test processes and fails the shard |
+
+Do not rely on the per-file bound. It is armed only when `run_test.py` knows the
+file's expected duration and only for the serial pytest invocation, and on
+Windows it cannot kill anything even then: its expiry path calls
+`Popen.send_signal(signal.SIGINT)`, which Windows rejects with `ValueError`
+before reaching the `p.kill()` below it, leaving the handler blocked in
+`finally: p.wait()` on a live child. That turns a timeout into a permanent hang.
+It is an upstream pytorch defect with no environment-variable workaround, so
+treat the bound as absent.
+
+That leaves the phases where no per-test bound applies:
+
+| Window | per test | per file | per shard |
+| --- | --- | --- | --- |
+| inside a test (setup, call, teardown) | yes | inert | yes |
+| import and collection, before the first test | no | inert | yes |
+| session teardown, interpreter exit, CUDA context destruction | no | inert | yes |
+| between the serial and parallel invocations | n/a | inert | yes |
+| in `run_test.py` itself, or a non-Python step | no | no | yes |
+
+`RUN_TEST_TIMEOUT_SEC` is sized from measured runs: the slowest clean shard of a
+full run was 106 min, and the slowest guarded one 112 min, against the 165-min
+bound.
 
 ### Refreshing the stats
 

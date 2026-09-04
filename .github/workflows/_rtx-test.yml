@@ -238,6 +238,20 @@ jobs:
       # tools/woa-build/shared/env/defaults/test-runtime.psd1, so both arches
       # fail a wedged test on the same clock.
       PER_TEST_TIMEOUT_SEC: "900"
+      # Wall-clock cap on a single test-file process, enforced from inside it
+      # by scripts/test-bounds/pythonpath/sitecustomize.py. This is the bound
+      # that covers the phases pytest-timeout cannot (import, collection, and
+      # teardown after the last test) without costing the whole shard the way
+      # RUN_TEST_TIMEOUT_SEC does.
+      #
+      # Sized per *invocation*, not per file: run_test.py runs each file twice
+      # (serial tests, then the rest) and pytest-shards the big ones, so the
+      # figure to clear is the slowest single invocation. Across 10,331
+      # measured invocations that was 26.6min (export/test_sparse; 23.0min for
+      # test_foreach 2/6 on this path). 45min is 1.69x that. Note the whole
+      # file can legitimately far exceed this - test_meta totals ~142min across
+      # 15 pieces - so this must never be compared against a per-file total.
+      PER_PROCESS_TIMEOUT_SEC: "2700"
       # Short physical path the pytorch checkout is relocated to right after
       # checkout. The runner workspace lives at
       #   C:\actions-runner\_work\pytorch-windows-ci\pytorch-windows-ci\pytorch
@@ -657,6 +671,18 @@ jobs:
           # ---- run_test.py record the file as failed and move on instead
           # ---- of blocking its worker pool forever.
           PYTEST_ADDOPTS: "--timeout=${{ env.PER_TEST_TIMEOUT_SEC }} --timeout-method=thread"
+          # ---- per-process hang guard, covering the phases pytest-timeout
+          # ---- cannot see: import, collection, and everything after the last
+          # ---- test while the interpreter and CUDA context tear down. Two of
+          # ---- the shards lost to a hang froze in exactly those phases. This
+          # ---- directory holds nothing but sitecustomize.py, which `site`
+          # ---- imports at interpreter startup; it arms only in processes whose
+          # ---- argv[0] is a test file, so run_test.py itself is never bounded.
+          # ---- See scripts/test-bounds/pythonpath/sitecustomize.py.
+          # PER_PROCESS_TIMEOUT_SEC itself is job-level, so it is already in
+          # this step's environment; only the path needs setting, and it is
+          # scoped to this step so no other step's python sees it.
+          PYTHONPATH: ${{ github.workspace }}/oot/scripts/test-bounds/pythonpath
         # Tee the harness output into the test-reports tree so the summary
         # parser can recover failures that never make it into JUnit XML
         # (hard crashes, collection/import errors, whole-file aborts). The
@@ -711,14 +737,19 @@ jobs:
         # The bound is also armed only for the serial pytest invocation, since
         # `should_retry` is false once `-n` is in the command.
         #
-        # Two bounds do work, because neither needs a signal. PYTEST_ADDOPTS
-        # above caps a single test at 15min: its timer thread runs inside the
-        # child, dumps every thread's stack and hard-exits, so run_test.py sees
-        # an ordinary exit code, records the failure and carries on. And this
-        # watchdog, which uses taskkill. pytest-timeout only covers a running
-        # test, so this watchdog is the sole bound for a hang during import or
-        # collection, in CUDA teardown after the last test, or between the
-        # serial and parallel invocations.
+        # Three bounds do work, because none of them needs a signal.
+        # PYTEST_ADDOPTS above caps a single test at 15min: its timer thread
+        # runs inside the child, dumps every thread's stack and hard-exits, so
+        # run_test.py sees an ordinary exit code, records the failure and
+        # carries on. PER_PROCESS_TIMEOUT_SEC caps the whole test-file process
+        # at 45min from inside it, which is what covers the phases
+        # pytest-timeout cannot see - import, collection, and teardown after
+        # the last test - at the cost of one file rather than the shard. And
+        # this watchdog, which uses taskkill.
+        #
+        # So this watchdog is now the last resort proper: a hang in
+        # run_test.py's own process, or in a non-python step, where nothing
+        # inside a test-file interpreter can help.
         #
         # Killing python.exe rather than just the win-test.sh child is
         # deliberate: the grandchildren hold the write end of the pipe into
@@ -729,6 +760,16 @@ jobs:
         run: |
           set -o pipefail
           mkdir -p test/test-reports
+
+          # sitecustomize.py stays silent when it arms - it is imported by every
+          # python process in the job, so announcing itself there would be
+          # hundreds of lines per shard. State it once here instead, and prove
+          # the file is actually on the path rather than merely configured.
+          if [ -f "${PYTHONPATH}/sitecustomize.py" ]; then
+            echo "per-process bound: ${PER_PROCESS_TIMEOUT_SEC}s, armed from ${PYTHONPATH}/sitecustomize.py"
+          else
+            echo "::warning::per-process bound NOT armed - no sitecustomize.py under '${PYTHONPATH}'. A hang outside a running test will now cost the whole shard."
+          fi
 
           watchdog_marker="${RUNNER_TEMP}/win-test-watchdog-fired"
           rm -f "$watchdog_marker"

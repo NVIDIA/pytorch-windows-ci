@@ -353,12 +353,13 @@ no `get-workflow-job-id`):
 | job  | `USE_CUDA=1`, `INSTALL_WINDOWS_SDK=0`, `CONTINUE_THROUGH_ERROR=1`, `PYTORCH_TEST_WITH_SLOW=0`, `CI=1` | static |
 | job  | `VC_PRODUCT=BuildTools`, `VC_YEAR=2022`, `VS_VERSION=17.4.1`, `VC_VERSION=""` | MSVC tooling info |
 | job  | `PIP_RETRIES=8`, `PIP_DEFAULT_TIMEOUT=60` | pip resilience for the test-harness install |
-| job  | `PER_TEST_TIMEOUT_SEC=900`, `RUN_TEST_TIMEOUT_SEC=9900` | the two bounds that hold a hung shard - see [Timeout bounds](#timeout-bounds) |
+| job  | `PER_TEST_TIMEOUT_SEC=900`, `PER_PROCESS_TIMEOUT_SEC=2700`, `RUN_TEST_TIMEOUT_SEC=9900` | the bounds that hold a hung shard - see [Timeout bounds](#timeout-bounds) |
 | job  | `AWS_EC2_METADATA_DISABLED=true` | suppresses a dead S3 telemetry probe - see below |
 | step | `SHARD_NUMBER` | `_rtx-test.yml`'s internal `matrix.shard` |
 | step | `NUM_TEST_SHARDS` | static (`"5"`, matches the shard list length) |
 | step | `TEST_CONFIG` | `inputs.test-config` (default `"default"`) |
 | step | `PYTORCH_FINAL_PACKAGE_DIR` | `${{ github.workspace }}/artifact` |
+| step | `PYTHONPATH` | `scripts/test-bounds/pythonpath`, so `site` picks up our `sitecustomize.py` |
 | step | `PR_NUMBER`, `SHA1` | `repository_dispatch` payload or PR context |
 | step | `GITHUB_REPOSITORY` / `_WORKFLOW` / `_JOB` / `_RUN_ID` / `_RUN_NUMBER` / `_RUN_ATTEMPT` | `github.*` context |
 
@@ -414,11 +415,12 @@ that, compare the files a run actually executed against the committed data.
 
 ### Timeout bounds
 
-Three bounds apply to a test shard, at descending granularity.
+Four bounds apply to a test shard, at descending granularity.
 
 | Bound | Where | Value | On expiry |
 | --- | --- | --- | --- |
 | per test | `PYTEST_ADDOPTS=--timeout=... --timeout-method=thread` | 15 min | fails that test; the shard carries on |
+| per test-file process | `PER_PROCESS_TIMEOUT_SEC`, armed by `scripts/test-bounds/pythonpath/sitecustomize.py` | 45 min | dumps all thread stacks, kills that file's process tree; the shard carries on |
 | per test file | `run_test.py`'s own subprocess timeout (`THRESHOLD * 3`) | 30 min | **nothing - inert on Windows, see below** |
 | per shard | in-step watchdog (`RUN_TEST_TIMEOUT_SEC`) | 165 min | `taskkill`s the test processes and fails the shard |
 
@@ -431,19 +433,31 @@ before reaching the `p.kill()` below it, leaving the handler blocked in
 It is an upstream pytorch defect with no environment-variable workaround, so
 treat the bound as absent.
 
-That leaves the phases where no per-test bound applies:
+`PYTEST_ADDOPTS` only covers a test that is running, so the per-process bound is
+what covers the rest of a test file's life:
 
-| Window | per test | per file | per shard |
-| --- | --- | --- | --- |
-| inside a test (setup, call, teardown) | yes | inert | yes |
-| import and collection, before the first test | no | inert | yes |
-| session teardown, interpreter exit, CUDA context destruction | no | inert | yes |
-| between the serial and parallel invocations | n/a | inert | yes |
-| in `run_test.py` itself, or a non-Python step | no | no | yes |
+| Window | per test | per process | per file | per shard |
+| --- | --- | --- | --- | --- |
+| inside a test (setup, call, teardown) | yes | yes | inert | yes |
+| import and collection, before the first test | no | yes | inert | yes |
+| session teardown, interpreter exit, CUDA context destruction | no | yes | inert | yes |
+| between the serial and parallel invocations | n/a | yes | inert | yes |
+| in `run_test.py` itself, or a non-Python step | no | no | no | yes |
 
-`RUN_TEST_TIMEOUT_SEC` is sized from measured runs: the slowest clean shard of a
-full run was 106 min, and the slowest guarded one 112 min, against the 165-min
-bound.
+The per-process bound lives in a `sitecustomize.py`, which `site` imports at
+interpreter startup - hence the coverage of import, collection and teardown. It
+is on `PYTHONPATH` in the test step only, and arms only in a process whose
+`argv[0]` is a `test_*.py` file, so `run_test.py` itself is never bounded. Each
+shard logs `per-process bound: <n>s, armed from <path>` once, or a `::warning::`
+if the file is not on the path. Setting `PER_PROCESS_TIMEOUT_SEC` to `0` or
+leaving it unset disables it.
+
+Both bounds are sized from measured runs. `RUN_TEST_TIMEOUT_SEC` is 165 min
+against a slowest clean shard of 106 min and a slowest guarded one of 112 min.
+`PER_PROCESS_TIMEOUT_SEC` is 45 min against a slowest single invocation of
+26.6 min - compare it per *invocation*, not per file, since `run_test.py` runs
+each file twice and pytest-shards the big ones, so a file's total can exceed it
+legitimately (`test_meta` totals ~142 min).
 
 ### Refreshing the stats
 

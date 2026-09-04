@@ -8,96 +8,83 @@ SPDX-License-Identifier: MIT
 Detailed reference for the workflows in this repository. For a high-level
 overview and quick start, see the top-level [README](../README.md).
 
-This repository hosts the GitHub Actions workflows that build and test PyTorch
-on NVIDIA's self-hosted Windows + RTX runner pool. It implements the downstream
-half of [RFC-0050: Cross-Repository CI Relay for PyTorch Out-of-Tree
-Backends](https://github.com/pytorch/rfcs/blob/master/RFC-0050-Cross-Repository-CI-Relay-for-PyTorch-Out-of-Tree-Backends.md)
-and mirrors the in-tree shape of `pytorch/pytorch` PR
+This repository provides NVIDIA PyTorch out-of-tree (OOT) CI on
+self-hosted **Windows + NVIDIA RTX** (x86-64) and **Windows-on-Arm**
+(arm64) runners. The workflows here implement
+the downstream half of [RFC-0050: Cross-Repository CI Relay for PyTorch
+Out-of-Tree Backends](https://github.com/pytorch/rfcs/blob/master/RFC-0050-Cross-Repository-CI-Relay-for-PyTorch-Out-of-Tree-Backends.md)
+and mirror the in-tree shape of `pytorch/pytorch` PR
 [#176678 - \[CI\]\[Windows\] Add NVIDIA RTX workflow](https://github.com/pytorch/pytorch/pull/176678).
+Upstream covers a single configuration (Python 3.12, CUDA 12.8); this
+repository expands the matrix so it can catch regressions
+across multiple Python and CUDA toolkit combinations before they show up
+upstream. Build/test logic itself comes entirely from PyTorch's in-tree
+`.ci/pytorch/*.sh` scripts; this repo holds only the workflow wiring.
 
-Upstream covers a single configuration (Python 3.12, CUDA 12.8); this repo
-deliberately expands the matrix so regressions across multiple Python and CUDA
-toolkit combinations are caught before they show up upstream. The build/test
-logic itself comes entirely from PyTorch's in-tree `.ci/pytorch/*.sh` scripts —
-this repo holds only the workflow wiring.
+Build and test jobs run on self-hosted runners provided by NVIDIA
+infrastructure. The lightweight jobs — lint, prep/ref-resolution, and
+test-summary — run on GitHub-hosted `ubuntu-latest`.
 
-**Every job runs on a self-hosted runner provided by NVIDIA infrastructure.**
-There are no GitHub-hosted (cloud) runs anywhere in this repo.
+## Windows-on-Arm
+
+Alongside the RTX x86_64 flow, `windows-woa-build-test.yml` drives the reusable
+`_woa-build.yml` and `_woa-test.yml` workflows on the `woa-arm64` runner pool.
+See the [WoA operator guide](woa-ci.md) and
+[WoA design and runner contract](woa-ci-plan.md) for the matrix, preinstalled
+toolchain, persistent-runner cleanup, and operational details.
 
 ## Triggering workflows
 
-The two top-level workflows run automatically on a nightly `schedule`:
+There are three top-level workflows. Two of them run automatically on a
+nightly `schedule`; the third is manual-only for now:
 
-- **`windows-rtx-build-test.yml`** — full source build + test (nightly at
-  `5 3 * * *` / 08:35 IST).
-- **`windows-rtx-wheel-test.yml`** — nightly published-wheel smoke test
-  (`0 17 * * *` / 22:30 IST), installing the matching `download.pytorch.org`
-  nightly wheel rather than building from source.
+- **`windows-rtx-build-test.yml`** — full source build + test, nightly at
+  `5 3 * * *` (08:35 IST). Also accepts `workflow_dispatch` for manual runs.
+- **`windows-woa-build-test.yml`** — WoA (arm64) source build + test, nightly
+  at `0 5 * * *` (10:30 IST). Scheduled only; a manual trigger is
+  deliberately not offered.
+- **`windows-rtx-wheel-test.yml`** — published-wheel test. Its nightly cron
+  (`0 17 * * *` / 22:30 IST) is currently commented out, so the workflow runs
+  on `workflow_dispatch` only.
 
-## Runner requirements
+The reusable workflows (`_rtx-build.yml`, `_rtx-test.yml`, `_woa-build.yml`,
+`_woa-test.yml`) are called by the orchestrators and are not run directly.
 
-Runners are **ephemeral, pre-prepped images**. The workflows perform **zero**
-in-job environment setup, so the image must already carry everything the
-PyTorch CI scripts (`.ci/pytorch/win-build.sh`, `.ci/pytorch/win-test.sh`,
-`.ci/pytorch/win-test-helpers/**`) expect:
+## License and notices
 
-- Python (matching the matrix cell, on `PATH` as `python`)
-- CUDA toolkit (matching the matrix cell) and a recent enough GPU driver
-- cuDNN, NCCL (where applicable) bundled with the toolkit
-- Visual Studio Build Tools / MSVC (`cl.exe` reachable through `vcvarsall.bat`)
-- Git for Windows (provides `bash`, `git`, `curl`)
-- ninja, cmake, sccache, magma binaries
-- All Python deps from `pytorch/.ci/docker/requirements-ci.txt` for the matching
-  Python version (numba 0.64.0+, pytest, expecttest, hypothesis, numpy, ...; see
-  `pytorch/pytorch` PR #176678 review thread for the current pin set)
-- `nvidia-smi` on `PATH`
-- Windows PowerShell 5.1 (the in-box `powershell.exe`) is sufficient for the
-  runner-diagnostics composite actions. PowerShell 7+ (`pwsh`) is NOT required —
-  every script in this repo sticks to cmdlets and language features available
-  in 5.1.
-
-Each matrix cell is routed to its image via the runner-label set:
-
-| Job kind | Label set |
-| --- | --- |
-| `build` (source-build wheel producer)           | `[rtx-build, <python-label>, <cuda-label>]` |
-| `test` cells where `matrix.arch.name == sm89`   | `[rtx-40x0-test, <python-label>, <cuda-label>]` |
-| `test` cells where `matrix.arch.name == sm120`  | `[rtx-50x0-test, <python-label>, <cuda-label>]` |
-
-The narrow labels (`rtx-build`, `rtx-40x0-test`, `rtx-50x0-test`, `py3xx`,
-`cu1xx`) are unique to the self-hosted Windows pool, so the GitHub auto-tags
-(`self-hosted`, `Windows`, `X64`) that the runner agent applies are redundant in
-the AND filter and are deliberately left off `runs-on:` everywhere. For example,
-the sm120 test cell for Python 3.13 + CUDA 13.0 needs an image registered as
-`[rtx-50x0-test, py313, cu130]` (plus whatever auto-tags the runner agent adds).
+This repository is released under MIT terms. See [LICENSE](../LICENSE) for
+the project license, [THIRD_PARTY_NOTICES.md](../THIRD_PARTY_NOTICES.md) for
+third-party OSS notices.
 
 ## Workflows
 
 | Workflow | Purpose | Triggers | Compute |
 | --- | --- | --- | --- |
-| `windows-rtx-wheel-test.yml`           | Each test cell checks out `pytorch/pytorch` at `pytorch-ref` (default `nightly`) via `actions/checkout@v7` (which resolves the branch to a concrete commit), records the actual HEAD SHA + commit date into the cell's job summary, then greps `download.pytorch.org/whl/nightly/torch/` for the wheel whose filename carries that exact `devYYYYMMDD` tag together with the matrix `cu<label>` / `cp<pyshort>` tags and `pip install`s the resolved absolute URL before running `.ci/pytorch/win-test.sh`. Fails fast if no matching wheel exists, so the wheel under test always shares its commit date with the pytorch source on disk. No preflight job, no artifact transit. | `schedule` (`0 17 * * *` = 22:30 IST) | `_rtx-test.yml` (sm89 + sm120 in one matrix) |
-| `windows-rtx-build-test.yml`            | Full source build (multi-arch wheel) + test, scheduled nightly. Also carries the parked path for real RFC-0050 PR-time events. | `schedule` (`5 3 * * *` = 08:35 IST) | `prep` -> `_rtx-build.yml` -> `_rtx-test.yml` (sm89 + sm120 in one matrix) |
+| `windows-rtx-wheel-test.yml`           | Each test cell checks out `pytorch/pytorch` at `pytorch-ref` (default `nightly`) via `actions/checkout@v7` (which resolves the branch to a concrete commit), records the actual HEAD SHA + commit date into the cell's job summary, then greps `download.pytorch.org/whl/nightly/torch/` for the wheel whose filename carries that exact `devYYYYMMDD` tag together with the matrix `cu<label>` / `cp<pyshort>` tags and `pip install`s the resolved absolute URL before running `.ci/pytorch/win-test.sh`. Fails fast if no matching wheel exists, so the wheel under test always shares its commit date with the pytorch source on disk. No preflight job, no artifact transit. | `workflow_dispatch`; the nightly cron is currently commented out | `_rtx-test.yml` (sm89 + sm120 in one matrix) |
+| `windows-rtx-build-test.yml`            | Full source build (multi-arch wheel) + test. Manual runs can narrow the matrix via subset filters and target a `pytorch-ref` or `pytorch-pr`. Also carries the parked path for RFC-0050 events. | `schedule` (`5 3 * * *` = 08:35 IST), `workflow_dispatch`, `repository_dispatch:[pytorch-pr-trigger]` (parked behind `dispatch-gate`) | `prep` -> `_rtx-build.yml` -> `_rtx-test.yml` (sm89 + sm120 in one matrix) |
+| `windows-woa-build-test.yml` | Builds and tests the WoA wheel matrix from source on the shared arm64 pool. | `schedule` (`0 5 * * *` = 10:30 IST); no manual trigger | `prep` -> `_woa-build.yml` -> `_woa-test.yml` -> `test-summary` |
 
-Both nightly workflows fan out across `(config)` for builds and
-`(config x arch)` for tests. **Sharding is not a top-level axis on either
-orchestrator** - it lives inside `_rtx-test.yml`'s own `strategy.matrix.shard`,
-so one call to the reusable workflow == one `(config, arch)` test cell, and each
-call internally spawns the 5 shard runners nested underneath it. This matches
-upstream `_win-rtx-test.yml` (PR #176678) where the `test-matrix` JSON drives
+Both RTX workflows fan out across `(config)` for builds and
+`(config x arch)` for tests. **Sharding is not a top-level axis on
+either orchestrator** - it lives inside `_rtx-test.yml`'s own
+`strategy.matrix.shard`, so one call to the reusable workflow ==
+one `(config, arch)` test cell, and each call internally spawns the
+5 shard runners nested underneath it. This matches upstream
+`_win-rtx-test.yml` (PR #176678) where the `test-matrix` JSON drives
 sharding inside the reusable workflow rather than on the caller.
 
-`config` is a paired `{python, cuda}` entry rather than independent `python` and
-`cuda` axes, because the runner pool is allocated per (python, cuda)
-combination - py312/cu130 and py312/cu132 are different machines, so the matrix
-enumerates the actual pairings rather than blindly cross-multiplying.
+`config` is a paired `{python, cuda}` entry rather than independent
+`python` and `cuda` axes, because the runner pool is allocated per
+(python, cuda) combination - py312/cu130 and py312/cu132 are
+different machines, so the matrix enumerates the actual pairings
+rather than blindly cross-multiplying.
 
-## Job naming
-
-Cell names mirror `pytorch/pytorch`'s generated `windows-binary-wheel` nightly
-(`wheel-py3_10-cuda13_0-build` / `wheel-py3_10-cuda13_0-test`). Each `config:`
-entry carries a precomputed `build_name` (`wheel-py312-cu130`, etc.) so the
-job-level `name:` collapses to a one-token reference exactly like upstream's
-`name: ${{ matrix.build_name }}-build`:
+Cell names mirror `pytorch/pytorch`'s generated
+`windows-binary-wheel` nightly (`wheel-py3_10-cuda13_0-build` /
+`wheel-py3_10-cuda13_0-test`). Each `config:` entry carries a
+precomputed `build_name` (`wheel-py312-cu130`, etc.) so the
+job-level `name:` collapses to a one-token reference exactly like
+upstream's `name: ${{ matrix.build_name }}-build`:
 
 | Job | Cell name template | Example cell |
 | --- | --- | --- |
@@ -106,13 +93,13 @@ job-level `name:` collapses to a one-token reference exactly like upstream's
 | `_rtx-test.yml`'s inner shards  | `test (shard <N>/5)`        | nested under each `*-test` cell |
 
 GitHub groups matrix cells alphabetically by name, so leading with
-`wheel-<py>-<cu>` keeps each wheel's two arch fanouts adjacent and also lines up
-a wheel-test row alongside its windows-rtx-build-test counterpart in
-cross-workflow dashboards.
+`wheel-<py>-<cu>` keeps each wheel's two arch fanouts adjacent and
+also lines up a wheel-test row alongside its windows-rtx-build-test
+counterpart in cross-workflow dashboards.
 
-`.ci/pytorch/win-test.sh` (via `test/run_test.py`) honours the `SHARD_NUMBER` /
-`NUM_TEST_SHARDS` / `TEST_CONFIG` env vars set inside `_rtx-test.yml` to run just
-its slice.
+`.ci/pytorch/win-test.sh` (via `test/run_test.py`) honours the
+`SHARD_NUMBER` / `NUM_TEST_SHARDS` / `TEST_CONFIG` env vars set
+inside `_rtx-test.yml` to run just its slice.
 
 ```
 windows-rtx-build-test.yml:                          windows-rtx-wheel-test.yml:
@@ -120,7 +107,7 @@ windows-rtx-build-test.yml:                          windows-rtx-wheel-test.yml:
   build  matrix( config )                         (no preflight job)
       |   (3 cells)                                test  matrix( config x arch )
       |   multi-arch wheel + SHA sidecar                  (3 x 2 = 6 cells)
-      |   (artifact upload currently disabled)
+      |   uploaded as one artifact per cell
       |                                                  each cell calls
       +-> test  matrix( config x arch )                  _rtx-test.yml, which
                 (3 x 2 = 6 cells)                        internally fans out
@@ -142,31 +129,32 @@ UI grouping in both workflows (orchestrator level):
   ...
 ```
 
-## Install paths
-
-`_rtx-test.yml` accepts two install paths and routes between them based on which
-inputs the orchestrator provided:
+`_rtx-test.yml` accepts two install paths and routes between them based
+on which inputs the orchestrator provided:
 
 | Install path | When | Required inputs | Checkout ref from | Install source |
 | --- | --- | --- | --- | --- |
 | **artifact** (path A) | source build | `wheel-artifact` | SHA in `built_pytorch_sha.txt` inside the artifact | `pip install ./artifact/*.whl` |
-| **pip-index** (path B) | nightly wheel | `pytorch-ref` (wheel index `https://download.pytorch.org/whl/nightly/torch/`) | `pytorch-ref` passed verbatim (typically `nightly`); `actions/checkout@v7` resolves it | Wheel URL grepped from the index by checked-out commit's `devYYYYMMDD` + matrix `cu<label>` / `cp<pyshort>` tags |
+| **pip-index** (path B) | nightly wheel | `pytorch-ref` (+ optional `wheel-index-url`, default `https://download.pytorch.org/whl/nightly/torch/`) | `pytorch-ref` passed verbatim (typically `nightly`); `actions/checkout@v7` resolves it | Wheel URL grepped from the index by checked-out commit's `devYYYYMMDD` + matrix `cu<label>` / `cp<pyshort>` tags |
 
-In both paths the test job records the actual `git rev-parse HEAD` + commit date
-of the checkout into its Step Summary, so each cell logs "what nightly did I
-test" without needing a centralized preflight. This keeps `_rtx-build.yml` as
-the only producer that needs to ship a wheel through GitHub artifact storage.
-The nightly path avoids the fetch/upload/download round-trip entirely - the test
-runner that resolves the ref is the same runner that pip-installs and tests.
+In both paths the test job records the actual `git rev-parse HEAD` +
+commit date of the checkout into its Step Summary, so each cell logs
+"what nightly did I test" without needing a centralized preflight.
+This keeps `_rtx-build.yml` as the only producer that needs to ship a
+wheel through GitHub artifact storage. The nightly path avoids the
+fetch/upload/download round-trip entirely - the test runner that
+resolves the ref is the same runner that pip-installs and tests.
 
-The path-B resolver fails fast if the index has no wheel for the checked-out
-commit's date - that is the signal that the nightly wheel for the source we just
-pulled is not yet published, and any install would otherwise silently fall back
-to an older wheel that disagrees with the source tree on disk.
+The path-B resolver fails fast if the index has no wheel for the
+checked-out commit's date - that is the signal that the nightly wheel
+for the source just pulled is not yet published, and any install
+would otherwise silently fall back to an older wheel that disagrees
+with the source tree on disk.
 
 ## Default matrix
 
-`config` (paired entries — each one corresponds to a real allocated runner):
+`config` (paired entries — each one corresponds to a real allocated
+runner; add/remove entries to match the runner pool):
 
 | python | cuda toolkit | python-label | cuda-label |
 | --- | --- | --- | --- |
@@ -174,46 +162,199 @@ to an older wheel that disagrees with the source tree on disk.
 | 3.12 | 13.2 | `py312` | `cu132` |
 | 3.13 | 13.2 | `py313` | `cu132` |
 
-Plus `arch: [sm89, sm120]` on the orchestrator's test job, with the 5-shard
-fanout living inside `_rtx-test.yml` (`strategy.matrix.shard: [1, 2, 3, 4, 5]`,
-`NUM_TEST_SHARDS: "5"`), matching PR #176678.
+Plus `arch: [sm89, sm120]` on the orchestrator's test job, with the
+5-shard fanout living inside `_rtx-test.yml`
+(`strategy.matrix.shard: [1, 2, 3, 4, 5]`, `NUM_TEST_SHARDS: "5"`),
+matching PR #176678.
 
-Per source-build run that's **3 build jobs + 6 orchestrator-level test cells**
-(3 configs x 2 archs); each test cell expands to 5 nested shard runners, so the
-actual runner count is `3 + 6 * 5 = 33` GH Actions runner jobs. The wheel-test
-run is **6 orchestrator-level test cells** (30 runners after the internal shard
-fanout) - no preflight, no per-cell wheel producer.
+Per source-build run that's **3 build jobs + 6 orchestrator-level
+test cells** (3 configs x 2 archs); each test cell expands to 5
+nested shard runners, so the actual runner count is `3 + 6 * 5 = 33`
+GH Actions runner jobs. The wheel-test run is **6 orchestrator-
+level test cells** (30 runners after the internal shard fanout) - no
+preflight, no per-cell wheel producer.
 
-`TORCH_CUDA_ARCH_LIST` is set per `arch` matrix entry (`8.9` for sm89, `12.0` for
-sm120), and `runner-base` likewise (`rtx-40x0-test` vs `rtx-50x0-test`). The
-build wheel itself is multi-arch (`8.9;12.0`) so a single producer feeds both
-architectures.
+`TORCH_CUDA_ARCH_LIST` is set per `arch` matrix entry (`8.9` for sm89,
+`12.0` for sm120), and `runner-base` likewise (`rtx-40x0-test` vs
+`rtx-50x0-test`). The build wheel itself is multi-arch (`8.9;12.0`) so
+a single producer feeds both architectures.
+
+## Runner model
+
+Runners are **ephemeral, pre-prepped images**. The image has the right
+Python, CUDA toolkit, MSVC build tools, sccache, magma, cmake, ninja, and
+the standard PyTorch test runtime pre-installed and on `PATH`. The
+workflows perform **zero** in-job environment setup. Each matrix cell is
+routed to its image via the runner-label set:
+
+| Job kind | Label set |
+| --- | --- |
+| `build` (source-build wheel producer)           | `[rtx-build, <python-label>, <cuda-label>]` |
+| `test` cells where `matrix.arch.name == sm89`   | `[rtx-40x0-test, <python-label>, <cuda-label>]` |
+| `test` cells where `matrix.arch.name == sm120`  | `[rtx-50x0-test, <python-label>, <cuda-label>]` |
+| `inspect-dispatch` (parked RFC-0050 arm)        | `[rtx-build]` (any free build runner) |
+| `prep`, `test-summary`, `lint`                  | `ubuntu-latest` (GitHub-hosted) |
+
+The narrow labels (`rtx-build`, `rtx-40x0-test`, `rtx-50x0-test`,
+`py3xx`, `cu1xx`) are unique to the self-hosted Windows pool, so the
+GitHub auto-tags (`self-hosted`, `Windows`, `X64`) that the runner
+agent applies are redundant in the AND filter and are deliberately
+left off `runs-on:` everywhere.
+
+For example, the sm120 test cell for Python 3.13 + CUDA 13.0 needs an
+image registered as `[rtx-50x0-test, py313, cu130]` (plus whatever
+auto-tags the runner agent adds).
+
+## What the runner image must already contain
+
+Because there is no in-job setup, the pre-prepped image carries everything the
+PyTorch CI scripts (`.ci/pytorch/win-build.sh`, `.ci/pytorch/win-test.sh`,
+`.ci/pytorch/win-test-helpers/**`) expect to find. Concretely:
+
+- Python (matching matrix cell, on `PATH` as `python`)
+- CUDA toolkit (matching matrix cell) and a recent enough GPU driver
+- cuDNN, NCCL (where applicable) bundled with the toolkit
+- Visual Studio Build Tools / MSVC (`cl.exe` reachable through `vcvarsall.bat`)
+- Git for Windows (provides `bash`, `git`, `curl`)
+- ninja, cmake, sccache, magma binaries
+- All Python deps from `pytorch/.ci/docker/requirements-ci.txt` for the
+  matching Python version (numba 0.64.0+, pytest, expecttest, hypothesis,
+  numpy, ...; see `pytorch/pytorch` PR #176678 review thread for the
+  current pin set)
+- `nvidia-smi` on `PATH`
+- Windows PowerShell 5.1 (the in-box `powershell.exe`) is sufficient
+  for the runner-diagnostics composite actions. PowerShell 7+ (`pwsh`) is
+  NOT required on the RTX pool - every script those actions invoke sticks
+  to cmdlets and language features available in 5.1.
+
+PyTorch's in-tree CI scripts cover build, install, and test end-to-end on
+the RTX pool. The repo-local helpers around them are the runner-diagnostics
+monitor described [below](#runner-diagnostics), the test-summary and
+test-stats scripts, and the vendored WoA build/test library under
+`tools/woa-build/`.
+
+## Repository layout
+
+```
+.github/
+  workflows/
+    windows-rtx-build-test.yml       # full source build + test (nightly + manual; parked PR path)
+    windows-rtx-wheel-test.yml       # published-wheel test (manual; cron commented out)
+    _rtx-build.yml                   # reusable: build source (.ci/pytorch/win-build.sh), uploads wheel artifact
+    _rtx-test.yml                    # reusable: test a wheel (artifact OR pip-index install path)
+    windows-woa-build-test.yml       # WoA arm64 source build + test (nightly)
+    _woa-build.yml                   # reusable WoA source build
+    _woa-test.yml                    # reusable WoA wheel tests
+    lint.yml                         # PR-time YAML and PowerShell lint
+  actions/
+    start-runner-diagnostics/        # composite: spawn monitor.ps1 in background
+    stop-runner-diagnostics/         # composite: signal stop, flush, summarise
+    upload-local-artifact/           # composite: stage an artifact on the runner host
+    download-local-artifact/         # composite: retrieve a host-staged artifact
+    inspect-dispatch-event/          # composite: print the repository_dispatch payload
+    woa-preflight-build/             # verify WoA build toolchain
+    woa-preflight-test/              # verify WoA test environment
+    woa-create-venv/                 # create a fresh per-job arm64 venv
+    woa-strict-clean/                # clean persistent-runner state
+scripts/
+  runner-diagnostics/
+    monitor.ps1                      # background sampler (host + GPU JSONL)
+  test-summary/                      # aggregate + parse shard failures for the summary job
+  test-stats/                        # committed test times that seed shard balancing
+  local-artifact/                    # host-local artifact staging helpers
+  dispatch-event/                    # repository_dispatch payload summary
+tools/
+  woa-build/                         # vendored PowerShell WoA build/test library
+```
+
+## Customising the matrix
+
+The matrix work in each orchestrator lives in at most two jobs - `build`
+and `test` (`windows-rtx-wheel-test.yml` has only `test`, since it
+installs a published wheel instead of producing one). The surrounding
+`prep`, `test-summary`, and `inspect-dispatch` jobs are single cells and
+carry no matrix. The orchestrator's test matrix is 2-dimensional
+(`config x arch`); the shard fanout lives one layer down in
+`_rtx-test.yml`:
+
+```yaml
+# Orchestrator (windows-rtx-build-test.yml / windows-rtx-wheel-test.yml)
+matrix:
+  config:                      # paired {python, cuda} entries; each one
+    - { python: { version: "3.12", label: "py312" },  #   corresponds to an actual allocated
+        cuda:   { version: "13.0", label: "cu130" },  #   runner. Add/remove lines freely.
+        build_name: "wheel-py312-cu130" }
+    - { python: { version: "3.12", label: "py312" },
+        cuda:   { version: "13.2", label: "cu132" },
+        build_name: "wheel-py312-cu132" }
+    # ... etc
+  arch:                        # 2 entries, each carries runner-base
+    - { name: sm89,  runner: rtx-40x0-test, arch_list: "8.9"  }
+    - { name: sm120, runner: rtx-50x0-test, arch_list: "12.0" }
+
+# _rtx-test.yml (reusable; one call per orchestrator test cell)
+strategy:
+  matrix:
+    shard: [1, 2, 3, 4, 5]     # 5 shards per (config, arch); NUM_TEST_SHARDS env is "5"
+```
+
+In `windows-rtx-build-test.yml`, the `config` list is declared on
+the `build` job (`&config` anchor) and re-used on the `test` job
+(`*config`). In `windows-rtx-wheel-test.yml` the list lives directly on
+the `test` job since there is no build to share it with.
+
+To add or remove cells:
+- **config axis** (a python+cuda pairing): edit the `config:` list in
+  one place per orchestrator. Each entry is `{ python: {version,
+  label}, cuda: {version, label}, build_name: ... }`. Because the
+  matrix enumerates only the pairings you put in, dropping an
+  unsupported combination (say `py313` + `cu130` if no machine for it
+  exists) is just a line delete - no `exclude:` clause needed.
+- **arch axis**: edit the `arch:` list on the `test` job. Each entry
+  is a `{ name, runner, arch_list }` triple - `runner` becomes the
+  fourth runner label, `arch_list` becomes `TORCH_CUDA_ARCH_LIST` for
+  that cell.
+- **shard count**: edit `_rtx-test.yml` in two places - the
+  `strategy.matrix.shard` list and the `NUM_TEST_SHARDS` env literal.
+  Orchestrators are agnostic to the shard count.
+- **per-event matrix filters** (`workflow_dispatch` only): both
+  orchestrators expose three comma-separated subset inputs and forward
+  them verbatim via `with:` to the called reusable workflows
+  (`_rtx-build.yml` / `_rtx-test.yml`), whose own job-level `if:`
+  performs the match against the cell's own `python-version`,
+  `cuda-version`, and `arch-name` inputs. The filter lives one layer
+  down because GitHub Actions disallows `matrix.*` in the `if:` of a
+  job that calls a reusable workflow. Schedule and
+  `repository_dispatch` runs always cover every cell (the orchestrator
+  forwards the empty string, which disables the corresponding filter
+  dimension in the reusable workflow).
+
+  | Input | Default | Filters |
+  | --- | --- | --- |
+  | `python-versions`    | `3.12,3.13`   | `build` + `test` (matches the cell's `python-version`) |
+  | `cuda-versions`      | `13.0,13.2`   | `build` + `test` (matches the cell's `cuda-version`)   |
+  | `test-architectures` | `sm89,sm120`  | `test` only (matches the cell's `arch-name`)           |
+
+  Cells dropped by the filter show up in the GitHub UI with their
+  inner reusable-workflow job in the "skipped" state, so a manual run
+  that only covered py3.12 / cu13.0 still leaves an audit trail of
+  every other slot as "this cell exists, was deliberately not
+  exercised".
 
 ## Test environment variables
 
-`_rtx-test.yml` exports the subset of PR #176678's test env block that applies
-off the pytorch-internal infra (no AWS, no `filter-test-configs`, no
-`get-workflow-job-id`):
+`_rtx-test.yml` exports the subset of PR #176678's test env block that
+applies here (no AWS, no `filter-test-configs`,
+no `get-workflow-job-id`):
 
 | Scope | Variable | Source |
 | --- | --- | --- |
 | job  | `BUILD_ENVIRONMENT`, `PYTHON_VERSION`, `CUDA_VERSION`, `TORCH_CUDA_ARCH_LIST` | matrix cell |
 | job  | `USE_CUDA=1`, `INSTALL_WINDOWS_SDK=0`, `CONTINUE_THROUGH_ERROR=1`, `PYTORCH_TEST_WITH_SLOW=0`, `CI=1` | static |
 | job  | `VC_PRODUCT=BuildTools`, `VC_YEAR=2022`, `VS_VERSION=17.4.1`, `VC_VERSION=""` | MSVC tooling info |
-| job  | `PIP_RETRIES=8`, `PIP_DEFAULT_TIMEOUT=60` | ours — pip resilience for the test-harness install |
-| job  | `PER_TEST_TIMEOUT_SEC=900`, `RUN_TEST_TIMEOUT_SEC=9900` | ours — the two bounds that hold a hung shard, see [Where the bounds actually hold](#where-the-bounds-actually-hold) |
-| job  | `AWS_EC2_METADATA_DISABLED=true` | ours — see below |
-
-`AWS_EC2_METADATA_DISABLED` is there because `run_test.py` tries to upload each
-batch of test reports to pytorch's S3 bucket. There are no credentials on these
-runners, so the upload cannot succeed and does not need to — nothing reads it.
-But `boto3`, finding no credentials, next asks the EC2 instance metadata
-service for them, and on a host that is not an EC2 instance there is nothing
-listening on `169.254.169.254` to refuse the connection. It waits for the
-connect to time out instead, once per batch. Setting this makes `boto3` skip
-that probe and give up at once. The test step also filters the resulting
-`Failed to parse and upload json test reports: Unable to locate credentials`
-line out of the log, since the upload is expected to fail.
+| job  | `PIP_RETRIES=8`, `PIP_DEFAULT_TIMEOUT=60` | pip resilience for the test-harness install |
+| job  | `PER_TEST_TIMEOUT_SEC=900`, `RUN_TEST_TIMEOUT_SEC=9900` | the two bounds that hold a hung shard - see [Where the bounds actually hold](#where-the-bounds-actually-hold) |
+| job  | `AWS_EC2_METADATA_DISABLED=true` | suppresses a dead S3 telemetry probe - see below |
 | step | `SHARD_NUMBER` | `_rtx-test.yml`'s internal `matrix.shard` |
 | step | `NUM_TEST_SHARDS` | static (`"5"`, matches the shard list length) |
 | step | `TEST_CONFIG` | `inputs.test-config` (default `"default"`) |
@@ -221,12 +362,23 @@ line out of the log, since the upload is expected to fail.
 | step | `PR_NUMBER`, `SHA1` | `repository_dispatch` payload or PR context |
 | step | `GITHUB_REPOSITORY` / `_WORKFLOW` / `_JOB` / `_RUN_ID` / `_RUN_NUMBER` / `_RUN_ATTEMPT` | `github.*` context |
 
+`AWS_EC2_METADATA_DISABLED` is there because `run_test.py` tries to upload each
+batch of test reports to pytorch's S3 bucket. There are no credentials on these
+runners, so the upload cannot succeed and does not need to - nothing reads it.
+But `boto3`, finding no credentials, next asks the EC2 instance metadata
+service for them, and on a host that is not an EC2 instance there is nothing
+listening on `169.254.169.254` to refuse the connection. It waits for the
+connect to time out instead, once per batch. Setting this makes `boto3` skip
+that probe and give up at once. The test step also filters the resulting
+`Failed to parse and upload json test reports: Unable to locate credentials`
+line out of the log, since the upload is expected to fail.
+
 ## Test sharding
 
 `test/run_test.py` assigns test files to the 5 shards itself, using per-file
 timings it reads from `<pytorch>/.additional_ci_files/test-times.json`. Upstream
 that file is downloaded from test-infra, which has no data for an out-of-tree
-build env — hence the benign warning every shard logs:
+build env - hence the benign warning every shard logs:
 
 ```
 Gathered no stats from artifacts for win-rtx-sm89 build env and default
@@ -243,7 +395,7 @@ Timings matter more than they look. `calculate_shards` bin-packs by cost only
 when a file's time is known; for an unknown file it falls back to round-robin
 (`_get_min_sharded_job` in `tools/testing/test_selections.py`), which ignores
 cost entirely. It also splits any file over a 10-minute `THRESHOLD` into
-`ceil(duration / 600)` pytest shards spread across jobs — so with times,
+`ceil(duration / 600)` pytest shards spread across jobs - so with times,
 `test_meta` becomes 15 pieces of ~9.5 min instead of one atomic 2.4-hour file
 that pins whichever shard draws it.
 
@@ -263,10 +415,10 @@ timeout = (... THRESHOLD * timeout_multiplier
 
 `test_module.time` comes from `test-times.json` via
 `test_selections.get_duration`, which returns `None` for a file it has never
-seen — so an absent file gets `timeout=None`.
+seen - so an absent file gets `timeout=None`.
 
 **Do not rely on that bound on Windows: it cannot kill anything.** This is an
-upstream defect in pytorch rather than anything we configure — and not one we
+upstream defect in pytorch rather than anything we configure - and not one we
 can work around with an environment variable. When the timeout expires,
 `torch.testing._internal.common_utils`'s `wait_for_process` does this:
 
@@ -283,24 +435,24 @@ finally:
 
 `Popen.send_signal` on Windows accepts only `SIGTERM`, `CTRL_C_EVENT` (0) and
 `CTRL_BREAK_EVENT`. `SIGINT` is 2, so it raises `ValueError: Unsupported
-signal: 2`, which escapes before `p.kill()` runs — and the `finally: p.wait()`
+signal: 2`, which escapes before `p.kill()` runs - and the `finally: p.wait()`
 then waits forever on the child that is still going. The timeout converts a
 hung child into a permanently blocked parent, which is the symptom that cost
 this CI seven shards across four runs.
 
 The upstream comment on that line reads *"send SIGINT to give pytest a chance
 to make xml"*, which is correct on POSIX, and the function has no platform
-branch anywhere in it — so the Windows path was simply never the one being
+branch anywhere in it - so the Windows path was simply never the one being
 reasoned about. Corroborated by absence: `retry_shell`'s `Command took >Nmin,
 returning 124` appears in none of the ~9,800 shard logs collected so far. The
 bound is armed only for the serial pytest invocation in any case, since
 `should_retry` is false once `-n` is in the command.
 
-In those seven shards one CUDA test deadlocked —
+In those seven shards one CUDA test deadlocked -
 `TestMemPool::test_graph_capture_pre_capture_stream_use` in `test_cuda`,
-`_foreach_minimum` and `max_unpool1d` in `test_meta` — its file never returned,
+`_foreach_minimum` and `max_unpool1d` in `test_meta` - its file never returned,
 the parent blocked in `pool.join()`, and the orphaned process tree held the
-test step's stdout pipe open so the step could not end. GitHub cancelled 70–120
+test step's stdout pipe open so the step could not end. GitHub cancelled 70-120
 minutes later, recording no failing test and no stack.
 
 So of the three bounds, only two do anything, and the reason is the same for
@@ -308,9 +460,9 @@ both: neither needs to signal another process.
 
 | Bound | Where | Effect |
 | --- | --- | --- |
-| per test | `PYTEST_ADDOPTS=--timeout=... --timeout-method=thread` | 15 min. Works — the timer thread runs *inside* the child, dumps every thread's stack and hard-exits, so `run_test.py` sees a normal exit code and carries on |
+| per test | `PYTEST_ADDOPTS=--timeout=... --timeout-method=thread` | 15 min. Works - the timer thread runs *inside* the child, dumps every thread's stack and hard-exits, so `run_test.py` sees a normal exit code and carries on |
 | per test file | `run_test.py` subprocess timeout (`THRESHOLD * 3`) | 30 min nominally. **Inert on Windows** (above), and serial-invocation only |
-| per shard | in-step watchdog (`RUN_TEST_TIMEOUT_SEC`) | 165 min. Works — uses `taskkill`. Fails the whole shard, so it is a genuine last resort |
+| per shard | in-step watchdog (`RUN_TEST_TIMEOUT_SEC`) | 165 min. Works - uses `taskkill`. Fails the whole shard, so it is a genuine last resort |
 
 `pytest-timeout` covers only a test that is running, which leaves the watchdog
 as the sole bound for the rest of a shard's life:
@@ -322,11 +474,20 @@ as the sole bound for the rest of a shard's life:
 | session teardown, interpreter exit, CUDA context destruction | no | inert | yes |
 | between the serial and parallel invocations | n/a | inert | yes |
 
+Both of the middle rows are observed, not hypothetical. In one lost shard
+`test_meta` printed its full session summary (`35160 passed, 27511 skipped,
+1598 xfailed in 5140.09s`) and then never exited; in another, `test_sparse_csr`
+logged `Retrying single test...` and the replacement pytest never reached
+`test session starts`. Both are provably stuck processes rather than truncated
+logs: `run_test.py` renames each file's `*_toprint.log` to `*_<hex>_.log` only
+once the subprocess returns, and both artifacts still carry the `_toprint`
+name.
+
 `RUN_TEST_TIMEOUT_SEC` is 165 min because the slowest guarded step across the 19
-measurable shards of a full run was 112 min — and that one included a 15-minute
+measurable shards of a full run was 112 min - and that one included a 15-minute
 per-test timeout and its retry; the slowest clean shard was 106 min. That is
 1.47x headroom, which absorbs pytorch's growing test count and the unresolved
-1.5–1.8x shard imbalance.
+1.5-1.8x shard imbalance.
 
 Because a file with no recorded time is dropped out of cost-based packing
 altogether (`_get_min_sharded_job` hands it out by index), `seed_test_stats.py`
@@ -345,17 +506,17 @@ sharding coverage: 1271 test file(s) in the checkout, 633 backfilled at 15.6s,
 
 The last number is the one that matters and should always be `0`. The middle
 one counts the whole `test/` tree, most of which this CI never selects, so it
-is a poor drift signal — for that, compare the files a run actually executed
+is a poor drift signal - for that, compare the files a run actually executed
 against the committed data.
 
 ### Refreshing the stats
 
 The data is a snapshot and drifts as the upstream suite changes. Drift costs
-balance, not safety — an unmeasured file is backfilled, so it is still packed on
+balance, not safety - an unmeasured file is backfilled, so it is still packed on
 cost, just from a guess rather than a measurement. To regenerate from a
 completed run:
 
-1. Download each shard's log for one `(config, arch)` cell — either
+1. Download each shard's log for one `(config, arch)` cell - either
    `gh api repos/NVIDIA/pytorch-windows-ci/actions/jobs/<job-id>/logs`, or the
    `run_test_shard<N>.log` inside that shard's `test-reports-*` artifact.
 2. Optionally extract the `test-reports-*` artifacts too; they are the only
@@ -375,11 +536,12 @@ the generator can only scale a partially-observed file back up to an estimate.
 
 ## Runner diagnostics
 
-Each test job spawns `scripts/runner-diagnostics/monitor.ps1` (resolved by
-`start-runner-diagnostics` from `$GITHUB_ACTION_PATH`) in the background while
-`.ci/pytorch/win-test.sh` runs in the foreground. It writes one artifact per
-shard, `runner-diagnostics-<env>-<py>-<cu>-shard<N>-<run_id>-<attempt>`, 14-day
-retention, containing:
+Each test job spawns `scripts/runner-diagnostics/monitor.ps1` (resolved
+by `start-runner-diagnostics` from `$GITHUB_ACTION_PATH`) in the
+background while
+`.ci/pytorch/win-test.sh` runs in the foreground. It writes one
+artifact per cell, `runner-diagnostics-<env>-<py>-<cu>-<run_id>-<attempt>`,
+14-day retention, containing:
 
 ```
 spec-snapshot.json   host / CPU / RAM / disk / driver / GPU / Python / nvcc
@@ -388,42 +550,34 @@ gpu.jsonl            per-GPU util, mem, temp, power, SM / mem clocks
 monitor.log          start / stop bookends + sample count
 ```
 
-Pipe the JSONL files through `jq` / `pandas` to plot pressure around a failure.
+Pipe the JSONL files through `jq` / `pandas` to plot pressure around a
+failure. To tune the interval or relocate the output dir, edit the
+`with:` block in `_rtx-test.yml` (`start-runner-diagnostics` accepts
+`interval-seconds` and `output-dir` inputs).
 
-The test-job upload is deliberately on even though the build job's is off. When a
-shard stalls, these samples are what separate "one test deadlocked on a healthy
-box" from "the box was thrashing" — and the two need different fixes. Diagnosing
-the seven lost shards above had to proceed without them.
+## Test summaries
+
+The RTX and WoA orchestrators run a final `test-summary` job on
+`ubuntu-latest` after all test cells settle. It uses
+`scripts/test-summary/aggregate_failures.py` to summarize failed jobs and
+`scripts/test-summary/parse_failures.py` to combine failures from downloaded
+shard reports. The summary job is informational; the individual test jobs
+remain responsible for the workflow result.
 
 ## RFC-0050 mapping
 
 | RFC concept | This repo |
 | --- | --- |
-| Downstream CI on real PR-time events | `windows-rtx-build-test.yml` (the `pytorch-pr-trigger` `repository_dispatch` arm is parked: its trigger is disabled in `on:` and the dispatch-gated jobs stay dormant) |
+| Downstream CI on real PR-time events | `windows-rtx-build-test.yml` subscribes to `repository_dispatch:[pytorch-pr-trigger]`. The arm is parked behind `dispatch-gate`: `inspect-dispatch` prints the payload and the build/test/summary jobs stay dormant. |
 | `concurrency: upstream-pr-<pr_number>` | `windows-rtx-build-test.yml` keys `concurrency.group` on `client_payload.pr_number` when present |
-| `pytorch/actions/checkout-pr@v1` (RFC Action #1) | Used as-is in `_rtx-build.yml` for `repository_dispatch`; falls back to `actions/checkout@v7` against `pytorch/pytorch@<ref>` for scheduled runs |
+| `pytorch/actions/checkout-pr@v1` (RFC Action #1) | Used as-is in `_rtx-build.yml` for `repository_dispatch`; falls back to `actions/checkout@v7` against `pytorch/pytorch@<ref>` for schedule / manual runs |
+| `pytorch/actions/report-ci-result@v1` (RFC Action #2) | Not yet wired — result acknowledgement is pending publication of the upstream action |
 
-## Repository layout
+## Local workflow validation
 
+```bash
+python -m pip install "PyYAML>=6" "check-jsonschema>=0.29"
+check-jsonschema --builtin-schema vendor.github-workflows .github/workflows/*.yml
 ```
-.github/
-  workflows/
-    windows-rtx-wheel-test.yml           # nightly published-wheel smoke
-    windows-rtx-build-test.yml            # full source build + test (scheduled; parked PR path)
-    _rtx-build.yml                   # reusable: build source (.ci/pytorch/win-build.sh), uploads wheel artifact
-    _rtx-test.yml                    # reusable: test a wheel (artifact OR pip-index install path)
-  actions/
-    start-runner-diagnostics/
-      action.yml                     # composite: spawn monitor.ps1 in background
-    stop-runner-diagnostics/
-      action.yml                     # composite: signal stop, flush, summarise
-scripts/
-  runner-diagnostics/
-    monitor.ps1                      # background sampler (host + GPU JSONL)
-  test-stats/
-    seed_test_stats.py               # copy data/*.json into <pytorch>/.additional_ci_files
-    gen_test_stats.py                # rebuild data/*.json from a completed run's logs/reports
-    data/
-      test-times.json                # per-file seconds -> drives shard bin-packing
-      test-class-times.json          # per-class seconds (partial-file TestRuns only)
-```
+
+The same checks run automatically in `lint.yml` on every PR.

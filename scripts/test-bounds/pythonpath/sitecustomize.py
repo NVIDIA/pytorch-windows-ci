@@ -56,12 +56,31 @@ hundred lines of noise per shard; the workflow echoes the setting once instead.
 Nothing in here may raise either, for the same reason - a sitecustomize that
 throws breaks every python invocation on the runner, so the whole body is
 guarded.
+
+Note [Recording that it armed, without the noise]
+    Staying silent leaves the bound unfalsifiable from a healthy run: if it
+    never fires, nothing in the log distinguishes "armed in every test process"
+    from "never imported at all". The first CI run hit exactly that - the step
+    could show the file was on ``PYTHONPATH``, but nothing showed a *test*
+    process had picked it up.
+
+    So when ``PER_PROCESS_TIMEOUT_LOG`` names a file, each process appends one
+    JSON line to it - one on arming, one more if it fires. The shard then
+    reports the count once, and the file rides along in the test-reports
+    artifact for after the fact.
+
+    The extension is deliberate. ``scripts/test-summary/parse_failures.py``
+    scans the test-reports tree with ``rglob("*.log")`` and ``rglob("*.txt")``
+    looking for failures, so naming this ``.log`` would feed it to the failure
+    parser. ``.jsonl`` is ignored by it, and matches what runner-diagnostics
+    already writes.
 """
 
 import os
 import sys
 
 _ENV_VAR = "PER_PROCESS_TIMEOUT_SEC"
+_RECORD_ENV = "PER_PROCESS_TIMEOUT_LOG"
 
 # How long after the Python timer to let faulthandler's native timer fire. Only
 # reached if the Python timer was starved of the GIL, so it needs to be long
@@ -99,6 +118,71 @@ def _is_test_file_process(argv):
         return False
     name = os.path.basename(str(argv[0]))
     return name.startswith("test_") and name.endswith(".py")
+
+
+def _record(event, seconds, path=None):
+    """Append one JSON line about this process. Returns True if it was written.
+
+    See Note [Recording that it armed, without the noise]. Best-effort by
+    design: a diagnostic that could break a shard would be a bad trade, so
+    every failure path here is silent.
+
+    Note [O_APPEND is not atomic on Windows]
+        Hundreds of test-file processes share this file across a shard, so the
+        write has to tolerate concurrency. On POSIX one ``os.write`` to an
+        ``O_APPEND`` descriptor is enough - the kernel places it at the end
+        under a lock. The Windows CRT instead implements ``_O_APPEND`` as a
+        seek-to-end followed by a write, with nothing between them, so two
+        processes can resolve the same offset and the second silently
+        overwrites the first. Measured: 8 concurrent writers of 40 records each
+        landed 244 of 320, some of them torn mid-line.
+
+        So on Windows take an explicit lock on the first byte first, which
+        ``LockFile`` permits even past end-of-file, and use it purely as a
+        mutex around the append. ``LK_LOCK`` retries for about 10s before
+        giving up, which is far more patience than a one-line write needs.
+
+    The parent directory is deliberately not created here: the test step
+    already made it, and racing hundreds of processes to create a directory is
+    a worse failure than skipping the record.
+    """
+    target = path if path is not None else os.environ.get(_RECORD_ENV, "")
+    target = str(target).strip()
+    if not target:
+        return False
+    try:
+        import json
+        import time
+
+        line = json.dumps({
+            "event": event,
+            "pid": os.getpid(),
+            "bound_sec": seconds,
+            "script": os.path.basename(str(sys.argv[0])) if sys.argv else "",
+            "utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        }, sort_keys=True) + "\n"
+        payload = line.encode("utf-8")
+
+        fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o644)
+        try:
+            if sys.platform == "win32":
+                import msvcrt
+
+                os.lseek(fd, 0, os.SEEK_SET)
+                msvcrt.locking(fd, msvcrt.LK_LOCK, 1)
+                try:
+                    os.lseek(fd, 0, os.SEEK_END)
+                    os.write(fd, payload)
+                finally:
+                    os.lseek(fd, 0, os.SEEK_SET)
+                    msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+            else:
+                os.write(fd, payload)
+        finally:
+            os.close(fd)
+        return True
+    except Exception:
+        return False
 
 
 def _kill_tree(pid):
@@ -153,7 +237,7 @@ def _report(seconds, stream=None):
         pass
 
 
-def _arm(seconds, argv=None, stream=None):
+def _arm(seconds, argv=None, stream=None, record_path=None):
     """Arm both timers. Returns the ``threading.Timer`` so tests can inspect it.
 
     See Note [Two timers, because either one alone has a hole].
@@ -161,6 +245,10 @@ def _arm(seconds, argv=None, stream=None):
     import threading
 
     def _fire():
+        # Record before the stacks: the kill below ends this process, and a
+        # dropped record is the difference between "a file was killed" and no
+        # evidence at all.
+        _record("fired", seconds, path=record_path)
         _report(seconds, stream=stream)
         if not _kill_tree(os.getpid()):
             os._exit(1)
@@ -169,6 +257,7 @@ def _arm(seconds, argv=None, stream=None):
     timer.daemon = True  # must never hold up a healthy interpreter exit
     timer.name = "per-process-timeout"
     timer.start()
+    _record("armed", seconds, path=record_path)
 
     try:
         import faulthandler
@@ -182,14 +271,14 @@ def _arm(seconds, argv=None, stream=None):
     return timer
 
 
-def _main(argv=None, environ=None, stream=None):
+def _main(argv=None, environ=None, stream=None, record_path=None):
     """Arm the bound if this process qualifies. Returns the timer, or ``None``."""
     seconds = _configured_bound(environ)
     if not seconds:
         return None
     if not _is_test_file_process(sys.argv if argv is None else argv):
         return None
-    return _arm(seconds, stream=stream)
+    return _arm(seconds, stream=stream, record_path=record_path)
 
 
 try:

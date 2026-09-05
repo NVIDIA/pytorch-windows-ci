@@ -11,6 +11,7 @@ is not something an in-process test can demonstrate.
 from __future__ import annotations
 
 import importlib.util
+import json
 import os
 import subprocess
 import sys
@@ -146,6 +147,99 @@ def sc_cancel_backstop():
 
 
 # --------------------------------------------------------------------------- #
+# _record
+#
+# This is what makes a healthy run falsifiable: without it, "armed in every
+# test process" and "never imported" look identical in the log.
+# --------------------------------------------------------------------------- #
+def test_record_writes_one_json_line(tmp_path):
+    out = tmp_path / "per-process-bound.jsonl"
+    assert sc._record("armed", 2700, path=str(out)) is True
+    lines = out.read_text(encoding="utf-8").splitlines()
+    assert len(lines) == 1
+    rec = json.loads(lines[0])
+    assert rec["event"] == "armed"
+    assert rec["bound_sec"] == 2700
+    assert rec["pid"] == os.getpid()
+    assert rec["utc"].endswith("Z")
+
+
+def test_record_appends_rather_than_truncating(tmp_path):
+    """Every test-file process in the shard writes to the same file."""
+    out = tmp_path / "rec.jsonl"
+    for _ in range(5):
+        sc._record("armed", 900, path=str(out))
+    sc._record("fired", 900, path=str(out))
+    events = [json.loads(l)["event"] for l in out.read_text().splitlines()]
+    assert events == ["armed"] * 5 + ["fired"]
+
+
+def test_record_is_off_when_unconfigured(tmp_path, monkeypatch):
+    monkeypatch.delenv("PER_PROCESS_TIMEOUT_LOG", raising=False)
+    assert sc._record("armed", 900) is False
+
+
+def test_record_ignores_blank_path(tmp_path):
+    assert sc._record("armed", 900, path="   ") is False
+
+
+def test_record_never_raises_on_an_unwritable_path(tmp_path):
+    """A diagnostic must not be able to break a shard."""
+    missing = tmp_path / "no-such-dir" / "rec.jsonl"
+    assert sc._record("armed", 900, path=str(missing)) is False
+    assert not missing.exists()
+
+
+def test_record_survives_concurrent_writers(tmp_path):
+    """Hundreds of processes share the file; lines must stay intact."""
+    out = tmp_path / "rec.jsonl"
+    import threading
+
+    def w():
+        for _ in range(40):
+            sc._record("armed", 2700, path=str(out))
+
+    threads = [threading.Thread(target=w) for _ in range(8)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    lines = out.read_text(encoding="utf-8").splitlines()
+    assert len(lines) == 8 * 40
+    # Every line must be parseable - a torn write would fail here.
+    assert all(json.loads(l)["event"] == "armed" for l in lines)
+
+
+def test_arm_records_and_fire_records(tmp_path):
+    """Arming writes immediately; firing adds a second record."""
+    out = tmp_path / "rec.jsonl"
+    timer = sc._main(
+        argv=["test_cuda.py"],
+        environ={"PER_PROCESS_TIMEOUT_SEC": "3600"},
+        record_path=str(out),
+    )
+    try:
+        assert timer is not None
+        recs = [json.loads(l) for l in out.read_text().splitlines()]
+        assert [r["event"] for r in recs] == ["armed"]
+        assert recs[0]["script"].endswith(".py")
+    finally:
+        timer.cancel()
+        sc_cancel_backstop()
+
+
+def test_no_record_when_the_process_does_not_qualify(tmp_path):
+    out = tmp_path / "rec.jsonl"
+    assert sc._main(
+        argv=["run_test.py"],
+        environ={"PER_PROCESS_TIMEOUT_SEC": "3600"},
+        record_path=str(out),
+    ) is None
+    assert not out.exists(), "the parent process must leave no record"
+
+
+# --------------------------------------------------------------------------- #
 # _report
 # --------------------------------------------------------------------------- #
 def test_report_writes_error_annotation_and_stacks(tmp_path):
@@ -170,11 +264,15 @@ FAST = "print('done', flush=True)\n"
 PARENT = "import time\nprint('parent up', flush=True)\ntime.sleep(8)\nprint('parent survived', flush=True)\n"
 
 
-def _run(script_name, body, tmp_path, bound="3", budget=90):
+def _run(script_name, body, tmp_path, bound="3", budget=90, record=None):
     (tmp_path / script_name).write_text(body, encoding="utf-8")
     env = dict(os.environ)
     env["PYTHONPATH"] = str(PYTHONPATH_DIR)
     env["PER_PROCESS_TIMEOUT_SEC"] = bound
+    if record is None:
+        env.pop("PER_PROCESS_TIMEOUT_LOG", None)
+    else:
+        env["PER_PROCESS_TIMEOUT_LOG"] = str(record)
     started = time.time()
     proc = subprocess.run(
         [sys.executable, script_name],
@@ -231,6 +329,74 @@ def test_e2e_malformed_bound_does_not_break_the_process(tmp_path):
     _, proc = _run("test_fast.py", FAST, tmp_path, bound="not-a-number")
     assert proc.returncode == 0, proc.stderr
     assert proc.stdout.strip() == "done"
+
+
+def test_e2e_record_proves_a_real_test_process_armed(tmp_path):
+    """The whole point: evidence from a healthy run that never fires.
+
+    A fast test file must still leave an `armed` record, since that is what
+    distinguishes "the bound was active" from "sitecustomize was never
+    imported" when nothing hangs.
+    """
+    rec = tmp_path / "per-process-bound.jsonl"
+    _, proc = _run("test_fast.py", FAST, tmp_path, record=rec)
+    assert proc.returncode == 0
+    recs = [json.loads(l) for l in rec.read_text(encoding="utf-8").splitlines()]
+    assert [r["event"] for r in recs] == ["armed"]
+    assert recs[0]["script"] == "test_fast.py"
+    assert recs[0]["bound_sec"] == 3
+    assert recs[0]["pid"] > 0
+
+
+def test_e2e_record_captures_a_kill(tmp_path):
+    rec = tmp_path / "rec.jsonl"
+    elapsed, _ = _run("test_hang.py", HUNG, tmp_path, record=rec)
+    assert elapsed < 30
+    events = [json.loads(l)["event"] for l in rec.read_text().splitlines()]
+    assert events == ["armed", "fired"]
+
+
+def test_e2e_parent_leaves_no_record(tmp_path):
+    rec = tmp_path / "rec.jsonl"
+    _, proc = _run("run_test.py", PARENT, tmp_path, record=rec)
+    assert "parent survived" in proc.stdout
+    assert not rec.exists()
+
+
+def test_e2e_recording_is_optional(tmp_path):
+    """With PER_PROCESS_TIMEOUT_LOG unset the bound still works."""
+    elapsed, proc = _run("test_hang.py", HUNG, tmp_path, record=None)
+    assert elapsed < 30 and proc.returncode != 0
+
+
+def test_e2e_concurrent_processes_all_land_a_record(tmp_path):
+    """The realistic case: separate interpreters, no shared CRT state.
+
+    A shard runs hundreds of test files, several at a time under `-n`. Each
+    arms and records, so the append has to hold across processes - which is
+    where the Windows O_APPEND race actually bit.
+    """
+    rec = tmp_path / "rec.jsonl"
+    (tmp_path / "test_quick.py").write_text(FAST, encoding="utf-8")
+    env = dict(os.environ)
+    env["PYTHONPATH"] = str(PYTHONPATH_DIR)
+    env["PER_PROCESS_TIMEOUT_SEC"] = "600"
+    env["PER_PROCESS_TIMEOUT_LOG"] = str(rec)
+
+    n = 24
+    procs = [
+        subprocess.Popen([sys.executable, "test_quick.py"], cwd=tmp_path, env=env,
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        for _ in range(n)
+    ]
+    for p in procs:
+        assert p.wait(timeout=120) == 0
+
+    lines = rec.read_text(encoding="utf-8").splitlines()
+    assert len(lines) == n, f"lost {n - len(lines)} record(s) to the append race"
+    recs = [json.loads(l) for l in lines]           # a torn line fails here
+    assert {r["event"] for r in recs} == {"armed"}
+    assert len({r["pid"] for r in recs}) == n, "each process should be distinct"
 
 
 def test_e2e_child_processes_are_killed_too(tmp_path):

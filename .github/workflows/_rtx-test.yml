@@ -260,6 +260,13 @@ jobs:
       # Relocating to C:\pt strips ~60 chars off every derived path. See the
       # "Relocate pytorch checkout" step for the full rationale.
       PT_ROOT: 'C:\pt'
+      # Where each armed test-file process appends one JSON line, and where the
+      # step after the test run reads them back from. Both need it, so it is
+      # job-level; the literal repeats PT_ROOT above because a job-level `env`
+      # entry cannot reference a sibling one. Extension matters -
+      # parse_failures.py scans this tree for *.log / *.txt, so a .log here
+      # would be fed to the failure parser.
+      PER_PROCESS_TIMEOUT_LOG: 'C:\pt/test/test-reports/per-process-bound.jsonl'
     steps:
       - name: Validate install-path inputs
         shell: bash
@@ -679,9 +686,10 @@ jobs:
           # ---- imports at interpreter startup; it arms only in processes whose
           # ---- argv[0] is a test file, so run_test.py itself is never bounded.
           # ---- See scripts/test-bounds/pythonpath/sitecustomize.py.
-          # PER_PROCESS_TIMEOUT_SEC itself is job-level, so it is already in
-          # this step's environment; only the path needs setting, and it is
-          # scoped to this step so no other step's python sees it.
+          # PER_PROCESS_TIMEOUT_SEC and PER_PROCESS_TIMEOUT_LOG are both
+          # job-level, so they are already in this step's environment; only
+          # PYTHONPATH needs setting, and it is scoped to this step so no other
+          # step's python sees it.
           PYTHONPATH: ${{ github.workspace }}/oot/scripts/test-bounds/pythonpath
         # Tee the harness output into the test-reports tree so the summary
         # parser can recover failures that never make it into JUnit XML
@@ -816,6 +824,40 @@ jobs:
             exit 1
           fi
           exit "$rc"
+
+      # Close the loop on the per-process bound. Without this the only thing a
+      # healthy shard proves is that sitecustomize.py was on PYTHONPATH at step
+      # start - not that any test process actually imported and armed it. Reads
+      # the records the processes appended and states both counts.
+      #
+      # Read-only and never fails the shard: it reports on a guard, and a
+      # broken report is not worth converting into a red shard. A zero count is
+      # a warning rather than an error for the same reason - it means the bound
+      # was inert, which is worth shouting about but is not itself a test
+      # failure. Hence `-u` off and `:-` on the read: the first version of this
+      # step had the path step-scoped to the test step and died on `unbound
+      # variable` in all 20 shards, before printing anything.
+      - name: Report per-process bound coverage
+        if: always()
+        shell: bash
+        run: |
+          set -o pipefail
+          rec="${PER_PROCESS_TIMEOUT_LOG:-}"
+          if [ -z "$rec" ] || [ ! -f "$rec" ]; then
+            echo "::warning::No per-process bound records at '$rec'. Either no test file ran, or sitecustomize.py was never imported - in which case a hang outside a running test would cost the whole shard."
+            exit 0
+          fi
+          armed=$(grep -c '"event": "armed"' "$rec" || true)
+          fired=$(grep -c '"event": "fired"' "$rec" || true)
+          echo "per-process bound: armed in ${armed} test-file process(es), fired ${fired} time(s)"
+          if [ "${armed:-0}" -eq 0 ]; then
+            echo "::warning::per-process bound recorded no armed process; treat the bound as inert for this shard."
+          fi
+          if [ "${fired:-0}" -gt 0 ]; then
+            echo "The bound killed these process(es) - each one is a test file that hung outside a running test:"
+            grep '"event": "fired"' "$rec" || true
+          fi
+          exit 0
 
       # The output-dir guard doubles as an "OOT tree is present" check: when
       # the monitor never started there is no local action to run either, and

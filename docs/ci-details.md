@@ -354,6 +354,7 @@ no `get-workflow-job-id`):
 | job  | `VC_PRODUCT=BuildTools`, `VC_YEAR=2022`, `VS_VERSION=17.4.1`, `VC_VERSION=""` | MSVC tooling info |
 | job  | `PIP_RETRIES=8`, `PIP_DEFAULT_TIMEOUT=60` | pip resilience for the test-harness install |
 | job  | `PER_TEST_TIMEOUT_SEC=900`, `PER_PROCESS_TIMEOUT_SEC=2700`, `RUN_TEST_TIMEOUT_SEC=9900` | the bounds that hold a hung shard - see [Timeout bounds](#timeout-bounds) |
+| job  | `PER_PROCESS_TIMEOUT_LOG` | `test/test-reports/per-process-bound.jsonl`; unset disables the records |
 | job  | `AWS_EC2_METADATA_DISABLED=true` | suppresses a dead S3 telemetry probe - see below |
 | step | `SHARD_NUMBER` | `_rtx-test.yml`'s internal `matrix.shard` |
 | step | `NUM_TEST_SHARDS` | static (`"5"`, matches the shard list length) |
@@ -451,6 +452,15 @@ is on `PYTHONPATH` in the test step only, and arms only in a process whose
 shard logs `per-process bound: <n>s, armed from <path>` once, or a `::warning::`
 if the file is not on the path. Setting `PER_PROCESS_TIMEOUT_SEC` to `0` or
 leaving it unset disables it.
+
+Because the bound is silent while armed, a run in which nothing hangs cannot
+otherwise be told apart from one where the module was never imported. So each
+armed process appends a line to `PER_PROCESS_TIMEOUT_LOG`, and a second one if
+it fires; the `Report per-process bound coverage` step turns those into
+`per-process bound: armed in <n> test-file process(es), fired <m> time(s)` and
+warns if `<n>` is `0`. The file rides along in the `test-reports` artifact. It
+is `.jsonl` rather than `.log` because `parse_failures.py` scans that tree for
+`*.log` / `*.txt` when hunting failures.
 
 Both bounds are sized from measured runs. `RUN_TEST_TIMEOUT_SEC` is 165 min
 against a slowest clean shard of 106 min and a slowest guarded one of 112 min.

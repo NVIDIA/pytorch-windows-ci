@@ -31,8 +31,7 @@ prep (resolve pytorch ref)                        ubuntu-latest
 ## Running it
 
 **`windows-woa-build-test`** runs automatically on a **nightly schedule**
-(`cron: 0 5 * * *`) — there is **no** manual `workflow_dispatch` trigger. Every
-run builds and tests the **full** matrix with a fixed config:
+(`cron: 0 5 * * *`), which builds and tests the **full** matrix:
 
 | Setting | Value | Meaning |
 | --- | --- | --- |
@@ -45,14 +44,49 @@ records the concrete pytorch commit into `built_pytorch_sha.txt` inside its whee
 artifact, and the test shards check out **exactly that SHA**, so build and test
 always agree on the source even when `nightly` moves mid-run.
 
+### Manual runs (`workflow_dispatch`)
+
+The schedule only ever sees code that already merged, so the workflow also takes a
+manual trigger for validating an upstream commit or PR on arm64 **before** it
+lands. GitHub requires write access to dispatch a workflow and attributes the run
+to the account that dispatched it, so this is maintainer-only and auditable; the
+SHA-pinning guarantees below apply unchanged to whatever a dispatch names.
+
+| Input | Default | Meaning |
+| --- | --- | --- |
+| `pytorch-pr` | *(empty)* | `pytorch/pytorch` PR number. `prep` resolves its head SHA and it **overrides `pytorch-ref`**. Fork PRs work — the head commit is reachable via `refs/pull/<n>/head` on `pytorch/pytorch`. |
+| `pytorch-ref` | `nightly` | Branch / tag / SHA to build. Ignored when `pytorch-pr` is set. |
+| `python-versions` | `3.13` | Comma-separated subset of the matrix cells to build + test; empty = every cell. Filters both stages (matched by the reusable workflows' own job-level `if:`). |
+| `run-tests` | checked | Uncheck for a **build-only** run: the wheels are still built and uploaded, the test stage and `test-summary` are skipped. Good enough to prove a compile fix, and it returns the arm64 pool hours earlier. |
+
+Build + test the head of a PR, one cell:
+
+```bash
+gh workflow run windows-woa-build-test.yml -R NVIDIA/pytorch-windows-ci \
+  -f pytorch-pr=196245 -f python-versions=3.13
+```
+
+Build-only, to confirm a compile fix as fast as the pool allows:
+
+```bash
+gh workflow run windows-woa-build-test.yml -R NVIDIA/pytorch-windows-ci \
+  -f pytorch-pr=196245 -f python-versions=3.13 -f run-tests=false
+```
+
+A manual run can overlap the nightly. That is safe but not free: wheel artifacts
+are keyed on `github.run_id` and every job strict-cleans before and after itself,
+yet the pool runs one job per agent, so an unnarrowed manual run competes with the
+nightly for agents. Narrow `python-versions` to the cell you actually need.
+
 ### Source integrity (SHA pinning + HTTPS/TLS)
 
 The pytorch source acquisition is pinned and encrypted end to end:
 
-- **SHA pinning.** `prep` resolves the `nightly` ref to a
-  **full 40-hex commit SHA** over HTTPS (`git ls-remote`) and passes that SHA to
-  every build cell, so all cells build the identical commit even if `nightly`
-  advances mid-run. `_woa-build.yml` additionally **rejects** any `pytorch-ref`
+- **SHA pinning.** `prep` resolves the requested source — the `nightly` ref, a
+  dispatched ref (`git ls-remote` over HTTPS), or a dispatched PR's head (the
+  GitHub API) — to a **full 40-hex commit SHA**, and passes that SHA to every
+  build cell, so all cells build the identical commit even if the ref advances
+  mid-run. `_woa-build.yml` additionally **rejects** any `pytorch-ref`
   that is not a 40-hex SHA (enforced even for direct reusable-workflow callers),
   and the test cells re-pin to the 40-hex `built_pytorch_sha.txt`. Because Git
   objects are content-addressed, a full-SHA checkout yields exactly that commit

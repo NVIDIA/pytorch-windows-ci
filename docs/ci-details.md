@@ -36,13 +36,16 @@ toolchain, persistent-runner cleanup, and operational details.
 ## Triggering workflows
 
 There are three top-level workflows. Two of them run automatically on a
-nightly `schedule`; the third is manual-only for now:
+nightly `schedule`; the third is manual-only for now. All three accept
+`workflow_dispatch`, which GitHub restricts to accounts with write access and
+attributes to the account that dispatched:
 
 - **`windows-rtx-build-test.yml`** — full source build + test, nightly at
   `5 3 * * *` (08:35 IST). Also accepts `workflow_dispatch` for manual runs.
 - **`windows-woa-build-test.yml`** — WoA (arm64) source build + test, nightly
-  at `0 5 * * *` (10:30 IST). Scheduled only; a manual trigger is
-  deliberately not offered.
+  at `0 5 * * *` (10:30 IST). A manual run can target a `pytorch-pr` or
+  `pytorch-ref`, narrow `python-versions`, and clear `run-tests` for a
+  build-only run; see the [WoA operator guide](woa-ci.md#manual-runs-workflow_dispatch).
 - **`windows-rtx-wheel-test.yml`** — published-wheel test. Its nightly cron
   (`0 17 * * *` / 22:30 IST) is currently commented out, so the workflow runs
   on `workflow_dispatch` only.
@@ -62,7 +65,7 @@ third-party OSS notices.
 | --- | --- | --- | --- |
 | `windows-rtx-wheel-test.yml`           | Each test cell checks out `pytorch/pytorch` at `pytorch-ref` (default `nightly`) via `actions/checkout@v7` (which resolves the branch to a concrete commit), records the actual HEAD SHA + commit date into the cell's job summary, then greps `download.pytorch.org/whl/nightly/torch/` for the wheel whose filename carries that exact `devYYYYMMDD` tag together with the matrix `cu<label>` / `cp<pyshort>` tags and `pip install`s the resolved absolute URL before running `.ci/pytorch/win-test.sh`. Fails fast if no matching wheel exists, so the wheel under test always shares its commit date with the pytorch source on disk. No preflight job, no artifact transit. | `workflow_dispatch`; the nightly cron is currently commented out | `_rtx-test.yml` (sm89 + sm120 in one matrix) |
 | `windows-rtx-build-test.yml`            | Full source build (multi-arch wheel) + test. Manual runs can narrow the matrix via subset filters and target a `pytorch-ref` or `pytorch-pr`. Also carries the parked path for RFC-0050 events. | `schedule` (`5 3 * * *` = 08:35 IST), `workflow_dispatch`, `repository_dispatch:[pytorch-pr-trigger]` (parked behind `dispatch-gate`) | `prep` -> `_rtx-build.yml` -> `_rtx-test.yml` (sm89 + sm120 in one matrix) |
-| `windows-woa-build-test.yml` | Builds and tests the WoA wheel matrix from source on the shared arm64 pool. | `schedule` (`0 5 * * *` = 10:30 IST); no manual trigger | `prep` -> `_woa-build.yml` -> `_woa-test.yml` -> `test-summary` |
+| `windows-woa-build-test.yml` | Builds and tests the WoA wheel matrix from source on the shared arm64 pool. Manual runs can target a `pytorch-ref` or `pytorch-pr`, narrow `python-versions`, and clear `run-tests` to stop after the build (both stages still pin to the SHA `prep` resolved). | `schedule` (`0 5 * * *` = 10:30 IST), `workflow_dispatch` | `prep` -> `_woa-build.yml` -> `_woa-test.yml` -> `test-summary` |
 
 Both RTX workflows fan out across `(config)` for builds and
 `(config x arch)` for tests. **Sharding is not a top-level axis on

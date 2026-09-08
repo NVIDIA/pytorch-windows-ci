@@ -9,12 +9,14 @@ name: windows-woa-build-test
 # (`_woa-build.yml`), tests every built wheel (`_woa-test.yml`), then rolls up
 # failures (`test-summary`).
 #
-# Scheduled (nightly) only - there is intentionally NO manual/workflow_dispatch
-# trigger; build-test is the sole WoA workflow this repo carries.
+# Runs nightly on a schedule, and on `workflow_dispatch` for on-demand runs
+# against a specific upstream commit or PR (the schedule can only ever cover
+# code that already merged). build-test is the sole WoA workflow this repo
+# carries.
 #
 # Shape:
 #
-#   prep (resolve ref @ nightly)
+#   prep (resolve ref @ nightly, or a dispatch's PR head / ref)
 #       |
 #   build  matrix( python in 3.11/3.12/3.13/3.14/3.14t ), CTK 13.4
 #       |    each: vanilla -> cuda_embed -> torchaudio -> torchvision -> upload
@@ -28,17 +30,52 @@ name: windows-woa-build-test
 # starts (same mechanism as x86) - which also keeps test jobs from starving the
 # build stage on the shared pool. With per-version testing the test stage fans
 # out to (#python cells) x 4 shards, all on the shared pool, so the full-matrix
-# nightly run serializes on the pool.
+# nightly run serializes on the pool. A manual run should normally narrow
+# `python-versions` to the cell it needs rather than take the whole pool.
 
 on:
   schedule:
     # Nightly build + test of the full WoA matrix against pytorch `nightly`.
-    # Manual/workflow_dispatch is intentionally NOT offered for this repo.
     - cron: "0 5 * * *"
+  # On-demand runs, so an upstream PR or commit can be validated on arm64 BEFORE
+  # it lands - the schedule only ever sees merged code, which is no help when an
+  # arm64-only build break is waiting on a fix. GitHub requires write access to
+  # dispatch a workflow and attributes the run to the account that did it, so the
+  # trigger is maintainer-only and auditable. What a dispatch cannot do is loosen
+  # source pinning: `prep` still resolves whatever it is given to a full commit
+  # SHA and `_woa-build.yml` still rejects anything that is not 40-hex, so a
+  # manual run builds one named commit, never a moving ref.
+  workflow_dispatch:
+    inputs:
+      pytorch-pr:
+        description: >
+          pytorch/pytorch PR number to build + test. When set, its head SHA is
+          resolved in prep and overrides `pytorch-ref`. Fork PRs work too - the
+          head commit is reachable via pytorch/pytorch's refs/pull/<n>/head.
+          Leave empty to use `pytorch-ref` instead.
+        required: false
+        default: ""
+      pytorch-ref:
+        description: "pytorch/pytorch ref to build (branch / tag / SHA). Ignored when pytorch-pr is set."
+        required: false
+        default: "nightly"
+      python-versions:
+        description: "Comma-separated subset of the matrix python versions to build/test; empty = every cell."
+        required: false
+        default: "3.13"
+      run-tests:
+        description: "Run the test stage after the build. Clear it for a build-only run (e.g. to confirm a compile fix)."
+        type: boolean
+        required: false
+        default: true
 
-# No `concurrency:` group: the shared arm64 pool runs one job per agent, and the
-# only trigger is the once-a-day schedule, so runs never overlap. A run_id-keyed
-# group would be unique per run and coalesce nothing anyway.
+# Still no `concurrency:` group. A manual run can now overlap the nightly, but
+# that overlap is safe rather than merely unlikely: wheel artifacts are keyed on
+# `github.run_id`, the shared pool runs one job per agent (so two runs land on
+# different agents, or queue when the pool is full), and `woa-strict-clean`
+# scrubs `C:\pt` + scratch before and after every job. A group keyed on anything
+# shared would either cancel the nightly mid-build or park the manual run behind
+# it - both worse than letting the pool queue them.
 
 permissions:
   contents: read
@@ -64,15 +101,21 @@ jobs:
       torchaudio-ref: ${{ steps.ref.outputs.torchaudio-ref }}
       torchvision-ref: ${{ steps.ref.outputs.torchvision-ref }}
       nightly-date: ${{ steps.ref.outputs.nightly-date }}
+      run-tests: ${{ steps.ref.outputs.run-tests }}
     steps:
       - name: Resolve source refs to commit SHAs
         id: ref
         shell: bash
         env:
-          REF: "nightly"
+          GH_TOKEN: ${{ github.token }}
+          # Empty under `schedule` (the `inputs` context is null there), which is
+          # what makes the nightly fall back to `nightly` / no python filter.
+          PR: ${{ inputs.pytorch-pr }}
+          REF: ${{ inputs.pytorch-ref || 'nightly' }}
+          RUN_TESTS: ${{ inputs.run-tests }}
           AUDIO_REF: "main"
           VISION_REF: "main"
-          PYTHON_VERSIONS: ""
+          PYTHON_VERSIONS: ${{ inputs.python-versions }}
           NUM_SHARDS: "4"
         run: |
           set -euo pipefail
@@ -93,16 +136,46 @@ jobs:
               exit 1
             fi
           }
-          sha="$(resolve_ref "https://github.com/pytorch/pytorch" "${REF}")";        require_sha pytorch     "${sha}"       "${REF}"
+          # A dispatched PR number wins over REF: resolve its head SHA so the run
+          # pins the exact commit under review. Fork heads resolve fine - the
+          # commit is reachable via pytorch/pytorch's refs/pull/<n>/head, which is
+          # what each build cell's `actions/checkout` fetches.
+          if [ -n "${PR}" ]; then
+            if ! [[ "${PR}" =~ ^[0-9]+$ ]]; then
+              echo "::error::pytorch-pr must be a number, got '${PR}'." >&2
+              exit 1
+            fi
+            pr_info="$(gh api "repos/pytorch/pytorch/pulls/${PR}" \
+              -q '[.head.sha, .head.repo.full_name, .title] | @tsv')"
+            IFS=$'\t' read -r sha head_repo pr_title <<< "${pr_info}"
+            require_sha pytorch "${sha:-}" "PR #${PR} head"
+            ref_source="PR #${PR} head (${head_repo})"
+            echo "Resolved ${ref_source} -> ${sha} (${pr_title})"
+          else
+            sha="$(resolve_ref "https://github.com/pytorch/pytorch" "${REF}")";      require_sha pytorch     "${sha}"       "${REF}"
+            ref_source="${REF}"
+          fi
           audio_sha="$(resolve_ref "https://github.com/pytorch/audio" "${AUDIO_REF}")";   require_sha torchaudio  "${audio_sha}"  "${AUDIO_REF}"
           vision_sha="$(resolve_ref "https://github.com/pytorch/vision" "${VISION_REF}")"; require_sha torchvision "${vision_sha}" "${VISION_REF}"
           nightly_date="$(date -u +%Y%m%d)"
-          echo "Resolved pytorch '${REF}' -> ${sha}, torchaudio '${AUDIO_REF}' -> ${audio_sha}, torchvision '${VISION_REF}' -> ${vision_sha}"
+          # Normalize the test toggle to a plain string here instead of testing
+          # `inputs.run-tests` in the `test` job's `if:`. A UI dispatch sends a real
+          # boolean but the REST API / `gh workflow run -f run-tests=false` sends the
+          # STRING "false", and a bare truthiness check treats that string as true
+          # (while `!= 'false'` misreads the real boolean) - so a build-only run would
+          # silently test anyway. Interpolating into an env var stringifies both forms
+          # identically, and an unset input (schedule) lands on the "true" default.
+          run_tests="true"
+          if [ "${RUN_TESTS}" = "false" ]; then run_tests="false"; fi
+          test_stage="enabled"
+          if [ "${run_tests}" = "false" ]; then test_stage="skipped (build-only run)"; fi
+          echo "Resolved pytorch '${ref_source}' -> ${sha}, torchaudio '${AUDIO_REF}' -> ${audio_sha}, torchvision '${VISION_REF}' -> ${vision_sha}"
           {
             echo "pytorch-ref=${sha}"
             echo "torchaudio-ref=${audio_sha}"
             echo "torchvision-ref=${vision_sha}"
             echo "nightly-date=${nightly_date}"
+            echo "run-tests=${run_tests}"
           } >> "$GITHUB_OUTPUT"
           {
             echo "## windows-woa-build-test config"
@@ -110,7 +183,7 @@ jobs:
             echo "| field | value |"
             echo "| --- | --- |"
             echo "| trigger | \`${{ github.event_name }}\` |"
-            echo "| pytorch-ref (input) | \`${REF}\` |"
+            echo "| pytorch source (requested) | \`${ref_source}\` |"
             echo "| pytorch-ref (resolved SHA) | \`${sha}\` |"
             echo "| torchaudio-ref (resolved SHA) | \`${audio_sha}\` |"
             echo "| torchvision-ref (resolved SHA) | \`${vision_sha}\` |"
@@ -118,6 +191,7 @@ jobs:
             echo "| python-versions (build + test) | \`${PYTHON_VERSIONS:-(all)}\` |"
             echo "| test config | \`per-version / cu134\` |"
             echo "| shards | \`${NUM_SHARDS}\` |"
+            echo "| test stage | \`${test_stage}\` |"
           } >> "$GITHUB_STEP_SUMMARY"
 
   build:
@@ -160,10 +234,14 @@ jobs:
       # to run_id only) that the re-running test cell can still resolve. The build upload
       # uses overwrite:true so a full "Re-run all jobs" (build re-runs) replaces it cleanly.
       wheel-artifact: woa-${{ matrix.config.label }}-cu134-${{ github.run_id }}
+      # Manual narrowing; empty (every schedule run) disables the filter. Evaluated by
+      # the reusable workflow's own job-level `if:`, because GitHub forbids `matrix.*`
+      # in the `if:` of a job that calls a reusable workflow.
+      python-versions: ${{ inputs.python-versions }}
 
   test:
     name: woa-${{ matrix.config.label }}-cu134-arm64-test
-    needs: build
+    needs: [prep, build]
     # Run the test matrix even when SOME build cells failed. With a plain `needs: build`
     # a single failed build cell marks the whole build job `failure` and GitHub auto-skips
     # every test cell - so a partial build (e.g. py311/py313 pass, py314t fails) would test
@@ -172,7 +250,15 @@ jobs:
     # failed-build cell simply errors at its wheel download (no wheel to test). The
     # `!= 'skipped'` guard keeps tests off when the build stage was wholesale skipped
     # (e.g. prep failed, or the repository_dispatch gate parked it).
-    if: ${{ !cancelled() && needs.build.result != 'skipped' }}
+    #
+    # The last clause is the `run-tests` toggle, read from prep's normalized string
+    # (see the comment there for why it is not `inputs.run-tests` directly): a
+    # dispatch that clears it stops here with the wheels built and uploaded - enough
+    # to prove a compile fix, and it hands the arm64 pool back hours earlier. Only an
+    # explicit "false" skips, so a schedule run (input unset) always tests.
+    if: >-
+      ${{ !cancelled() && needs.build.result != 'skipped' &&
+      needs.prep.outputs.run-tests != 'false' }}
     # One test cell per built Python (reuses the build matrix anchor). Each cell
     # fans out 4 shards inside _woa-test.yml and consumes its own build artifact.
     strategy:
@@ -192,16 +278,20 @@ jobs:
       # Stable across attempts (no run_attempt) so a test-only re-run still downloads the
       # wheel the build produced on the original attempt.
       wheel-artifact: woa-${{ matrix.config.label }}-cu134-${{ github.run_id }}
+      # Same manual filter the build call gets, so a narrowed dispatch tests exactly
+      # the cells it built.
+      python-versions: ${{ inputs.python-versions }}
 
   # ===========================================================================
   # Post-test rollup. Renders which test jobs failed (with log links) plus the
   # de-duplicated cross-shard failing-test list (per-cell + overall). Runs
   # `if: always()`, informational only - never reports a status of its own.
+  # Sits out a build-only run, where it would only render an empty table.
   # ===========================================================================
   test-summary:
     name: test-summary
     needs: test
-    if: always()
+    if: ${{ always() && needs.test.result != 'skipped' }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:

@@ -217,10 +217,10 @@ function Invoke-PytorchExtensionBuild {
     Write-CiPhase -State 'PASS' -Phase "${phase}_venv" -Component $component
 
     Write-CiPhase -State 'START' -Phase "${phase}_pip_install_torch_cuda_embed" -Component $component
-    python -m pip install --upgrade pip
-    if ($LASTEXITCODE -ne 0) { throw "pip install --upgrade pip failed with exit $LASTEXITCODE" }
-    python -m pip install --upgrade $torchWhlCudaEmbed
-    if ($LASTEXITCODE -ne 0) { throw "pip install CUDA-embedded torch wheel failed with exit $LASTEXITCODE" }
+    Invoke-ExtensionPipInstallRetried -What 'pip install --upgrade pip' `
+        -PipArgs @('install', '--upgrade', 'pip')
+    Invoke-ExtensionPipInstallRetried -What 'pip install CUDA-embedded torch wheel' `
+        -PipArgs @('install', '--upgrade', $torchWhlCudaEmbed)
     Write-CiPhase -State 'PASS' -Phase "${phase}_pip_install_torch_cuda_embed" -Component $component
 
     # Extension pip wheel runs with --no-build-isolation, so the build backend must already be
@@ -230,8 +230,8 @@ function Invoke-PytorchExtensionBuild {
     # so the extension build venv matches the known-good build contract.
     $baseReqs = Join-Path $PSScriptRoot '..\requirements\woa-base.txt'
     Write-CiPhase -State 'START' -Phase "${phase}_pip_install_build_reqs" -Component $component -Detail $baseReqs
-    python -m pip install -r $baseReqs
-    if ($LASTEXITCODE -ne 0) { throw "pip install -r $baseReqs failed with exit $LASTEXITCODE" }
+    Invoke-ExtensionPipInstallRetried -What "pip install -r $baseReqs" `
+        -PipArgs @('install', '-r', $baseReqs)
     Write-CiPhase -State 'PASS' -Phase "${phase}_pip_install_build_reqs" -Component $component
 
     # 4. Shallow checkout (pinned SHA when provided) with long-path support; cd into the source.

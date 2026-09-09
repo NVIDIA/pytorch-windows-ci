@@ -984,3 +984,69 @@ def test_main_no_logs_flag(tmp_path):
     )
     assert rc == 0
     assert "All collected tests passed" in out_file.read_text(encoding="utf-8")
+
+# --------------------------------------------------------------------------
+# Whole-file marker suppression
+# --------------------------------------------------------------------------
+def test_file_marker_suppressed_when_file_itemized_failures(tmp_path):
+    # run_test.py prints `<file> failed!` for any non-green file, so a file
+    # with itemized failures would otherwise be listed twice: once per failing
+    # test and once as a whole-file row naming the same failure.
+    _write(tmp_path, "fail.xml", FAILING_REPORT)
+    _write(tmp_path, "run.log", "test_mod failed!\n")
+
+    result = pf.collect(tmp_path)
+
+    names = sorted(f.name for f in result.failures)
+    assert names == ["test_err", "test_fail"]
+    assert not any(f.whole_file for f in result.failures)
+
+
+def test_file_marker_kept_when_it_is_the_only_evidence(tmp_path):
+    # The case the marker exists for: the file died before writing any
+    # <testcase>, so nothing else records the failure.
+    _write(tmp_path, "run.log", "test_cpp_extensions_aot_ninja 1/1 failed!\n")
+
+    result = pf.collect(tmp_path)
+
+    assert len(result.failures) == 1
+    assert result.failures[0].whole_file is True
+    assert result.failures[0].name == "test_cpp_extensions_aot_ninja"
+
+
+def test_file_marker_kept_when_another_file_itemized(tmp_path):
+    # An itemized failure in test_mod must not suppress the marker for a
+    # different file that produced no cases at all.
+    _write(tmp_path, "fail.xml", FAILING_REPORT)
+    _write(tmp_path, "run.log", "test_other failed!\n")
+
+    result = pf.collect(tmp_path)
+
+    markers = [f for f in result.failures if f.whole_file]
+    assert [f.name for f in markers] == ["test_other"]
+
+
+def test_file_marker_suppression_is_path_aware(tmp_path):
+    # `inductor/test_torchbind` itemized a failure; a marker for a top-level
+    # `test_torchbind` is a different file and must survive.
+    _write(tmp_path, "aoti.xml", AOTI_REPORT)
+    _write(tmp_path, "run.log", "test_torchbind failed!\n")
+
+    result = pf.collect(tmp_path)
+
+    markers = [f for f in result.failures if f.whole_file]
+    assert len(markers) == 1
+    assert markers[0].module_path == "test_torchbind"
+
+
+def test_file_marker_suppressed_but_recovered_tests_do_not_resurrect_it(tmp_path):
+    # If every itemized failure in a file was recovered on a rerun, the file
+    # has no surviving itemized failure - so a marker, if run_test.py still
+    # printed one, remains the only evidence and must be kept.
+    _write(tmp_path, "rerun.xml", RERUN_THEN_PASS_REPORT)
+    _write(tmp_path, "run.log", "test_mod failed!\n")
+
+    result = pf.collect(tmp_path)
+
+    assert [f.name for f in result.failures] == ["test_mod"]
+    assert result.failures[0].whole_file is True

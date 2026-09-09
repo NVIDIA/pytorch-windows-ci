@@ -1,5 +1,1811 @@
 {
   "default": {
-    "default": {}
+    "default": {
+      "backends/xeon/test_launch": {
+        "TestTorchrun": 0.008
+      },
+      "benchmark_utils/test_benchmark_utils": {
+        "TestBenchmarkUtils": 15.56
+      },
+      "complex_tensor/test_complex_tensor": {
+        "TestComplexBwdGradientsCPU": 28.591,
+        "TestComplexBwdGradientsCUDA": 61.184,
+        "TestComplexDistributedCPU": 2.452,
+        "TestComplexDistributedCUDA": 2.742,
+        "TestComplexTensorCPU": 18.997,
+        "TestComplexTensorCUDA": 140.33,
+        "TestComplexTensorGeneric": 5.1
+      },
+      "cpp_extensions/python_agnostic_extension/test/test_python_agnostic": {
+        "TestPythonAgnosticCUDA": 20.824
+      },
+      "cpp_extensions/test_libtorch_agnostic": {
+        "TestLibtorchAgnosticCPU": 41.431,
+        "TestLibtorchAgnosticCUDA": 23.696
+      },
+      "cpp_extensions/test_target_version_guard": {
+        "TestTargetVersionGuard": 8.518
+      },
+      "custom_operator/test_infer_schema_annotation": {
+        "TestInferSchemaWithAnnotation": 8.26
+      },
+      "custom_operator/test_inplace_tag": {
+        "TestInplaceTag": 127.617
+      },
+      "custom_operator/test_out_variant": {
+        "TestOutVariant": 92.79
+      },
+      "distributions/test_distributions": {
+        "TestAgainstScipy": 3.745,
+        "TestConstraints": 0.684,
+        "TestDistributionShapes": 0.874,
+        "TestDistributionsCPU": 151.84,
+        "TestDistributionsGPU": 12.139,
+        "TestFunctors": 0.068,
+        "TestJit": 34.56,
+        "TestKL": 17.258,
+        "TestLazyLogitsInitialization": 0.064,
+        "TestNumericalStability": 0.252,
+        "TestRsample": 2.39,
+        "TestValidation": 1.643
+      },
+      "dynamo/test_dynamo_decompositions": {
+        "TestDynamoDecompositions": 9.487,
+        "TestDynamoDecompositionsNumericsCPU": 180.429,
+        "TestDynamoDecompositionsNumericsCUDA": 0.169
+      },
+      "dynamo/test_fwd_loss_bwd": {
+        "TestForwardLossBackward": 20.002
+      },
+      "dynamo/test_pycode": {
+        "TestPycode": 7.985
+      },
+      "dynamo/test_tp_hash": {
+        "TpHashTests": 19.417
+      },
+      "export/test_converter": {
+        "TestConverter": 49.81
+      },
+      "export/test_db": {
+        "ExampleTests": 0.058
+      },
+      "export/test_draft_export": {
+        "TestDraftExport": 31.631
+      },
+      "export/test_dynamic_spec_export": {
+        "TestContainerSpecNonStrict": 1.248,
+        "TestContainerSpecStrict": 3.304,
+        "TestExportDynamicSpecNonStrict": 3.435,
+        "TestExportDynamicSpecStrict": 17.018
+      },
+      "export/test_export": {
+        "TestDynamismExpression": 9.419,
+        "TestExport": 0.709,
+        "TestExportCustomClass": 8.946,
+        "TestOneOffModelExportResult": 10.053
+      },
+      "export/test_export_opinfo": {
+        "TestExportOnFakeCudaCUDA": 0.047,
+        "TestExportOpInfoCPU": 554.267
+      },
+      "export/test_functionalized_assertions": {
+        "TestFuntionalAssertions": 7.598
+      },
+      "export/test_hop": {
+        "TestHOPDeviceCPU": 0.081,
+        "TestHOPDeviceCUDA": 0.094
+      },
+      "export/test_lift_unlift": {
+        "ConstantAttrMapTest": 0.02,
+        "TestLift": 8.098
+      },
+      "export/test_package": {
+        "TestAOTIPackageDeviceValidation": 0.028,
+        "TestPackage": 8.917
+      },
+      "export/test_pass_infra": {
+        "TestPassInfra": 11.506
+      },
+      "export/test_passes": {
+        "TestPasses": 201.626
+      },
+      "export/test_schema": {
+        "TestSchema": 11.754
+      },
+      "export/test_serialize": {
+        "TestDeserialize": 0.136,
+        "TestPredispatchSerialization": 1.671,
+        "TestSaveLoad": 3.713,
+        "TestSchemaVersioning": 0.229,
+        "TestSerialize": 16.469,
+        "TestSerializeCustomClass": 3.22
+      },
+      "export/test_sparse": {
+        "TestSparseProp": 3158.443
+      },
+      "export/test_swap": {
+        "TestSwap_nonstrict": 0.025,
+        "TestSwap_strict": 0.02
+      },
+      "export/test_tools": {
+        "TestExportTools": 8.581
+      },
+      "export/test_torchbind": {
+        "TestCompileTorchbind": 116.561,
+        "TestCompileTorchbindDeviceCPU": 0.259,
+        "TestCompileTorchbindDeviceCUDA": 0.657,
+        "TestExportTorchbind": 35.704,
+        "TestRegisterFakeClass": 0.056
+      },
+      "export/test_tree_utils": {
+        "TestTreeUtils": 7.467
+      },
+      "export/test_unflatten": {
+        "TestUnflatten": 125.472
+      },
+      "export/test_verifier": {
+        "TestVerifier": 13.023
+      },
+      "functorch/dim/test_getsetitem": {
+        "TestGetSetItem": 8.621
+      },
+      "functorch/dim/test_split": {
+        "TestSplit": 8.505
+      },
+      "functorch/test_ac_knapsack": {
+        "TestActivationCheckpointingKnapsack": 0.591,
+        "TestGraphInfoProvider": 7.103,
+        "TestKnapsackEvaluator": 0.07
+      },
+      "functorch/test_ac_logging": {
+        "TestAcLogging": 8.06
+      },
+      "functorch/test_aot_joint_with_descriptors": {
+        "TestAOTJointWithDescriptors": 32.978
+      },
+      "functorch/test_codegen_backward_epilogue": {
+        "TestCodegenBackwardEpilogue": 10.441
+      },
+      "functorch/test_codegen_backward_prologue": {
+        "TestCodegenBackwardPrologue": 7.991
+      },
+      "functorch/test_codegen_debug_assert": {
+        "TestCodegenDebugAssert": 9.831
+      },
+      "functorch/test_codegen_dedup": {
+        "TestCodegenDedup": 6.394
+      },
+      "functorch/test_codegen_mutation_epilogue": {
+        "TestCodegenMutationEpilogue": 8.842
+      },
+      "functorch/test_codegen_output_alias": {
+        "TestCodegenOutputAlias": 13.042
+      },
+      "functorch/test_codegen_runtime_wrapper": {
+        "TestCodegenRuntimeWrapper": 12.913
+      },
+      "functorch/test_compile_to_python": {
+        "TestAOTCompileToPython": 149.837,
+        "TestAOTCompileToPythonCuda": 0.009,
+        "TestAOTComposeGuards": 0.982,
+        "TestComposerHelpers": 0.118
+      },
+      "functorch/test_eager_transforms": {
+        "TestAutogradFunctionCPU": 0.579,
+        "TestAutogradFunctionCUDA": 0.798,
+        "TestAutogradFunctionVmapAPICPU": 0.165,
+        "TestAutogradFunctionVmapAPICUDA": 0.161,
+        "TestCompileTransformsCPU": 107.504,
+        "TestCompileTransformsCUDA": 23.056,
+        "TestComposabilityCPU": 0.952,
+        "TestComposabilityCUDA": 0.946,
+        "TestExamplesCorrectnessCPU": 13.095,
+        "TestExamplesCorrectnessCUDA": 7.997,
+        "TestFunctionalizeCPU": 0.729,
+        "TestFunctionalizeCUDA": 0.763,
+        "TestGradTrackingTensorToListCPU": 0.073,
+        "TestGradTrackingTensorToListCUDA": 0.074,
+        "TestGradTransformCPU": 2.958,
+        "TestGradTransformCUDA": 10.511,
+        "TestHelpersCPU": 0.098,
+        "TestHelpersCUDA": 0.118,
+        "TestHessianCPU": 0.208,
+        "TestHessianCUDA": 0.424,
+        "TestHigherOrderOperatorInteractionCPU": 0.164,
+        "TestHigherOrderOperatorInteractionCUDA": 0.205,
+        "TestJacCPU": 2.525,
+        "TestJacCUDA": 5.349,
+        "TestJvpCPU": 0.388,
+        "TestJvpCUDA": 0.503,
+        "TestLinearizeCPU": 0.788,
+        "TestLinearizeCUDA": 0.959,
+        "TestMakeFunctional": 0.512,
+        "TestSliceArgnums": 6.699,
+        "TestVmapJvpInplaceViewCPU": 0.102,
+        "TestVmapJvpInplaceViewCUDA": 0.144,
+        "TestVmapOfGradCPU": 1.006,
+        "TestVmapOfGradCUDA": 3.103
+      },
+      "functorch/test_leaf_function": {
+        "TestLeafFunctionAotFunction": 2.533,
+        "TestLeafFunctionDynamo": 63.512,
+        "TestLeafFunctionEscapedGradients": 0.773,
+        "TestLeafFunctionGradDtype": 0.149,
+        "TestLeafFunctionMakeFx": 6.484,
+        "TestLeafFunctionMakeFxAndCompile": 3.167,
+        "TestLeafFunctionRegisterHook": 0.221
+      },
+      "functorch/test_logging": {
+        "TestAOTLogging": 6.411
+      },
+      "functorch/test_minifier": {
+        "TestMinifier": 7.477
+      },
+      "functorch/test_source_emit": {
+        "TestSourceEmit": 9.638
+      },
+      "functorch/test_subclass_codegen": {
+        "TestSubclassCodegen": 9.806
+      },
+      "functorch/test_vmap": {
+        "TestRandomnessCPU": 6.612,
+        "TestRandomnessCUDA": 17.97,
+        "TestTransformFailureCPU": 0.802,
+        "TestTransformFailureCUDA": 0.774,
+        "TestVmapAPI": 17.039,
+        "TestVmapBatchedGradientCPU": 1.248,
+        "TestVmapBatchedGradientCUDA": 25.763,
+        "TestVmapDeviceTypeCPU": 0.131,
+        "TestVmapDeviceTypeCUDA": 1.558,
+        "TestVmapNestedTensorCPU": 0.272,
+        "TestVmapNestedTensorCUDA": 1.228,
+        "TestVmapOperators": 12.78,
+        "TestVmapOperatorsOpInfoCPU": 2302.041,
+        "TestVmapOperatorsOpInfoCUDA": 3711.768
+      },
+      "functorch/test_vmap_registrations": {
+        "TestFunctorchDispatcher": 18.879
+      },
+      "higher_order_ops/test_debug_log": {
+        "TestDebugGradLog": 6.447
+      },
+      "higher_order_ops/test_inline_asm_elementwise": {
+        "TestInlineAsmElementwise": 12.094,
+        "TestInlineAsmElementwiseEdgeCases": 0.117,
+        "TestInlineAsmElementwiseErrors": 0.063,
+        "TestInlineAsmElementwiseMultipleOutputsCUDA": 0.039,
+        "TestInlineAsmPackPadding": 0.042
+      },
+      "higher_order_ops/test_invoke_quant": {
+        "TestInvokeQuantAotEager": 0.976,
+        "TestInvokeQuantEager": 2.084,
+        "TestInvokeQuantInductor": 25.096
+      },
+      "higher_order_ops/test_invoke_subgraph": {
+        "NegativeTesting": 0.057,
+        "TestInlineInvokeSubgraph": 7.294,
+        "TestInlineSingleUseInvokeSubgraph": 0.817,
+        "TestInvokeSubgraph": 2.848,
+        "TestInvokeSubgraphCompile": 464.142,
+        "TestInvokeSubgraphCompileCUDA": 0.003,
+        "TestInvokeSubgraphCompileDeviceCUDA": 12.555,
+        "TestInvokeSubgraphExportNonstrict": 14.23,
+        "TestInvokeSubgraphExportStrict": 10.26,
+        "TestInvokeSubgraphReuse": 15.707,
+        "TestInvokeSubgraphReuseHashFn": 2.626,
+        "TestInvokeSubgraphTrainStepCapture": 3.8
+      },
+      "higher_order_ops/test_local_map": {
+        "TestLocalMap": 25.586
+      },
+      "higher_order_ops/test_print": {
+        "TestHopPrint": 81.33,
+        "TestHopPrintDTensor": 233.648
+      },
+      "higher_order_ops/test_with_effects": {
+        "TestWithEffects": 75.162
+      },
+      "inductor/test_analysis": {
+        "TestAnalysisCPU": 0.138,
+        "TestAnalysisCUDA": 0.147,
+        "TestUtils": 0.052
+      },
+      "inductor/test_aoti_torchbind_constants": {
+        "TestTorchbindAOTI": 0.671
+      },
+      "inductor/test_block_analysis": {
+        "BlockAnalysisTest": 0.414
+      },
+      "inductor/test_choices_composition": {
+        "ChoicesCompositionTest": 1.668
+      },
+      "inductor/test_compile_to_python": {
+        "TestInductorCompileToPythonCodegen": 11.39,
+        "TestInductorCompileToPythonContract": 8.053,
+        "TestInductorCompileToPythonCudaCodegen": 0.01
+      },
+      "inductor/test_compiled_fx_graph_serialization": {
+        "TestCompiledFxGraphSerialization": 6.066
+      },
+      "inductor/test_cpp_builder": {
+        "TestCppBuilder": 6.381
+      },
+      "inductor/test_device_backend_hooks": {
+        "TestDevicePropertiesCreate": 0.015,
+        "TestMultiProcessorCount": 7.793,
+        "TestUsesGpuCppWrapper": 0.073
+      },
+      "inductor/test_dynamic_tunable_ops": {
+        "BmmLayoutCoverageWildcardTest": 2.779,
+        "DynamicDimMaskOperandSelectionTest": 2.303,
+        "DynamicTunableOpsTest": 9.379,
+        "LayoutCoverageWildcardTest": 49.336,
+        "LegacyConcreteOnlyTunableOpsTest": 3.963,
+        "RecordUntunedConcreteMissTest": 0.787,
+        "ScaledGemmTunableOpFP8Test": 0.006
+      },
+      "inductor/test_flex_aux_vectorization": {
+        "TestFlexAuxVectorization": 1.74
+      },
+      "inductor/test_flex_gemm": {
+        "TestFlexGemmEpilogueHOP": 3.183,
+        "TestFlexGemmExplicitConfigDeviceCUDA": 0.063,
+        "TestFlexGemmFastMathDeviceCUDA": 0.009,
+        "TestFlexGemmNVFP4DeviceCUDA": 0.007,
+        "TestFlexGemmRuntime": 0.102,
+        "TestFlexGemmRuntimeHelpers": 1.893,
+        "TestFlexGemmRuntimeImport": 4.773,
+        "TestFlexGemmTransposedOutputDeviceCUDA": 0.008
+      },
+      "inductor/test_fusion_regions": {
+        "TestFusionRegionDetection": 9.089
+      },
+      "inductor/test_inductor_scheduler": {
+        "TestSchedulerCPU": 1.622,
+        "TestSchedulerCUDA": 1.154,
+        "TestScoreFusionMemoryCPU": 0.015,
+        "TestScoreFusionMemoryCUDA": 0.015
+      },
+      "inductor/test_interval_mask_packing": {
+        "TestIntervalMaskPacking": 34.619
+      },
+      "inductor/test_low_contention_collectives": {
+        "TestLowContentionCollectives": 10.346
+      },
+      "inductor/test_minifier_utils": {
+        "MinifierUtilsTests": 9.974
+      },
+      "inductor/test_optimize_indexing": {
+        "TestOptimizeIndexing": 7.008
+      },
+      "inductor/test_profiler_trace": {
+        "InductorProfilerTraceTests": 0.138
+      },
+      "inductor/test_reorder_for_locality_in_training": {
+        "TestReorderForLocalityInTrainingCPU": 122.992,
+        "TestReorderForLocalityInTrainingCUDA": 0.03,
+        "TestReorderForLocalityInTrainingEnv": 63.152
+      },
+      "inductor/test_strict_numerics": {
+        "StrictNumericsTestCUDA": 0.045
+      },
+      "inductor/test_symm_mem_registry": {
+        "TestFunctionalOpCompile": 0.078,
+        "TestLibraryIntegration": 0.116,
+        "TestSymmMemRegistry": 0.178
+      },
+      "inductor/test_symmetric_mm": {
+        "SymmetricMMTestCUDA": 6.726
+      },
+      "inductor/test_user_streams": {
+        "TestAOTIUserStreams": 0.047,
+        "TestGenericStreamCompile": 0.064,
+        "TestPDLWithMultiStream": 0.07,
+        "TestStreamCodegen": 0.113,
+        "TestStreamCudagraphInteraction": 0.065,
+        "TestStreamExternalObjectRestore": 0.015,
+        "TestStreamIdentity": 0.027,
+        "TestStreamOrderingStress": 0.102,
+        "TestStreamUtils": 4.056,
+        "TestUserStreamCompile": 0.679,
+        "TestWrapperCodegenStreams": 0.072
+      },
+      "inductor/test_utils": {
+        "TestFP4Support": 0.056,
+        "TestFakeTensorUpdater": 4.245,
+        "TestHasTriton": 0.144,
+        "TestLoadTemplate": 0.114,
+        "TestRuntimeEstimation": 0.032,
+        "TestTritonTypeMapping": 0.013,
+        "TestUtilsCPU": 1.394,
+        "TestUtilsCUDA": 0.358
+      },
+      "inductor/test_warnings": {
+        "InductorWarningTests": 24.908
+      },
+      "lazy/test_bindings": {
+        "test_bindings": 0.003
+      },
+      "lazy/test_debug_util": {
+        "DebugUtilTest": 0.004
+      },
+      "lazy/test_functionalization": {
+        "LazyFuncionalizationTest": 8.997
+      },
+      "lazy/test_generator": {
+        "LazyGeneratorTest": 9.152
+      },
+      "lazy/test_reuse_ir": {
+        "TestLazyReuseIrDeviceCPU": 0.013,
+        "TestLazyReuseIrDeviceCUDA": 0.011
+      },
+      "lazy/test_step_closures": {
+        "ClosuresTest": 17.084
+      },
+      "lazy/test_ts_opinfo": {
+        "TestLazyDynamicOps": 0.959,
+        "TestLazyOpInfoCPU": 68.901,
+        "TestLazyTensor": 6.493
+      },
+      "nn/attention/test_fa3": {
+        "TestFlashAttentionFA3CUDA": 7.405
+      },
+      "nn/attention/test_fa4": {
+        "TestFlashAttentionFA4CUDA": 7.151
+      },
+      "nn/attention/test_open_registry": {
+        "TestFlashAttentionRegistry": 8.357
+      },
+      "nn/test_dropout": {
+        "TestDropoutNN": 6.36,
+        "TestDropoutNNDeviceTypeCPU": 1.117,
+        "TestDropoutNNDeviceTypeCUDA": 5.419
+      },
+      "nn/test_embedding": {
+        "TestEmbeddingNN": 7.316,
+        "TestEmbeddingNNDeviceTypeCPU": 29.871,
+        "TestEmbeddingNNDeviceTypeCUDA": 225.622
+      },
+      "nn/test_init": {
+        "TestNNInit": 16.151,
+        "TestNNInitDeviceCPU": 8.358,
+        "TestNNInitDeviceCUDA": 8.64
+      },
+      "nn/test_lazy_modules": {
+        "TestLazyModules": 8.373,
+        "TestLazyModulesDeviceCPU": 0.027,
+        "TestLazyModulesDeviceCUDA": 0.015
+      },
+      "nn/test_load_state_dict": {
+        "TestLoadStateDict": 10.765,
+        "TestLoadStateDictSwap": 0.242
+      },
+      "nn/test_module_hooks": {
+        "TestModuleGlobalHooks": 0.147,
+        "TestModuleHookNN": 0.454,
+        "TestModuleHooks": 7.408,
+        "TestStateDictHooks": 0.3
+      },
+      "nn/test_multihead_attention": {
+        "TestMultiheadAttentionNN": 28.712,
+        "TestMultiheadAttentionNNDeviceTypeCPU": 74.269,
+        "TestMultiheadAttentionNNDeviceTypeCUDA": 2.53
+      },
+      "nn/test_packed_sequence": {
+        "PackedSequenceTest": 9.464
+      },
+      "nn/test_parametrization": {
+        "TestNNParametrization": 10.404,
+        "TestNNParametrizationDeviceCPU": 0.081,
+        "TestNNParametrizationDeviceCUDA": 1.444
+      },
+      "nn/test_pooling": {
+        "TestAvgPool": 6.919,
+        "TestAvgPoolDeviceCPU": 0.055,
+        "TestAvgPoolDeviceCUDA": 0.246,
+        "TestPoolingNN": 8.714,
+        "TestPoolingNNDeviceCPU": 78.994,
+        "TestPoolingNNDeviceCUDA": 38.787
+      },
+      "nn/test_pruning": {
+        "TestPruningNN": 7.102
+      },
+      "optim/test_stateless": {
+        "TestSwapInOptimizerParamsAndState": 8.301
+      },
+      "profiler/test_cpp_thread": {
+        "CppThreadTestCUDA": 6.607
+      },
+      "profiler/test_cupti_decoder": {
+        "TestCuptiDecoder": 6.156
+      },
+      "profiler/test_cupti_monitor": {
+        "TestCuptiCallbackRegistry": 0.019,
+        "TestCuptiClock": 0.011,
+        "TestCuptiMonitorCUDA": 6.309,
+        "TestCuptiMonitorNative": 11.637,
+        "TestCuptiMonitorProfiler": 0.028,
+        "TestCuptiRecords": 0.417,
+        "TestWindowFinalizer": 0.084
+      },
+      "profiler/test_cupti_node_timer": {
+        "TestCuptiNodeTimerCUDA": 6.372,
+        "TestNodeTimerBucketName": 0.004
+      },
+      "profiler/test_cupti_pm_sampling": {
+        "TestPmSamplingWindowSizing": 0.031
+      },
+      "profiler/test_cupti_python": {
+        "TestPyLibCupti": 0.017
+      },
+      "profiler/test_execution_trace": {
+        "TestExecutionTraceCPU": 8.451,
+        "TestExecutionTraceCUDA": 2.772
+      },
+      "profiler/test_kineto": {
+        "SimpleKinetoInitializationTestCUDA": 14.777
+      },
+      "profiler/test_memory_profiler": {
+        "TestDataFlow": 9.833,
+        "TestIdentifyGradientsCPU": 1.417,
+        "TestMemoryProfiler": 6.885,
+        "TestMemoryProfilerE2E": 8.235,
+        "TestMemoryProfilerE2EDeviceTypeCPU": 4.47,
+        "TestMemoryProfilerTimelineCPU": 0.139,
+        "TestMemoryProfilerTimelineCUDA": 0.235
+      },
+      "profiler/test_python_tracer": {
+        "TestPythonTracer": 43.728
+      },
+      "profiler/test_record_function": {
+        "TestRecordFunction": 11.135
+      },
+      "profiler/test_torch_tidy": {
+        "TestTorchTidyProfiler": 35.809
+      },
+      "profiler/test_trace_validator": {
+        "TestTraceValidatorE2EAgnosticCUDA": 0.004,
+        "TestTraceValidatorE2ECUDA": 0.028,
+        "TestTraceValidatorRules": 6.39
+      },
+      "profiler/test_xpu_profiler": {
+        "XpuProfilerTest": 6.627
+      },
+      "profiler/test_xpu_scope_profiler": {
+        "XpuScopeProfilerTest": 6.752
+      },
+      "python_native/test_cutedsl_smoketest": {
+        "TestCuteDSLReadOnlyWrapper": 0.008,
+        "TestCuteDSLSmoketest": 0.01
+      },
+      "python_native/test_decomp": {
+        "TestNativeDecompTable": 11.663
+      },
+      "python_native/test_dsl_registry": {
+        "TestDSLRegistry": 7.965
+      },
+      "python_native/test_flydsl_cache": {
+        "TestFlyDSLCache": 10.602
+      },
+      "python_native/test_flydsl_rmsnorm_fwd": {
+        "TestFlyDSLRMSNorm": 0.152,
+        "TestFlyDSLRMSNormHelpers": 7.016
+      },
+      "python_native/test_flydsl_utils": {
+        "TestFlyDSLArchResolution": 8.931,
+        "TestFlyDSLSharedPredicates": 0.133,
+        "TestFlyDSLVersionGate": 0.147
+      },
+      "python_native/test_instrumentation": {
+        "TestHelionKernelInstrumentation": 0.401,
+        "TestInstrumentation": 8.939,
+        "TestInstrumentationCoverage": 1.017,
+        "TestTlparseOutput": 1.552,
+        "TestTritonKernelInstrumentation": 0.669
+      },
+      "python_native/test_native_dsl_ops": {
+        "TestNativeDSLOps": 26.164
+      },
+      "python_native/test_quack_vendor": {
+        "TestQuackVendor": 0.005,
+        "TestQuackVendorScript": 6.321
+      },
+      "python_native/test_registry": {
+        "TestRegistry": 6.467,
+        "TestRegistryRuntime": 6.271
+      },
+      "python_native/test_sum_cutedsl": {
+        "TestSumCuteDSLOverride": 0.045
+      },
+      "python_native/test_sum_inner_tree_plan": {
+        "TestInnerTreePlan": 8.206
+      },
+      "python_native/test_topk_cutedsl": {
+        "TestCuTeDSLTopK": 0.112
+      },
+      "python_native/test_topk_cutedsl_eligibility": {
+        "TestCuTeDSLTopKEligibility": 8.654
+      },
+      "python_native/test_torch_backends": {
+        "TestTorchBackendsPythonNative": 8.389,
+        "TestTorchBackendsPythonNativeIntegration": 0.023
+      },
+      "spincli/test_spin": {
+        "TestSpin": 20.152
+      },
+      "test_accelerator": {
+        "TestAcceleratorCUDA": 12.872
+      },
+      "test_ao_sparsity": {
+        "TestActivationSparsifier": 0.256,
+        "TestBaseDataScheduler": 0.155,
+        "TestBaseDataSparsifier": 0.313,
+        "TestBaseSparsifier": 0.165,
+        "TestBaseStructuredSparsifierCPU": 0.292,
+        "TestBaseStructuredSparsifierDeviceCPU": 5.951,
+        "TestBaseStructuredSparsifierDeviceCUDA": 7.413,
+        "TestComposability": 0.028,
+        "TestCubicScheduler": 0.046,
+        "TestFPGMPrunerCPU": 0.018,
+        "TestFPGMPrunerDeviceCPU": 0.078,
+        "TestFPGMPrunerDeviceCUDA": 0.131,
+        "TestFakeSparsity": 0.518,
+        "TestFxComposability": 6.047,
+        "TestNearlyDiagonalSparsifier": 3.612,
+        "TestNormDataSparsifiers": 3.456,
+        "TestQuantizationUtils": 0.099,
+        "TestQuantizedSparseKernels": 6.261,
+        "TestQuantizedSparseLayers": 0.022,
+        "TestSaliencyPrunerDeviceCPU": 0.133,
+        "TestSaliencyPrunerDeviceCUDA": 1.404,
+        "TestScheduler": 0.138,
+        "TestSparsityUtilFunctions": 0.224,
+        "TestWeightNormSparsifier": 1.803
+      },
+      "test_as_strided": {
+        "TestAsStrided": 8.639
+      },
+      "test_autocast": {
+        "TestAutocastCPU": 9.729,
+        "TestAutocastDeviceCPU": 0.055,
+        "TestAutocastDeviceCUDA": 0.952,
+        "TestTorchAutocast": 0.047,
+        "TestTorchAutocastDeviceCPU": 0.058,
+        "TestTorchAutocastDeviceCUDA": 0.138
+      },
+      "test_autograd": {
+        "TestAllowMutationOnSaved": 0.179,
+        "TestAutograd": 143.637,
+        "TestAutogradComplex": 0.021,
+        "TestAutogradDeviceTypeCPU": 2.114,
+        "TestAutogradDeviceTypeCUDA": 9.831,
+        "TestAutogradForwardMode": 0.387,
+        "TestAutogradForwardModeBatchedGrad": 0.074,
+        "TestAutogradFunctional": 30.418,
+        "TestAutogradInferenceMode": 0.204,
+        "TestAutogradLogging": 0.133,
+        "TestAutogradMultipleDispatchCPU": 0.142,
+        "TestAutogradMultipleDispatchCUDA": 0.163,
+        "TestAutogradStreamSynchronizationCPU": 0.044,
+        "TestAutogradStreamSynchronizationCUDA": 5.416,
+        "TestFunctionAssertMessages": 0.062,
+        "TestMultithreadAutograd": 0.901,
+        "TestNestedCheckpoint": 1.66,
+        "TestSACAmbientSavedTensorsHooks": 0.187,
+        "TestSelectiveActivationCheckpoint": 1.213
+      },
+      "test_autograd_fallback": {
+        "TestAutogradFallback": 2.551
+      },
+      "test_autoload": {
+        "TestDeviceBackendAutoload": 10.071
+      },
+      "test_binary_ufuncs": {
+        "TestBinaryUfuncs": 6.762,
+        "TestBinaryUfuncsCUDACUDA": 0.111,
+        "TestBinaryUfuncsDeviceCPU": 559.824,
+        "TestBinaryUfuncsDeviceCUDA": 2329.299,
+        "TestChebyshevNanPropagationCPU": 0.032,
+        "TestChebyshevNanPropagationCUDA": 27.592
+      },
+      "test_bmm_outer_product": {
+        "TestBmmOuterProduct": 6.023,
+        "TestBmmOuterProductDeviceCPU": 0.138,
+        "TestBmmOuterProductDeviceCUDA": 1.898,
+        "TestOuterProductDetection": 0.016
+      },
+      "test_bundled_inputs": {
+        "TestBundledInputs": 11.155
+      },
+      "test_comparison_utils": {
+        "TestComparisonUtils": 6.052,
+        "TestComparisonUtilsDeviceCUDA": 0.017
+      },
+      "test_compile_benchmark_util": {
+        "TestCompileBenchmarkUtilCUDA": 12.013
+      },
+      "test_complex": {
+        "TestComplexTensorCPU": 6.163,
+        "TestComplexTensorCUDA": 1.13
+      },
+      "test_content_store": {
+        "TestContentStoreCPU": 26.119,
+        "TestContentStoreCUDA": 0.985
+      },
+      "test_cpp_api_parity": {
+        "TestCppApiParity": 191.275
+      },
+      "test_cpp_extensions_aot_ninja": {
+        "TestCppExtensionAOT": 3.535,
+        "TestMAIATensor": 0.04,
+        "TestPybindTypeCasters": 0.014,
+        "TestRNGExtension": 0.01,
+        "TestTorchLibrary": 0.143
+      },
+      "test_cpp_extensions_aot_no_ninja": {
+        "TestCppExtensionAOT": 3.434,
+        "TestMAIATensor": 0.037,
+        "TestPybindTypeCasters": 0.011,
+        "TestRNGExtension": 0.013,
+        "TestTorchLibrary": 0.159
+      },
+      "test_cpp_extensions_jit": {
+        "TestCppExtensionImport": 19.911,
+        "TestCppExtensionJIT": 1957.078
+      },
+      "test_cpp_extensions_mtia_backend": {
+        "TestCppExtensionMTIABackend": 0.033
+      },
+      "test_cpp_extensions_stream_and_event": {
+        "TestCppExtensionStreamAndEvent": 0.008
+      },
+      "test_cpython_diff_sync": {
+        "CPythonDiffSyncTests": 61.998
+      },
+      "test_cuda": {
+        "TestBlockStateAbsorption": 18.986,
+        "TestCachingHostAllocatorConfig": 6.266,
+        "TestCachingHostAllocatorCudaGraph": 0.341,
+        "TestCompileKernel": 4.767,
+        "TestCuda": 322.668,
+        "TestCudaAllocator": 86.448,
+        "TestCudaArchList": 0.027,
+        "TestCudaAutocast": 94.035,
+        "TestCudaDeviceParametrizedCPU": 4.337,
+        "TestCudaDeviceParametrizedCUDA": 5.857,
+        "TestCudaGreenContextsCUDA": 0.012,
+        "TestCudaOptimsCPU": 5.089,
+        "TestCudaOptimsCUDA": 64.568,
+        "TestFP32PrecisionFlags": 2.448,
+        "TestFXMemoryProfiler": 2.345,
+        "TestGDS": 0.086,
+        "TestMemPool": 1135.424,
+        "TestMemoryViz": 0.034,
+        "TestResizeStorageWithAddr": 0.15
+      },
+      "test_cuda_compatibility": {
+        "TestCheckCapability": 0.174,
+        "TestCodeCompatibleWithDevice": 6.3
+      },
+      "test_cuda_graph_debug": {
+        "TestCUDAGraphDebugBacktraces": 0.021,
+        "TestCUDAGraphDebugExternalOps": 0.052,
+        "TestCUDAGraphDebugInputs": 8.882
+      },
+      "test_cuda_graph_utils": {
+        "TestAnnotateTrace": 0.03,
+        "TestAnnotationStore": 0.018,
+        "TestCuptiAnnotationBackend": 0.026,
+        "TestGetGraphData": 0.255,
+        "TestGraphDestroyHooks": 0.051,
+        "TestGraphGlobalLifecycleHooks": 0.188,
+        "TestGraphInstantiateHooks": 0.595,
+        "TestIsAvailable": 0.011,
+        "TestMarkKernels": 8.138,
+        "TestRekeyAnnotations": 0.032,
+        "TestRemoveKernelAnnotations": 0.017
+      },
+      "test_cuda_multigpu": {
+        "TestCudaComm": 0.152,
+        "TestCudaMultiGPU": 13.596
+      },
+      "test_cuda_nvml_based_avail": {
+        "TestExtendedCUDAIsAvail": 0.057,
+        "TestVisibleDeviceParses": 0.269
+      },
+      "test_cuda_primary_ctx": {
+        "TestCudaPrimaryCtx": 12.108
+      },
+      "test_cuda_sanitizer": {
+        "TestArgumentHandler": 6.687,
+        "TestEventHandler": 0.227,
+        "TestMessages": 0.046
+      },
+      "test_cuda_trace": {
+        "TestCudaTrace": 98.751
+      },
+      "test_dataloader": {
+        "IntegrationTestDataLoaderDataPipe": 0.006,
+        "TestConcatDataset": 0.07,
+        "TestConvAfterFork": 0.003,
+        "TestCustomPinFn": 85.035,
+        "TestDataLoader": 1581.983,
+        "TestDataLoaderCUDA": 0.014,
+        "TestDataLoaderCUDAPersistentWorkers": 0.013,
+        "TestDataLoaderDeviceCPU": 0.765,
+        "TestDataLoaderDeviceCUDA": 0.043,
+        "TestDataLoaderPersistentWorkers": 1639.242,
+        "TestDatasetRandomSplit": 14.06,
+        "TestDictDataLoader": 27.698,
+        "TestDictDataLoaderDevice": 0.049,
+        "TestIndividualWorkerQueue": 0.005,
+        "TestNamedTupleDataLoader": 0.018,
+        "TestOutOfOrderDataLoader": 110.748,
+        "TestSetAffinity": 0.003,
+        "TestStackDataset": 0.125,
+        "TestStringDataLoader": 34.137,
+        "TestTensorDataset": 0.123
+      },
+      "test_datapipe": {
+        "TestCaptureDataFrame": 4.907,
+        "TestCircularSerialization": 0.022,
+        "TestDataChunk": 6.155,
+        "TestDataFramesPipes": 1.03,
+        "TestFunctionalIterDataPipe": 10.042,
+        "TestFunctionalMapDataPipe": 0.134,
+        "TestGraph": 0.072,
+        "TestIterDataPipeCountSampleYielded": 0.048,
+        "TestIterDataPipeGraphFastForward": 0.15,
+        "TestIterDataPipeSingletonConstraint": 0.083,
+        "TestIterableDataPipeBasic": 0.307,
+        "TestSerialization": 30.076,
+        "TestSharding": 33.327,
+        "TestStreamWrapper": 0.037,
+        "TestTyping": 0.04
+      },
+      "test_dispatch": {
+        "TestDispatch": 207.627,
+        "TestPythonDispatcher": 0.088
+      },
+      "test_dlpack": {
+        "TestReadOnlyDLPack": 0.083,
+        "TestTorchDlPackCPU": 75.251,
+        "TestTorchDlPackCUDA": 68.855
+      },
+      "test_dynamic_shapes": {
+        "TestDimConstraints": 12.775,
+        "TestFloorDiv": 0.074,
+        "TestGuardsExpressions": 30.483,
+        "TestMaybeFastEvalComparison": 1.108,
+        "TestPySymInt": 21.32,
+        "TestSymNumberMagicMethods": 28.129,
+        "TestTransferSymbolsFromForeignShapeEnv": 0.248,
+        "TestTransferSymbolsFromForeignShapeEnvDeviceCUDA": 0.919,
+        "TestUbackedOps": 566.137,
+        "TestUnbacked": 67.716
+      },
+      "test_dynamic_spec_make_fx": {
+        "TestMakeFxDynamicSpec": 8.662
+      },
+      "test_extension_utils": {
+        "TestExtensionUtils": 1.616
+      },
+      "test_fake_tensor": {
+        "FakeTensorConstHandling": 0.329,
+        "FakeTensorConverterTest": 0.485,
+        "FakeTensorDispatchCache": 4.36,
+        "FakeTensorMetaDevicePropagation": 0.075,
+        "FakeTensorOpInfoTestCPU": 0.733,
+        "FakeTensorOpInfoTestCUDA": 0.702,
+        "FakeTensorOperatorInvariants": 3.197,
+        "FakeTensorPreferDeviceType": 0.243,
+        "FakeTensorPropTest": 1.076,
+        "FakeTensorSerialization": 0.031,
+        "FakeTensorTest": 91.746,
+        "FakeTensorViewCopy": 0.095,
+        "PropagateRealTensorsFakeTensorConstHandling": 0.455,
+        "PropagateRealTensorsFakeTensorConverterTest": 0.404,
+        "PropagateRealTensorsFakeTensorOpInfoTestCPU": 0.63,
+        "PropagateRealTensorsFakeTensorOperatorInvariants": 1.964,
+        "PropagateRealTensorsFakeTensorPropTest": 0.668,
+        "PropagateRealTensorsFakeTensorTest": 104.179
+      },
+      "test_file_check": {
+        "TestFileCheck": 17.718
+      },
+      "test_flop_counter": {
+        "TestFlexAttentionEstimation": 5.223,
+        "TestFlopCounter": 0.805
+      },
+      "test_foreach": {
+        "TestForeachCPU": 432.724,
+        "TestForeachCUDA": 10643.948,
+        "TestForeachMM": 28.219,
+        "TestForeachPublicAPI": 3.174
+      },
+      "test_function_schema": {
+        "TestFunctionSchema": 7.499
+      },
+      "test_functional_autograd_benchmark": {
+        "TestFunctionalAutogradBenchmark": 142.453
+      },
+      "test_functional_optim": {
+        "TestFunctionalOptimParity": 7.319
+      },
+      "test_functionalization": {
+        "TestCrossRefFunctionalization": 10.158,
+        "TestFunctionalization": 16.3,
+        "TestViewMetaSerialization": 0.072
+      },
+      "test_futures": {
+        "TestFuture": 8.559
+      },
+      "test_fx": {
+        "AnnotationsTest": 0.151,
+        "TestCSEPass": 0.926,
+        "TestCommonPass": 5.249,
+        "TestConstFold": 2.028,
+        "TestConstParamShapeInControlFlow": 0.221,
+        "TestDCE": 3.088,
+        "TestFX": 56.317,
+        "TestFXAPIBackwardCompatibility": 0.211,
+        "TestFXNodeSource": 2.203,
+        "TestFunctionalTracing": 0.434,
+        "TestMatcher": 0.47,
+        "TestOpaqueInfrastructure": 0.033,
+        "TestOperatorSignaturesCPU": 52.716,
+        "TestOperatorSignaturesCUDA": 11.618,
+        "TestPassManager": 0.151,
+        "TestSourceMatcher": 9.512,
+        "TestSubgraphRewriter": 1.381,
+        "TypeCheckerTest": 2.273
+      },
+      "test_fx_experimental": {
+        "TestFXExperimental": 14.437,
+        "TestNormalizeOperatorsCPU": 239.935,
+        "TestNormalizeOperatorsCUDA": 10.8,
+        "TestTranslationValidation": 0.363
+      },
+      "test_fx_graph_print": {
+        "TestFxGraphPrint": 6.947
+      },
+      "test_fx_passes": {
+        "TestFXGraphPasses": 8.733,
+        "TestFXMatcherUtils": 0.387
+      },
+      "test_fx_reinplace_pass": {
+        "TestReinplacePass": 8.423
+      },
+      "test_hop_infra": {
+        "TestHOPInfra": 5.453
+      },
+      "test_hub": {
+        "TestHub": 271.98
+      },
+      "test_import_stats": {
+        "TestImportTime": 27.867
+      },
+      "test_indexing": {
+        "NumpyTestsCPU": 0.205,
+        "NumpyTestsCUDA": 0.261,
+        "TestIndexingCPU": 22.871,
+        "TestIndexingCUDA": 67.314
+      },
+      "test_inspect_utils": {
+        "TestFastBind": 6.75
+      },
+      "test_itt": {
+        "TestItt": 6.45
+      },
+      "test_legacy_vmap": {
+        "TestVmapAPILegacy": 8.195,
+        "TestVmapBatchedGradientLegacyCPU": 0.448,
+        "TestVmapBatchedGradientLegacyCUDA": 4.173,
+        "TestVmapOperatorsLegacy": 2.98
+      },
+      "test_license": {
+        "TestLicense": 4.946
+      },
+      "test_logging": {
+        "LoggingTest": 26.9
+      },
+      "test_masked": {
+        "TestMaskedCPU": 69.376,
+        "TestMaskedCUDA": 190.134,
+        "TestMaskedGeneric": 4.768
+      },
+      "test_maskedtensor": {
+        "TestBasicsCPU": 0.566,
+        "TestBasicsCUDA": 1.365,
+        "TestBinary": 1.577,
+        "TestOperatorsCPU": 36.505,
+        "TestOperatorsCUDA": 65.238,
+        "TestReductions": 0.449,
+        "TestUnary": 7.0
+      },
+      "test_meta": {
+        "TestMetaCPU": 10618.979,
+        "TestMetaCUDA": 16525.818,
+        "TestMetaConverter": 62.484,
+        "TestMetaKernelConv": 4.753,
+        "TestMetaKernelRegistrations": 23.291
+      },
+      "test_metal": {
+        "TestMetalRewritePass": 0.004
+      },
+      "test_mkl_verbose": {
+        "TestMKLVerbose": 33.526
+      },
+      "test_mkldnn": {
+        "TestMkldnnCPU": 144.274
+      },
+      "test_mkldnn_fusion": {
+        "TestMkldnnFusion": 159.166
+      },
+      "test_mkldnn_verbose": {
+        "TestMKLDNNVerbose": 33.143
+      },
+      "test_mobile_optimizer": {
+        "TestOptimizer": 8.008
+      },
+      "test_model_exports_to_core_aten": {
+        "TestQuantizePT2EModels": 6.446
+      },
+      "test_module_tracker": {
+        "TestModuleTracker": 8.647
+      },
+      "test_monitor": {
+        "TestMonitor": 8.07,
+        "TestMonitorTensorboard": 1.82
+      },
+      "test_multiprocessing": {
+        "TestMultiprocessing": 5616.826,
+        "TestMultiprocessingDeviceTypeCPU": 267.24,
+        "TestMultiprocessingDeviceTypeCUDA": 457.971
+      },
+      "test_multiprocessing_spawn": {
+        "ErrorTest": 0.011,
+        "ForkTest": 0.019,
+        "ParallelForkServerPerfTest": 0.003,
+        "ParallelForkServerShouldWorkTest": 0.016,
+        "SpawnTest": 399.961
+      },
+      "test_namedtuple_return_api": {
+        "TestNamedTupleAPI": 7.175
+      },
+      "test_native_functions": {
+        "TestNativeFunctions": 8.922
+      },
+      "test_native_mha": {
+        "TestMHADeviceCPU": 6.85,
+        "TestMHADeviceCUDA": 5.228
+      },
+      "test_numa_binding": {
+        "NumaBindingTest": 0.04
+      },
+      "test_numba_integration": {
+        "TestNumbaIntegration": 7.441
+      },
+      "test_numpy_interop": {
+        "TestNumPyInteropCPU": 9.482,
+        "TestNumPyInteropCUDA": 4.13
+      },
+      "test_openmp": {
+        "TestOpenMP_ParallelFor": 24.014
+      },
+      "test_optim": {
+        "TestDifferentiableOptimizer": 3.728,
+        "TestLRScheduler": 21.194,
+        "TestOptimRenewedCPU": 902.415,
+        "TestOptimRenewedCUDA": 2824.24,
+        "TestSWAUtilsCPU": 1.309,
+        "TestSWAUtilsCUDA": 1.962
+      },
+      "test_out_dtype_op": {
+        "TestOutDtypeOp": 7.813,
+        "TestOutDtypeOpDeviceCUDA": 0.368
+      },
+      "test_overrides": {
+        "TestBroadcastAllOverride": 0.017,
+        "TestDisabledTorchFunction": 0.013,
+        "TestDisabledUserWarnings": 0.011,
+        "TestEinsumOverride": 0.017,
+        "TestGradCheckOverride": 0.092,
+        "TestGradNewOnesOverride": 0.011,
+        "TestIndexing": 0.066,
+        "TestIterator": 0.017,
+        "TestNamedTuple": 0.012,
+        "TestPickle": 0.026,
+        "TestRNN": 0.033,
+        "TestResolveName": 0.458,
+        "TestTorchFunctionMode": 0.314,
+        "TestTorchFunctionOverride": 17.234,
+        "TestTorchFunctionRedispatch": 0.055,
+        "TestTorchFunctionRedispatchOpsCPU": 1033.962,
+        "TestTorchFunctionRedispatchOpsCUDA": 3798.876,
+        "TestTorchFunctionWarning": 0.026,
+        "TestWrapTorchFunction": 0.013
+      },
+      "test_package": {
+        "DirectoryReaderTest": 0.032,
+        "ModelTest": 0.012,
+        "TestAnalyze": 7.412,
+        "TestDependencyAPI": 1.02,
+        "TestDependencyHooks": 0.061,
+        "TestDiGraph": 0.135,
+        "TestGlobGroup": 0.173,
+        "TestImporter": 0.085,
+        "TestLoadBCPackages": 0.429,
+        "TestMangling": 0.112,
+        "TestMisc": 1.163,
+        "TestPackageFX": 0.341,
+        "TestPackageScript": 1.516,
+        "TestRepackage": 0.239,
+        "TestResources": 0.128,
+        "TestSaveLoad": 0.411
+      },
+      "test_per_overload_api": {
+        "TestPerOverloadAPI": 7.324
+      },
+      "test_precompile": {
+        "TestPrecompile": 465.54,
+        "TestPrecompileNumericsCPU": 250.885,
+        "TestPrecompileNumericsCUDA": 805.713
+      },
+      "test_prims": {
+        "TestDecompCPU": 0.643,
+        "TestDecompCUDA": 0.107,
+        "TestPrimsBasic": 4.544,
+        "TestPrimsDeviceCPU": 0.337,
+        "TestPrimsDeviceCUDA": 1.166,
+        "TestRefsCPU": 0.065,
+        "TestRefsCUDA": 0.061
+      },
+      "test_privateuseone_python_backend": {
+        "PrivateUse1BackendTest": 2.069
+      },
+      "test_proxy_tensor": {
+        "TestFakeProxyTensor": 0.317,
+        "TestGenericProxyTensorFake": 2.896,
+        "TestGenericProxyTensorReal": 10.151,
+        "TestGenericProxyTensorSymbolic": 2.856,
+        "TestProxyTensorOpInfoCPU": 2497.166,
+        "TestRealProxyTensor": 0.133,
+        "TestSymbolicTracing": 8.285
+      },
+      "test_pruning_op": {
+        "PruningOpTest": 6.769
+      },
+      "test_public_bindings": {
+        "TestPublicBindings": 6.069
+      },
+      "test_python_dispatch": {
+        "TestDispatcherPythonBindings": 5.554,
+        "TestPythonDispatch": 38.51,
+        "TestPythonDispatcher": 0.038,
+        "TestPythonRegistration": 11.488,
+        "TestWrapperSubclassAliasingCPU": 1.212,
+        "TestWrapperSubclassAliasingCUDA": 1.257
+      },
+      "test_pytree": {
+        "TestCxxPytree": 0.133,
+        "TestGenericPytree": 7.372,
+        "TestPythonPytree": 9.945
+      },
+      "test_reductions": {
+        "TestReductionsCPU": 817.499,
+        "TestReductionsCUDA": 880.653,
+        "TestReductionsOnCPU": 93.529
+      },
+      "test_rename_privateuse1_to_existing_device": {
+        "TestRenamePrivateuseoneToExistingBackend": 6.005
+      },
+      "test_scatter_gather_ops": {
+        "TestScatterAddOverrideConds": 0.056,
+        "TestScatterAddOverrideCorrectness": 0.054,
+        "TestScatterGatherCPU": 84.553,
+        "TestScatterGatherCUDA": 301.38
+      },
+      "test_schema_check": {
+        "TestSchemaCheck": 6.856,
+        "TestSchemaCheckModeOpInfoCPU": 128.934,
+        "TestSchemaCheckModeOpInfoCUDA": 133.063
+      },
+      "test_segment_reductions": {
+        "TestSegmentReductionsCPU": 11.737,
+        "TestSegmentReductionsCUDA": 21.158
+      },
+      "test_serialization": {
+        "TestBothSerializationCPU": 0.819,
+        "TestBothSerializationCUDA": 1.458,
+        "TestOldSerialization": 72.434,
+        "TestSerialization": 126.788,
+        "TestSerializationAcceleratorCPU": 1.548,
+        "TestSerializationAcceleratorCUDA": 6.121,
+        "TestSubclassSerialization": 0.318
+      },
+      "test_set_default_mobile_cpu_allocator": {
+        "TestSetDefaultMobileCPUAllocator": 8.633
+      },
+      "test_shape_ops": {
+        "TestShapeOpsCPU": 12.459,
+        "TestShapeOpsCPUOnlyCPU": 0.022,
+        "TestShapeOpsCUDA": 12.849
+      },
+      "test_show_pickle": {
+        "TestShowPickle": 0.01
+      },
+      "test_sort_and_select": {
+        "TestSortAndSelect": 5.491,
+        "TestSortAndSelectCPUCPU": 0.016,
+        "TestSortAndSelectCUDACUDA": 0.107,
+        "TestSortAndSelectDeviceCPU": 11.317,
+        "TestSortAndSelectDeviceCUDA": 31.04
+      },
+      "test_sparse": {
+        "TestSparseAnyCPU": 1982.755,
+        "TestSparseAnyCUDA": 4940.018,
+        "TestSparseCPU": 82.232,
+        "TestSparseCUDA": 405.744,
+        "TestSparseLegacyAndDeprecation": 7.309,
+        "TestSparseMaskedReductionsCPU": 4.468,
+        "TestSparseMaskedReductionsCUDA": 19.614,
+        "TestSparseMeta": 42.028,
+        "TestSparseOneOff": 7.72,
+        "TestSparseUnaryUfuncsCPU": 60.397,
+        "TestSparseUnaryUfuncsCUDA": 97.191
+      },
+      "test_sparse_csr": {
+        "TestSparseCSRCPU": 331.896,
+        "TestSparseCSRCUDA": 1799.189,
+        "TestSparseCSRSampler": 9.608,
+        "TestSparseCompressedCPU": 522.294,
+        "TestSparseCompressedCUDA": 1235.986,
+        "TestSparseCompressedTritonKernelsCPU": 0.054,
+        "TestSparseCompressedTritonKernelsCUDA": 0.051
+      },
+      "test_sparse_semi_structured": {
+        "SparseSemiStructuredTensorCompileTest": 0.038,
+        "TestComputeCompressedSwizzledBitmaskDevice": 0.032,
+        "TestSparseSemiStructured": 0.08,
+        "TestSparseSemiStructuredCUDA": 0.357,
+        "TestSparseSemiStructuredCUSPARSELT": 0.194,
+        "TestSparseSemiStructuredCUTLASS": 0.008,
+        "TestSparseSemiStructuredCUTLASSCUDA": 0.014,
+        "TestSparseSemiStructuredTraining": 0.043,
+        "TestSparseSemiStructuredTrainingCUDA": 0.045
+      },
+      "test_spectral_ops": {
+        "TestFFTCPU": 104.405,
+        "TestFFTCUDA": 102.301,
+        "TestFFTDocExamplesCPU": 0.423
+      },
+      "test_stateless": {
+        "TestPythonOptimizeMode": 33.919,
+        "TestStatelessDeprecation": 10.008,
+        "TestStatelessFunctionalAPI": 5.826,
+        "TestStatelessFunctionalAPIDeviceCPU": 0.014,
+        "TestStatelessFunctionalAPIDeviceCUDA": 0.015
+      },
+      "test_stateless_rng": {
+        "TestStatelessRNGCompileCPU": 3.126,
+        "TestStatelessRNGCompileCUDA": 1.838,
+        "TestStatelessRNGDistributionCPU": 1.957,
+        "TestStatelessRNGDistributionCUDA": 3.21,
+        "TestStatelessRNGIntegerCPU": 1.509,
+        "TestStatelessRNGIntegerCUDA": 2.271,
+        "TestStatelessRNGKeyCPU": 0.07,
+        "TestStatelessRNGKeyCUDA": 0.52,
+        "TestStatelessRNGKeyFoldInCPU": 0.244,
+        "TestStatelessRNGKeyFoldInCUDA": 0.391,
+        "TestStatelessRNGKeySplitCPU": 0.184,
+        "TestStatelessRNGKeySplitCUDA": 0.373
+      },
+      "test_subclass": {
+        "TestSubclass": 8.677
+      },
+      "test_sympy_utils": {
+        "TestCCodePrinting": 0.104,
+        "TestCppPrinter": 0.035,
+        "TestIdentity": 0.038,
+        "TestNumbers": 5.668,
+        "TestSingletonInt": 0.034,
+        "TestSympyFunctions": 0.792,
+        "TestSympyInterp": 54.945,
+        "TestSympySolve": 0.655,
+        "TestTypedExpr": 0.009,
+        "TestValueRanges": 46.757
+      },
+      "test_tensor_creation_ops": {
+        "TestAsArrayCPU": 3.069,
+        "TestAsArrayCUDA": 3.205,
+        "TestBufferProtocolCPU": 1.946,
+        "TestFromBlobCPU": 0.286,
+        "TestLikeTensorCreationCPU": 0.141,
+        "TestLikeTensorCreationCUDA": 0.218,
+        "TestRandomTensorCreationCPU": 7.081,
+        "TestRandomTensorCreationCUDA": 3.586,
+        "TestTensorCreationCPU": 110.909,
+        "TestTensorCreationCUDA": 2140.557
+      },
+      "test_tensor_iterator": {
+        "TestTensorIteratorBuild": 5.589,
+        "TestTensorIteratorCPU": 0.212,
+        "TestTensorIteratorCUDA": 0.227
+      },
+      "test_tensorboard": {
+        "TestTensorBoardEmbedding": 0.132,
+        "TestTensorBoardFigure": 0.006,
+        "TestTensorBoardNumpy": 0.018,
+        "TestTensorBoardPyTorchNumpy": 5.546,
+        "TestTensorBoardPyTorchNumpyDeviceCPU": 0.013,
+        "TestTensorBoardPyTorchNumpyDeviceCUDA": 0.018,
+        "TestTensorBoardPytorchGraph": 0.918,
+        "TestTensorBoardSummary": 0.484,
+        "TestTensorBoardSummaryWriter": 0.065,
+        "TestTensorBoardUtils": 0.382,
+        "TestTensorBoardWriter": 0.559,
+        "TestTensorProtoSummary": 0.055
+      },
+      "test_tensorexpr": {
+        "TestTensorExprFuser": 191.762
+      },
+      "test_tensorexpr_pybind": {
+        "TestExprHandlePyBind": 0.036,
+        "TestTensorExprPyBind": 6.701
+      },
+      "test_torch": {
+        "TestDevicePrecisionCUDA": 1.264,
+        "TestTorch": 34.673,
+        "TestTorchDeviceTypeCPU": 35.515,
+        "TestTorchDeviceTypeCUDA": 383.921
+      },
+      "test_torch_config_hash_determinism": {
+        "TestConfigModule": 6.629
+      },
+      "test_torchfuzz_repros": {
+        "TestFuzzerCompileIssues": 6.787
+      },
+      "test_triton_utils": {
+        "TestTritonUtils": 5.205
+      },
+      "test_tsan": {
+        "TestTSan": 8.341
+      },
+      "test_type_hints": {
+        "TestTypeHints": 5.15
+      },
+      "test_type_info": {
+        "TestDTypeInfo": 6.862
+      },
+      "test_type_promotion": {
+        "TestTypePromotion": 5.519,
+        "TestTypePromotionDeviceCPU": 11.203,
+        "TestTypePromotionDeviceCUDA": 50.14
+      },
+      "test_typing": {
+        "TestTyping": 0.038
+      },
+      "test_unary_ufuncs": {
+        "TestUnaryUfuncsCPU": 395.634,
+        "TestUnaryUfuncsCUDA": 411.664,
+        "TestUnaryUfuncsCUDADeviceCUDA": 0.368,
+        "TestUnaryUfuncsCpuOnlyCPU": 0.969
+      },
+      "test_utils": {
+        "TestAssert": 0.211,
+        "TestCheckpoint": 6.442,
+        "TestCheckpointDeviceTypeCUDA": 0.353,
+        "TestCollectEnv": 76.213,
+        "TestCppExtensionUtils": 0.083,
+        "TestDataLoaderUtils": 120.906,
+        "TestDeprecate": 0.079,
+        "TestDeviceLazyInitCUDA": 0.009,
+        "TestDeviceUtilsCPU": 714.983,
+        "TestDeviceUtilsCUDA": 135.64,
+        "TestEnv": 0.055,
+        "TestHipify": 2.127,
+        "TestHipifyTrie": 0.086,
+        "TestRenderUtils": 0.058,
+        "TestStandaloneCPPJIT": 70.777,
+        "TestTraceback": 0.224,
+        "TestTryImport": 0.054,
+        "TestUtilsInternal": 0.017
+      },
+      "test_utils_config_module": {
+        "TestConfigModule": 10.142
+      },
+      "test_utils_filelock": {
+        "TestFileLock": 8.415
+      },
+      "test_varlen_attention": {
+        "TestVarlenAttentionCUDA": 55.998
+      },
+      "test_view_ops": {
+        "TestOldViewOps": 7.079,
+        "TestOldViewOpsDeviceTypeCPU": 55.726,
+        "TestOldViewOpsDeviceTypeCUDA": 113.304,
+        "TestViewOpsCPU": 4.792,
+        "TestViewOpsCUDA": 8.115,
+        "TestViewOpsLAZY": 3.402
+      },
+      "test_vulkan": {
+        "TestVulkanRewritePass": 0.004
+      },
+      "test_weak": {
+        "WeakKeyDictionaryScriptObjectTestCase": 0.214,
+        "WeakKeyDictionaryTestCase": 0.172,
+        "WeakTest": 28.685
+      },
+      "test_xnnpack_integration": {
+        "TestXNNPACKConv1dTransformPass": 0.005,
+        "TestXNNPACKOps": 0.011,
+        "TestXNNPACKRewritePass": 0.005,
+        "TestXNNPACKSerDes": 0.013
+      },
+      "torch_np/numpy_tests/core/test_dlpack": {
+        "TestDLPack": 9.529
+      },
+      "torch_np/numpy_tests/core/test_dtype": {
+        "TestBuiltin": 9.312,
+        "TestClassGetItem": 0.041,
+        "TestDtypeAttributeDeletion": 0.006,
+        "TestFromDTypeAttribute": 0.016,
+        "TestMisc": 0.019,
+        "TestPickling": 0.525,
+        "TestPromotion": 0.069
+      },
+      "torch_np/numpy_tests/core/test_einsum": {
+        "TestEinsum": 64.702,
+        "TestEinsumPath": 0.014,
+        "TestMisc": 0.031
+      },
+      "torch_np/numpy_tests/core/test_getlimits": {
+        "TestDouble": 0.003,
+        "TestFinfo": 8.66,
+        "TestHalf": 0.004,
+        "TestIinfo": 0.091,
+        "TestMisc": 0.026,
+        "TestPythonFloat": 0.004,
+        "TestRepr": 0.023,
+        "TestSingle": 0.003
+      },
+      "torch_np/numpy_tests/core/test_indexing": {
+        "TestArrayToIndexDeprecation": 0.013,
+        "TestBooleanIndexing": 0.043,
+        "TestBroadcastedAssignments": 0.115,
+        "TestFancyIndexingCast": 0.02,
+        "TestFloatNonIntegerArgument": 0.057,
+        "TestIndexing": 13.215,
+        "TestMultiIndexingAutomated": 0.053,
+        "TestMultipleEllipsisError": 0.011,
+        "TestNonIntegerArrayLike": 0.004
+      },
+      "torch_np/numpy_tests/core/test_numeric": {
+        "TestAllclose": 0.118,
+        "TestArgwhere": 0.142,
+        "TestArrayComparisons": 0.082,
+        "TestBaseRepr": 0.052,
+        "TestBinaryRepr": 0.06,
+        "TestBoolArray": 7.371,
+        "TestBoolCmp": 0.692,
+        "TestBoolScalar": 0.073,
+        "TestBroadcast": 0.051,
+        "TestClip": 1.246,
+        "TestConvolve": 0.084,
+        "TestCorrelate": 0.134,
+        "TestCreationFuncs": 3.711,
+        "TestCross": 0.276,
+        "TestDtypePositional": 0.011,
+        "TestFloatExceptions": 0.074,
+        "TestFromiter": 0.018,
+        "TestIndex": 0.033,
+        "TestIndices": 0.245,
+        "TestIsclose": 0.375,
+        "TestIsscalar": 0.013,
+        "TestLikeFuncs": 0.019,
+        "TestMoveaxis": 0.067,
+        "TestNonarrayArgs": 1.379,
+        "TestNonzeroAndCountNonzero": 1.081,
+        "TestOuterMisc": 0.023,
+        "TestRequire": 0.043,
+        "TestResize": 8.319,
+        "TestRoll": 0.153,
+        "TestRollaxis": 0.027,
+        "TestSeterr": 0.044,
+        "TestStdVar": 0.136,
+        "TestStdVarComplex": 0.053,
+        "TestStringFunction": 0.012,
+        "TestTensordot": 0.06,
+        "TestTypes": 0.095
+      },
+      "torch_np/numpy_tests/core/test_numerictypes": {
+        "TestBitName": 0.011,
+        "TestCommonType": 8.366,
+        "TestDocStrings": 0.004,
+        "TestIsSubDType": 0.07,
+        "TestScalarTypeNames": 0.233
+      },
+      "torch_np/numpy_tests/core/test_scalar_ctors": {
+        "TestArrayFromScalar": 0.755,
+        "TestFromInt": 0.046,
+        "TestFromString": 9.231
+      },
+      "torch_np/numpy_tests/core/test_scalar_methods": {
+        "TestAsIntegerRatio": 0.107,
+        "TestBitCount": 0.03,
+        "TestClassGetItem": 0.134,
+        "TestIsInteger": 0.08
+      },
+      "torch_np/numpy_tests/core/test_scalarinherit": {
+        "TestInherit": 0.009
+      },
+      "torch_np/numpy_tests/core/test_scalarmath": {
+        "TestAbs": 0.435,
+        "TestBaseMath": 32.545,
+        "TestBitShifts": 0.409,
+        "TestComplexDivision": 0.246,
+        "TestConversion": 0.243,
+        "TestHash": 0.028,
+        "TestModulus": 3.432,
+        "TestMultiply": 0.004,
+        "TestNegative": 0.086,
+        "TestPower": 0.496,
+        "TestRepr": 0.012,
+        "TestScalarOpsMisc": 0.426,
+        "TestScalarSubclassingMisc": 0.339,
+        "TestSubtract": 0.095,
+        "TestTypes": 68.32
+      },
+      "torch_np/numpy_tests/core/test_shape_base": {
+        "TestAtleast1d": 7.935,
+        "TestAtleast2d": 0.08,
+        "TestAtleast3d": 0.074,
+        "TestBlock": 0.206,
+        "TestConcatenate": 1.54,
+        "TestHstack": 0.111,
+        "TestStackMisc": 0.45,
+        "TestVstack": 0.189
+      },
+      "torch_np/numpy_tests/fft/test_helper": {
+        "TestFFTFreq": 0.052,
+        "TestFFTShift": 29.529,
+        "TestIRFFTN": 0.023,
+        "TestRFFTFreq": 0.054
+      },
+      "torch_np/numpy_tests/fft/test_pocketfft": {
+        "TestFFT1D": 11.411,
+        "TestFFTShift": 8.597,
+        "TestFFTThreadSafe": 6.039
+      },
+      "torch_np/numpy_tests/lib/test_arraypad": {
+        "TestConstant": 9.841
+      },
+      "torch_np/numpy_tests/lib/test_arraysetops": {
+        "TestSetOps": 0.112,
+        "TestUnique": 10.408
+      },
+      "torch_np/numpy_tests/lib/test_function_base": {
+        "TestAll": 0.059,
+        "TestAmax": 0.03,
+        "TestAmin": 0.028,
+        "TestAngle": 0.041,
+        "TestAny": 0.042,
+        "TestAverage": 0.145,
+        "TestBincount": 0.264,
+        "TestCheckFinite": 0.024,
+        "TestCopy": 0.048,
+        "TestCorrCoef": 0.219,
+        "TestCov": 0.316,
+        "TestCumprod": 0.123,
+        "TestCumsum": 0.181,
+        "TestDelete": 0.184,
+        "TestDiff": 0.333,
+        "TestDigitize": 0.216,
+        "TestExtins": 0.044,
+        "TestFilterwindows": 3.412,
+        "TestFlip": 0.18,
+        "TestGradient": 0.686,
+        "TestInsert": 0.069,
+        "TestInterp": 0.334,
+        "TestKaiser": 0.045,
+        "TestMedian": 0.583,
+        "TestMeshgrid": 0.281,
+        "TestMsort": 0.002,
+        "TestPercentile": 1.614,
+        "TestPiecewise": 0.09,
+        "TestProd": 0.112,
+        "TestPtp": 0.041,
+        "TestQuantile": 0.431,
+        "TestRot90": 9.65,
+        "TestSelect": 0.073,
+        "TestSinc": 0.056,
+        "TestSortComplex": 0.078,
+        "TestTrapz": 0.039,
+        "TestTrimZeros": 0.097,
+        "TestUnique": 0.031,
+        "Test_I0": 0.063
+      },
+      "torch_np/numpy_tests/lib/test_histograms": {
+        "TestHistogram": 9.036,
+        "TestHistogramOptimBinNums": 0.205,
+        "TestHistogramdd": 1.322
+      },
+      "torch_np/numpy_tests/lib/test_index_tricks": {
+        "TestC": 0.011,
+        "TestConcatenator": 0.07,
+        "TestDiagIndices": 0.032,
+        "TestDiagIndicesFrom": 0.049,
+        "TestFillDiagonal": 0.157,
+        "TestGrid": 0.084,
+        "TestIndexExpression": 0.052,
+        "TestIx_": 0.057,
+        "TestNdIndex": 0.011,
+        "TestNdenumerate": 0.012,
+        "TestRavelUnravelIndex": 9.272
+      },
+      "torch_np/numpy_tests/lib/test_shape_base_": {
+        "TestApplyAlongAxis": 0.107,
+        "TestApplyOverAxes": 0.012,
+        "TestArraySplit": 0.679,
+        "TestColumnStack": 0.062,
+        "TestDsplit": 0.065,
+        "TestDstack": 0.106,
+        "TestExpandDims": 0.047,
+        "TestHsplit": 0.069,
+        "TestKron": 0.073,
+        "TestMayShareMemory": 0.017,
+        "TestPutAlongAxis": 0.052,
+        "TestSplit": 0.768,
+        "TestSqueeze": 0.14,
+        "TestTakeAlongAxis": 9.066,
+        "TestTile": 0.344,
+        "TestVsplit": 0.058
+      },
+      "torch_np/numpy_tests/lib/test_twodim_base": {
+        "TestDiag": 0.153,
+        "TestEye": 8.745,
+        "TestFliplr": 0.028,
+        "TestFlipud": 0.027,
+        "TestHistogram2d": 0.185,
+        "TestTri": 0.372,
+        "TestTrilIndicesFrom": 0.012,
+        "TestTriuIndices": 0.02,
+        "TestTriuIndicesFrom": 0.012,
+        "TestVander": 0.081
+      },
+      "torch_np/numpy_tests/lib/test_type_check": {
+        "TestArrayConversion": 0.013,
+        "TestCommonType": 8.639,
+        "TestImag": 0.057,
+        "TestIscomplex": 0.027,
+        "TestIscomplexobj": 0.034,
+        "TestIsfinite": 0.09,
+        "TestIsinf": 0.071,
+        "TestIsnan": 0.085,
+        "TestIsneginf": 0.014,
+        "TestIsposinf": 0.015,
+        "TestIsreal": 0.048,
+        "TestIsrealobj": 0.011,
+        "TestIsscalar": 0.011,
+        "TestMintypecode": 0.032,
+        "TestNanToNum": 0.089,
+        "TestReal": 0.062,
+        "TestRealIfClose": 0.025
+      },
+      "torch_np/numpy_tests/linalg/test_linalg": {
+        "TestCholesky": 0.887,
+        "TestCond": 0.764,
+        "TestDet": 0.615,
+        "TestEig": 0.165,
+        "TestEigh": 0.136,
+        "TestEighCases": 0.015,
+        "TestEigvals": 0.266,
+        "TestEigvalsh": 0.167,
+        "TestEigvalshCases": 0.013,
+        "TestInv": 0.215,
+        "TestLstsq": 0.911,
+        "TestMatrixRank": 1.239,
+        "TestMisc": 0.061,
+        "TestMisc2": 0.032,
+        "TestMultiDot": 0.252,
+        "TestNormDouble": 2.776,
+        "TestNormInt64": 2.938,
+        "TestNormSingle": 2.777,
+        "TestNorm_NonSystematic": 0.021,
+        "TestPinv": 0.436,
+        "TestPinvHermitian": 0.142,
+        "TestQR": 18.764,
+        "TestSVD": 0.93,
+        "TestSVDHermitian": 0.371,
+        "TestSolve": 10.043,
+        "TestTensorinv": 0.122,
+        "TestTensorsolve": 0.095
+      },
+      "torch_np/test_basic": {
+        "TestArrayToSequence": 0.08,
+        "TestCopyTo": 0.047,
+        "TestCtorNested": 0.024,
+        "TestDefaultDtype": 0.073,
+        "TestDivmod": 0.123,
+        "TestExport": 0.016,
+        "TestMisc": 1.955,
+        "TestNormalizations": 0.037,
+        "TestOneArr": 9.97,
+        "TestOneArrAndAxesTuple": 0.108,
+        "TestOneArrAndAxis": 1.571,
+        "TestOneArrAndShape": 0.18,
+        "TestOneArrToScalar": 0.105,
+        "TestPythonArgsToArray": 0.129,
+        "TestSequenceOfArrays": 0.21,
+        "TestSequenceOfArraysToSingle": 0.09,
+        "TestShapeLikeToArray": 0.048,
+        "TestSmokeNotImpl": 0.016
+      },
+      "torch_np/test_binary_ufuncs": {
+        "TestBinaryUfuncBasic": 9.844
+      },
+      "torch_np/test_dtype": {
+        "TestConvertDType": 9.357
+      },
+      "torch_np/test_function_base": {
+        "TestAppend": 9.098,
+        "TestMisc": 0.021
+      },
+      "torch_np/test_indexing": {
+        "TestAdvancedIndexing": 17.361
+      },
+      "torch_np/test_ndarray_methods": {
+        "TestAmax": 0.032,
+        "TestAmin": 0.032,
+        "TestArgmax": 4.674,
+        "TestArgmaxArgminCommon": 7.494,
+        "TestArgmin": 4.95,
+        "TestContains": 0.317,
+        "TestIndexing": 9.701,
+        "TestItem": 0.042,
+        "TestIter": 0.03,
+        "TestNoExtraMethods": 0.073,
+        "TestNonzero": 0.651,
+        "TestRavel": 0.041,
+        "TestReshape": 0.033,
+        "TestTranspose": 0.046
+      },
+      "torch_np/test_nep50_examples": {
+        "TestCompareToNumpy": 23.609,
+        "TestNEP50Table": 9.761
+      },
+      "torch_np/test_random": {
+        "TestChoice": 0.06,
+        "TestNumpyGlobal": 0.021,
+        "TestScalarReturn": 9.166,
+        "TestShuffle": 0.089
+      },
+      "torch_np/test_reductions": {
+        "TestAll": 0.059,
+        "TestAny": 0.061,
+        "TestFlatnonzero": 9.454,
+        "TestGenericCumSumProd": 0.123,
+        "TestGenericReductions": 13.911,
+        "TestMean": 0.129,
+        "TestSum": 1.454
+      },
+      "torch_np/test_scalars_0D_arrays": {
+        "TestArrayScalars": 9.089,
+        "TestIsScalar": 0.221
+      },
+      "torch_np/test_ufuncs_basic": {
+        "TestBinaryUfuncs": 4.258,
+        "TestNdarrayDunderVsUfunc": 0.945,
+        "TestUfuncDtypeKwd": 0.038,
+        "TestUnaryUfuncs": 10.477
+      },
+      "torch_np/test_unary_ufuncs": {
+        "TestUnaryUfuncs": 10.56
+      },
+      "typing/test_python_operators": {
+        "TestPythonOperators": 13.585
+      }
+    }
   }
 }

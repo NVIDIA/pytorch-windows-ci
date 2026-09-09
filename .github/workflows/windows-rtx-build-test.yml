@@ -276,3 +276,28 @@ jobs:
             --jobs-json jobs.json \
             --title "PyTorch test summary (run ${{ github.run_id }})" \
             >> "$GITHUB_STEP_SUMMARY"
+
+      # The step above lists which jobs failed. This pair says which tests did.
+      # It pulls every shard's uploaded test-reports tree (JUnit XML + run logs)
+      # and renders one union-of-all-shards failure list, de-duplicated so a
+      # test that failed in several shards - or failed and then passed on a
+      # rerun - appears once, annotated with the shards it was seen in.
+      #
+      # Best-effort: a missing or partial artifact degrades the list rather
+      # than failing the run, which is why the download cannot fail the job.
+      - name: Download all shard test-reports
+        if: always()
+        continue-on-error: true
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: test-reports-*
+          path: all-reports
+
+      - name: Aggregate failed tests across shards
+        if: always()
+        shell: bash
+        run: |
+          python3 scripts/test-summary/parse_failures.py \
+            --shards-root all-reports \
+            --title "Aggregate failed tests - all shards (run ${{ github.run_id }})" \
+            >> "$GITHUB_STEP_SUMMARY"

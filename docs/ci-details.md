@@ -352,12 +352,150 @@ no `get-workflow-job-id`):
 | job  | `BUILD_ENVIRONMENT`, `PYTHON_VERSION`, `CUDA_VERSION`, `TORCH_CUDA_ARCH_LIST` | matrix cell |
 | job  | `USE_CUDA=1`, `INSTALL_WINDOWS_SDK=0`, `CONTINUE_THROUGH_ERROR=1`, `PYTORCH_TEST_WITH_SLOW=0`, `CI=1` | static |
 | job  | `VC_PRODUCT=BuildTools`, `VC_YEAR=2022`, `VS_VERSION=17.4.1`, `VC_VERSION=""` | MSVC tooling info |
+| job  | `PIP_RETRIES=8`, `PIP_DEFAULT_TIMEOUT=60` | pip resilience for the test-harness install |
+| job  | `PER_TEST_TIMEOUT_SEC=900`, `PER_PROCESS_TIMEOUT_SEC=2700`, `RUN_TEST_TIMEOUT_SEC=9900` | the bounds that hold a hung shard - see [Timeout bounds](#timeout-bounds) |
+| job  | `PER_PROCESS_TIMEOUT_LOG` | `test/test-reports/per-process-bound.jsonl`; unset disables the records |
+| job  | `AWS_EC2_METADATA_DISABLED=true` | suppresses a dead S3 telemetry probe - see below |
 | step | `SHARD_NUMBER` | `_rtx-test.yml`'s internal `matrix.shard` |
 | step | `NUM_TEST_SHARDS` | static (`"5"`, matches the shard list length) |
 | step | `TEST_CONFIG` | `inputs.test-config` (default `"default"`) |
 | step | `PYTORCH_FINAL_PACKAGE_DIR` | `${{ github.workspace }}/artifact` |
+| step | `PYTHONPATH` | `scripts/test-bounds/pythonpath`, so `site` picks up our `sitecustomize.py` |
 | step | `PR_NUMBER`, `SHA1` | `repository_dispatch` payload or PR context |
 | step | `GITHUB_REPOSITORY` / `_WORKFLOW` / `_JOB` / `_RUN_ID` / `_RUN_NUMBER` / `_RUN_ATTEMPT` | `github.*` context |
+
+`AWS_EC2_METADATA_DISABLED` is there because `run_test.py` tries to upload each
+batch of test reports to pytorch's S3 bucket. There are no credentials on these
+runners, so the upload cannot succeed and does not need to - nothing reads it.
+But `boto3`, finding no credentials, next asks the EC2 instance metadata
+service for them, and on a host that is not an EC2 instance there is nothing
+listening on `169.254.169.254` to refuse the connection. It waits for the
+connect to time out instead, once per batch. Setting this makes `boto3` skip
+that probe and give up at once. The test step also filters the resulting
+`Failed to parse and upload json test reports: Unable to locate credentials`
+line out of the log, since the upload is expected to fail.
+
+## Test sharding
+
+`test/run_test.py` assigns test files to the 5 shards itself, using per-file
+timings it reads from `<pytorch>/.additional_ci_files/test-times.json`. Upstream
+that file is downloaded from test-infra, which has no data for an out-of-tree
+build env - hence the benign warning every shard logs:
+
+```
+Gathered no stats from artifacts for win-rtx-sm89 build env and default
+test config. Using default job name and default test config instead.
+```
+
+The fallback to `default`/`default` is the intended path here: the
+`Seed test-time stats` step runs `scripts/test-stats/seed_test_stats.py`, which
+copies our committed `scripts/test-stats/data/*.json` into that folder under
+exactly those keys. Every shard reads the same committed JSON, so all 5 agree on
+the split without coordinating.
+
+Timings do two things beyond balance. `calculate_shards` bin-packs by cost only
+for a file whose time is known; an unknown file falls back to round-robin
+(`_get_min_sharded_job` in `tools/testing/test_selections.py`), which ignores
+cost. And any file over the 10-minute `THRESHOLD` is split into
+`ceil(duration / 600)` pytest shards spread across jobs, so `test_meta` runs as
+15 pieces of ~9.5 min rather than one atomic 2.4-hour file.
+
+So that no file drops out of cost-based packing, `seed_test_stats.py` backfills
+an entry for every `test_*.py` in the checkout that our data has never measured,
+at the median of the times we do have. `--no-backfill` disables the backfill.
+Each run states the outcome:
+
+```
+sharding coverage: 1271 test file(s) in the checkout, 633 backfilled at 15.6s,
+0 left without a time
+```
+
+The last number should always be `0`. The middle one counts the whole `test/`
+tree, most of which this CI never selects, so it is a poor drift signal - for
+that, compare the files a run actually executed against the committed data.
+
+### Timeout bounds
+
+Four bounds apply to an x86 test shard, at descending granularity. The arm64
+shards carry the same set at different values, and take their per-test and
+per-shard bounds from the vendored harness rather than from the workflow - see
+[WoA timeout bounds](woa-ci.md#timeout-bounds).
+
+| Bound | Where | Value | On expiry |
+| --- | --- | --- | --- |
+| per test | `PYTEST_ADDOPTS=--timeout=... --timeout-method=thread` | 15 min | fails that test; the shard carries on |
+| per test-file process | `PER_PROCESS_TIMEOUT_SEC`, armed by `scripts/test-bounds/pythonpath/sitecustomize.py` | 45 min | dumps all thread stacks, kills that file's process tree; the shard carries on |
+| per test file | `run_test.py`'s own subprocess timeout (`THRESHOLD * 3`) | 30 min | **nothing - inert on Windows, see below** |
+| per shard | in-step watchdog (`RUN_TEST_TIMEOUT_SEC`) | 165 min | `taskkill`s the test processes and fails the shard |
+
+Do not rely on the per-file bound. It is armed only when `run_test.py` knows the
+file's expected duration and only for the serial pytest invocation, and on
+Windows it cannot kill anything even then: its expiry path calls
+`Popen.send_signal(signal.SIGINT)`, which Windows rejects with `ValueError`
+before reaching the `p.kill()` below it, leaving the handler blocked in
+`finally: p.wait()` on a live child. That turns a timeout into a permanent hang.
+It is an upstream pytorch defect with no environment-variable workaround, so
+treat the bound as absent.
+
+`PYTEST_ADDOPTS` only covers a test that is running, so the per-process bound is
+what covers the rest of a test file's life:
+
+| Window | per test | per process | per file | per shard |
+| --- | --- | --- | --- | --- |
+| inside a test (setup, call, teardown) | yes | yes | inert | yes |
+| import and collection, before the first test | no | yes | inert | yes |
+| session teardown, interpreter exit, CUDA context destruction | no | yes | inert | yes |
+| between the serial and parallel invocations | n/a | yes | inert | yes |
+| in `run_test.py` itself, or a non-Python step | no | no | no | yes |
+
+The per-process bound lives in a `sitecustomize.py`, which `site` imports at
+interpreter startup - hence the coverage of import, collection and teardown. It
+is on `PYTHONPATH` in the test step only, and arms only in a process whose
+`argv[0]` is a `test_*.py` file, so `run_test.py` itself is never bounded. Each
+shard logs `per-process bound: <n>s, armed from <path>` once, or a `::warning::`
+if the file is not on the path. Setting `PER_PROCESS_TIMEOUT_SEC` to `0` or
+leaving it unset disables it.
+
+Because the bound is silent while armed, a run in which nothing hangs cannot
+otherwise be told apart from one where the module was never imported. So each
+armed process appends a line to `PER_PROCESS_TIMEOUT_LOG`, and a second one if
+it fires; the `Report per-process bound coverage` step turns those into
+`per-process bound: armed in <n> test-file process(es), fired <m> time(s)` and
+warns if `<n>` is `0`. The file rides along in the `test-reports` artifact. It
+is `.jsonl` rather than `.log` because `parse_failures.py` scans that tree for
+`*.log` / `*.txt` when hunting failures.
+
+Both bounds are sized from measured runs. `RUN_TEST_TIMEOUT_SEC` is 165 min
+against a slowest clean shard of 106 min and a slowest guarded one of 112 min.
+`PER_PROCESS_TIMEOUT_SEC` is 45 min against a slowest single invocation of
+26.6 min - compare it per *invocation*, not per file, since `run_test.py` runs
+each file twice and pytest-shards the big ones, so a file's total can exceed it
+legitimately (`test_meta` totals ~142 min).
+
+### Refreshing the stats
+
+The data is a snapshot and drifts as the upstream suite changes. Drift costs
+balance, not safety - an unmeasured file is backfilled, so it is still packed on
+cost, just from a guess rather than a measurement. To regenerate from a
+completed run:
+
+1. Download each shard's log for one `(config, arch)` cell - either
+   `gh api repos/NVIDIA/pytorch-windows-ci/actions/jobs/<job-id>/logs`, or the
+   `run_test_shard<N>.log` inside that shard's `test-reports-*` artifact.
+2. Optionally extract the `test-reports-*` artifacts too; they are the only
+   source of per-class times.
+3. Run the generator, passing **every** shard of the run so that pytest-sharded
+   files are seen whole:
+
+```bash
+python scripts/test-stats/gen_test_stats.py \
+  --log-dir ./logs --report-dir ./reports/shard1 ... --report-dir ./reports/shard5
+```
+
+4. Commit the regenerated `scripts/test-stats/data/*.json`.
+
+Use a run whose shards all completed: a cancelled shard truncates its log, and
+the generator can only scale a partially-observed file back up to an estimate.
 
 ## Runner diagnostics
 

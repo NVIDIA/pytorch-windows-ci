@@ -147,6 +147,55 @@ jobs:
       # no cross-job wheel cache survives on these public-facing runners.
       WOA_VENV_DIR: 'C:\ci\woa\scratch\venv'
       PIP_CACHE_DIR: 'C:\ci\woa\scratch\pipcache'
+      # ---- hang bounds -----------------------------------------------------
+      # The vendored entrypoint owns two of the three bounds, and its versions
+      # are better integrated than anything set here could be, so only their
+      # values are touched - never PYTEST_ADDOPTS, which it exports itself:
+      #   per test    tools/woa-build/pytorch-windows-test-shard.ps1 exports
+      #               PYTEST_ADDOPTS from
+      #               PYTORCH_WIN_TEST_PER_TEST_TIMEOUT_SEC (default 900,
+      #               left alone: pytest-timeout fired zero times across
+      #               the 1,457 invocations of a four-shard run).
+      #   per shard   the same script runs run_test.py under a wall-clock
+      #               watchdog from PYTORCH_WIN_TEST_RUN_TEST_TIMEOUT_SEC,
+      #               and on expiry kills the tree and synthesizes an
+      #               attributed JUnit report, which a bare taskkill cannot.
+      #
+      # That watchdog is lowered from its 12600 default because at 210min it
+      # could not fire inside the 240min job cap. It bounds the run_test.py
+      # call only, so wheel download, venv, install and seed spend the cap
+      # without counting against it - and on this pool those take 41-45min,
+      # leaving 30min of budget for a 210min bound. A public arm64 shard was
+      # cancelled 17min short of its own watchdog after run_test.py had been
+      # wedged for 193min. At 180min the bound clears a 45min setup with
+      # ~15min left for the kill, the JUnit synthesis, the summary and the
+      # upload - which is the whole point of failing rather than being
+      # cancelled.
+      PYTORCH_WIN_TEST_RUN_TEST_TIMEOUT_SEC: "10800"
+      #
+      # What neither covers is a single test file freezing where pytest-timeout
+      # cannot see - during import, collection, or teardown after the last test
+      # - because the shard watchdog's only move there is to kill the whole
+      # shard. That gap is what this bound closes, enforced from inside the
+      # test-file process by scripts/test-bounds/pythonpath/sitecustomize.py.
+      #
+      # 30min, and the floor is the per-test bound rather than the workload:
+      # at 2x its 15min, pytest-timeout always gets first refusal at an in-test
+      # hang, which matters because it can name the hung test where this bound
+      # can only name the file. It also clears the slowest healthy invocation
+      # measured with the seeded stats live - 13.9min of 1,457 - by 2.2x.
+      # Earlier arm64 logs showed a 53.4min invocation, but those
+      # predate the seeding: with no cost for a file run_test.py cannot
+      # pytest-split it, so test_meta ran whole. Across those 17 logs zero
+      # files were split; across this run's four, fourteen were.
+      PER_PROCESS_TIMEOUT_SEC: "1800"
+      # Where each armed test-file process appends one JSON line, and where the
+      # step after the test run reads them back from. Both need it, so it is
+      # job-level; the literal repeats PT_ROOT above because a job-level `env`
+      # entry cannot reference a sibling one. Extension matters -
+      # parse_failures.py scans this tree for *.log / *.txt, so a .log here
+      # would be fed to the failure parser.
+      PER_PROCESS_TIMEOUT_LOG: 'C:\pt/test/test-reports/per-process-bound.jsonl'
     steps:
       - name: Checkout OOT tooling repo
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
@@ -184,8 +233,48 @@ jobs:
           python-label: ${{ inputs.python-label }}
           venv-path: ${{ env.WOA_VENV_DIR }}\${{ inputs.python-label }}
 
+      # Retried in three attempts. The action's own five retries all reuse a
+      # single blob-storage redirect URL inside one attempt, so when that URL
+      # goes bad mid-transfer they fail together and take the shard with them
+      # before it runs a test (seen on the rtx path, same artifact shape).
+      # Only a fresh attempt asks for a new redirect.
       - name: Download wheels artifact
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        id: wheel_1
+        continue-on-error: true
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: ${{ inputs.wheel-artifact }}
+          path: artifact
+
+      # Clear the half-extracted tree first: the next step reads
+      # `artifact/built_pytorch_sha.txt`, and a truncated wheel would
+      # otherwise resurface later as an install or import error.
+      - name: Wait before wheels download retry
+        if: steps.wheel_1.outcome == 'failure'
+        shell: bash
+        run: |
+          rm -rf artifact
+          sleep 60
+
+      - name: Download wheels artifact (retry 2)
+        id: wheel_2
+        if: steps.wheel_1.outcome == 'failure'
+        continue-on-error: true
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: ${{ inputs.wheel-artifact }}
+          path: artifact
+
+      - name: Wait before final wheels download retry
+        if: steps.wheel_1.outcome == 'failure' && steps.wheel_2.outcome == 'failure'
+        shell: bash
+        run: |
+          rm -rf artifact
+          sleep 120
+
+      - name: Download wheels artifact (retry 3)
+        if: steps.wheel_1.outcome == 'failure' && steps.wheel_2.outcome == 'failure'
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: ${{ inputs.wheel-artifact }}
           path: artifact
@@ -291,6 +380,23 @@ jobs:
             if ($LASTEXITCODE -ne 0) { throw "import $ext smoke test failed with exit $LASTEXITCODE" }
           }
 
+      # Seed our own test-time stats into pytorch's .additional_ci_files so
+      # run_test.py shards by cost instead of falling back to round robin
+      # ("Failed to find test times file ... Using round robin sharding").
+      # Round robin ignores cost, so one shard collects the multi-hour files
+      # and sets the whole cell's critical path. All shards read the same
+      # committed JSON, so the split is consistent across them.
+      - name: Seed test-time stats (deterministic sharding)
+        shell: powershell
+        env:
+          VENV_ACTIVATE: ${{ steps.venv.outputs.venv-activate }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          & $env:VENV_ACTIVATE
+          python "$env:GITHUB_WORKSPACE\oot\scripts\test-stats\seed_test_stats.py" `
+            --pytorch-root $env:PT_ROOT
+          if ($LASTEXITCODE -ne 0) { throw "seed_test_stats.py failed with exit $LASTEXITCODE" }
+
       - name: Start runner diagnostics
         id: diag
         uses: ./oot/.github/actions/start-runner-diagnostics
@@ -305,8 +411,70 @@ jobs:
           SHARD_NUMBER: ${{ matrix.shard }}
           NUM_TEST_SHARDS: ${{ inputs.num-shards }}
           TEST_CONFIG: ${{ inputs.test-config }}
+          # ---- per-process hang guard, covering the phases pytest-timeout
+          # ---- cannot see: import, collection, and everything after the last
+          # ---- test while the interpreter and CUDA context tear down. One of
+          # ---- the arm64 shards lost to a hang went quiet for 61min right
+          # ---- after a "Finished" line, which is exactly that gap. The
+          # ---- directory holds nothing but sitecustomize.py, which `site`
+          # ---- imports at interpreter startup; it arms only in processes
+          # ---- whose argv[0] is a test file, so the parent is never bounded.
+          # ---- Nothing in tools/woa-build touches PYTHONPATH, so this
+          # ---- survives into the test processes unmodified.
+          PYTHONPATH: ${{ github.workspace }}/oot/scripts/test-bounds/pythonpath
         run: |
           $ErrorActionPreference = "Stop"
+
+          # sitecustomize.py deliberately will not create this directory -
+          # racing hundreds of test processes to make one is a worse failure
+          # than dropping the records - so make it here. run_test.py writes its
+          # own reports into the same place.
+          New-Item -ItemType Directory -Force -Path "$env:PT_ROOT\test\test-reports" | Out-Null
+
+          # Note [The bound's premise is cost-based sharding]
+          #   30min only clears the workload because run_test.py pytest-splits
+          #   its heavy files, and it can only do that with a recorded cost per
+          #   file. With no costs it shards round robin and runs each file
+          #   whole: test_meta takes 53min that way, test_foreach 40min, so the
+          #   same bound would kill work that completes. The seed step above
+          #   writes those costs, but it is younger than the workflow it sits
+          #   in - `main` in both repos still has no seed step, so a shard run
+          #   from there round-robins. Rather than trust that the two travel
+          #   together, check for the costs and disable the bound when they are
+          #   missing. Clearing the variable is the supported "off" switch:
+          #   sitecustomize reads anything unparseable or <= 0 as disabled.
+          $timesFile = Join-Path $env:PT_ROOT '.additional_ci_files\test-times.json'
+          $costed = 0
+          if (Test-Path -LiteralPath $timesFile) {
+            try {
+              # Shape is {"default": {"default": {<file>: <seconds>}}} - the
+              # same map run_test.py reads to decide the split.
+              $times = (Get-Content -LiteralPath $timesFile -Raw |
+                        ConvertFrom-Json).default.default
+              if ($times) { $costed = @($times.PSObject.Properties).Count }
+            } catch {
+              # A malformed file means run_test.py will not get costs either,
+              # so treat it exactly like a missing one.
+              $costed = 0
+            }
+          }
+
+          # State the outcome either way, so a run where nothing hangs still
+          # shows whether the bound was live. Silence alone cannot distinguish
+          # "armed in every test process" from "never imported".
+          $bound = "$env:GITHUB_WORKSPACE\oot\scripts\test-bounds\pythonpath\sitecustomize.py"
+          if ($costed -lt 1) {
+            $env:PER_PROCESS_TIMEOUT_SEC = ''
+            Write-Host "::warning::per-process bound NOT armed - no per-file costs in '$timesFile', so this shard shards round robin and runs heavy files whole. A bound sized for split files would kill work that completes."
+          } elseif (Test-Path -LiteralPath $bound) {
+            Write-Host "per-process bound: $($env:PER_PROCESS_TIMEOUT_SEC)s, armed from $bound ($costed file(s) with a recorded cost)"
+          } else {
+            Write-Host "::warning::per-process bound NOT armed - no sitecustomize.py at '$bound'. A hang outside a running test will cost the whole shard."
+          }
+
+          # No shard-level watchdog here: the script below already runs
+          # run_test.py under one, and reports a JUnit for it. See the
+          # PYTORCH_WIN_TEST_RUN_TEST_TIMEOUT_SEC note in the job env.
           & "$env:GITHUB_WORKSPACE\oot\tools\woa-build\pytorch-windows-test-shard.ps1" `
             -PytorchRoot $env:PT_ROOT `
             -ShardNumber ([int]$env:SHARD_NUMBER) `
@@ -314,6 +482,38 @@ jobs:
             -TestConfig $env:TEST_CONFIG `
             -VenvActivate $env:VENV_ACTIVATE
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      # Close the loop on the per-process bound. Without this the only thing a
+      # healthy shard proves is that sitecustomize.py was on PYTHONPATH at step
+      # start - not that any test process actually imported and armed it. Reads
+      # the records the processes appended and states both counts.
+      #
+      # Read-only and never fails the shard: it reports on a guard, and a
+      # broken report is not worth converting into a red shard. A zero count is
+      # a warning rather than an error for the same reason - it means the bound
+      # was inert, which is worth shouting about but is not itself a test
+      # failure.
+      - name: Report per-process bound coverage
+        if: always()
+        shell: bash
+        run: |
+          set -o pipefail
+          rec="${PER_PROCESS_TIMEOUT_LOG:-}"
+          if [ -z "$rec" ] || [ ! -f "$rec" ]; then
+            echo "::warning::No per-process bound records at '$rec'. Either no test file ran, or sitecustomize.py was never imported - in which case a hang outside a running test would cost the whole shard."
+            exit 0
+          fi
+          armed=$(grep -c '"event": "armed"' "$rec" || true)
+          fired=$(grep -c '"event": "fired"' "$rec" || true)
+          echo "per-process bound: armed in ${armed} test-file process(es), fired ${fired} time(s)"
+          if [ "${armed:-0}" -eq 0 ]; then
+            echo "::warning::per-process bound recorded no armed process; treat the bound as inert for this shard."
+          fi
+          if [ "${fired:-0}" -gt 0 ]; then
+            echo "The bound killed these process(es) - each one is a test file that hung outside a running test:"
+            grep '"event": "fired"' "$rec" || true
+          fi
+          exit 0
 
       - name: Stop runner diagnostics
         if: always()
@@ -337,7 +537,7 @@ jobs:
 
       - name: Upload test-reports archive
         if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: test-reports-${{ inputs.build-environment }}-${{ inputs.python-label }}-arm64-shard${{ matrix.shard }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ env.PT_ROOT }}/test/test-reports/**

@@ -158,7 +158,12 @@ jobs:
       - ${{ inputs.runner-base }}
       - ${{ inputs.python-label }}
       - ${{ inputs.cuda-label }}
-    timeout-minutes: 210
+    # Raised from 210 so that the in-step watchdog (RUN_TEST_TIMEOUT_SEC
+    # below), not this cap, is always what stops a hung shard. A job-level
+    # timeout is a bad way to catch a hang: GitHub *cancels* the job, so the
+    # shard summary never renders, the test-reports upload races the
+    # cancellation, and the log just stops with no indication of what wedged.
+    timeout-minutes: 240
     env:
       # ---- carried from the matrix cell -------------------------------
       BUILD_ENVIRONMENT: ${{ inputs.build-environment }}
@@ -179,6 +184,74 @@ jobs:
       VC_VERSION: ""
       PYTORCH_TEST_WITH_SLOW: "0"
       CI: "1"
+      # `CI` above is what switches on run_test.py's S3 telemetry upload:
+      # --upload-artifacts-while-running defaults to IS_CI and has no negating
+      # flag, so after every test file handle_complete() calls
+      # parse_xml_and_upload_json(), which puts the report into pytorch's own
+      # `gha-artifacts` bucket via boto3. We hold no credentials for someone
+      # else's bucket, so it can only ever fail - but on a non-AWS host boto3
+      # first probes the EC2 instance-metadata service at 169.254.169.254
+      # looking for them, and that probe can stall for minutes. It runs once
+      # per test file, so a single stall wedges the shard with no output. The
+      # WoA path hit exactly this (3h+ before the watchdog killed it) and
+      # guards it the same way - see Set-RunTestTelemetryGuardEnv in
+      # tools/woa-build/shared/test/TestShardRunner.ps1.
+      #
+      # Disabling the probe makes the doomed upload raise NoCredentialsError
+      # immediately instead of hanging. run_test.py's only other network step,
+      # the disabled/slow-test download, is an anonymous public HTTPS GET and
+      # is unaffected.
+      AWS_EC2_METADATA_DISABLED: "true"
+      # Harden every pip invocation in the job against transient index /
+      # CDN failures - including the ones we do not call ourselves, i.e.
+      # the `pip install -r .ci/docker/requirements-ci.txt` buried in
+      # pytorch's own setup_pytorch_env.bat. pip reads these from the
+      # environment, so they apply to nested batch scripts too. pip's
+      # default 15s socket timeout is far too tight for this pool: a
+      # single slow index response returns an empty candidate list, pip
+      # reports "No matching distribution found" for a package that
+      # plainly exists, and the whole requirements resolve is abandoned.
+      PIP_RETRIES: "8"
+      PIP_DEFAULT_TIMEOUT: "60"
+      # Wall-clock cap for the whole win-test.sh run, enforced in-step - and,
+      # per the watchdog comment below, the only bound that reliably fires on
+      # Windows for a hang outside a running test. Sized from the 19 measurable
+      # shards of a full run: the slowest guarded step was 112min, and that one
+      # included a 15min per-test timeout plus its retry; the slowest without a
+      # hang was 106min. 165min is 1.47x the worst observed, leaving room for
+      # pytorch's test count to grow and for the unresolved 1.5-1.8x shard
+      # imbalance, while staying far enough under `timeout-minutes` that the
+      # watchdog always wins the race against the job cap.
+      #
+      # Lowered from 195min, which was sized against a "~168min of run_test
+      # time" observation from before the seeding balanced the shards - so it
+      # was costing an extra 45min on every shard it had to kill.
+      RUN_TEST_TIMEOUT_SEC: "9900"
+      # Per-test cap handed to pytest-timeout, sized from the JUnit reports of
+      # a real run : across 278,992 test cases the slowest single test was
+      # test_multiprocessing::test_fs_sharing at 7.8min, only two exceeded 5min,
+      # none reached 10min, and p99.99 was 68s. 15min is ~2x the observed worst
+      # case - enough headroom for a slower runner or a loaded machine, while
+      # still cutting the time a wedged test can burn. When it trips it dumps
+      # every thread's stack, which is the evidence a silent hang otherwise
+      # denies us. Also matches PerTestTimeoutSec in the WoA path's
+      # tools/woa-build/shared/env/defaults/test-runtime.psd1, so both arches
+      # fail a wedged test on the same clock.
+      PER_TEST_TIMEOUT_SEC: "900"
+      # Wall-clock cap on a single test-file process, enforced from inside it
+      # by scripts/test-bounds/pythonpath/sitecustomize.py. This is the bound
+      # that covers the phases pytest-timeout cannot (import, collection, and
+      # teardown after the last test) without costing the whole shard the way
+      # RUN_TEST_TIMEOUT_SEC does.
+      #
+      # Sized per *invocation*, not per file: run_test.py runs each file twice
+      # (serial tests, then the rest) and pytest-shards the big ones, so the
+      # figure to clear is the slowest single invocation. Across 10,331
+      # measured invocations that was 26.6min (export/test_sparse; 23.0min for
+      # test_foreach 2/6 on this path). 45min is 1.69x that. Note the whole
+      # file can legitimately far exceed this - test_meta totals ~142min across
+      # 15 pieces - so this must never be compared against a per-file total.
+      PER_PROCESS_TIMEOUT_SEC: "2700"
       # Short physical path the pytorch checkout is relocated to right after
       # checkout. The runner workspace lives at
       #   C:\actions-runner\_work\pytorch-windows-ci\pytorch-windows-ci\pytorch
@@ -187,6 +260,13 @@ jobs:
       # Relocating to C:\pt strips ~60 chars off every derived path. See the
       # "Relocate pytorch checkout" step for the full rationale.
       PT_ROOT: 'C:\pt'
+      # Where each armed test-file process appends one JSON line, and where the
+      # step after the test run reads them back from. Both need it, so it is
+      # job-level; the literal repeats PT_ROOT above because a job-level `env`
+      # entry cannot reference a sibling one. Extension matters -
+      # parse_failures.py scans this tree for *.log / *.txt, so a .log here
+      # would be fed to the failure parser.
+      PER_PROCESS_TIMEOUT_LOG: 'C:\pt/test/test-reports/per-process-bound.jsonl'
     steps:
       - name: Validate install-path inputs
         shell: bash
@@ -214,7 +294,43 @@ jobs:
         shell: bash
         run: git config --global core.longpaths true
 
+      # Retried in three explicit attempts. actions/checkout only retries
+      # the git fetch internally (3 tries, ~90s total) and then fails the
+      # step, which on this pool is shorter than an observed github.com
+      # connectivity blip. Losing THIS checkout is disproportionately
+      # expensive: every later `uses: ./oot/...` local action and the
+      # summary script live in this tree, so a single missed clone turns
+      # one network error into a pile of misleading "Can't find action.yml"
+      # / "can't open file parse_failures.py" failures.
       - name: Checkout repository (runner-diagnostics actions)
+        id: oot_checkout_1
+        continue-on-error: true
+        uses: actions/checkout@v7
+        with:
+          path: oot
+          show-progress: false
+
+      - name: Wait before OOT checkout retry
+        if: steps.oot_checkout_1.outcome == 'failure'
+        shell: bash
+        run: sleep 60
+
+      - name: Checkout repository (retry 2)
+        id: oot_checkout_2
+        if: steps.oot_checkout_1.outcome == 'failure'
+        continue-on-error: true
+        uses: actions/checkout@v7
+        with:
+          path: oot
+          show-progress: false
+
+      - name: Wait before final OOT checkout retry
+        if: steps.oot_checkout_1.outcome == 'failure' && steps.oot_checkout_2.outcome == 'failure'
+        shell: bash
+        run: sleep 120
+
+      - name: Checkout repository (retry 3)
+        if: steps.oot_checkout_1.outcome == 'failure' && steps.oot_checkout_2.outcome == 'failure'
         uses: actions/checkout@v7
         with:
           path: oot
@@ -222,9 +338,53 @@ jobs:
 
       # Pull the wheel + SHA produced by the paired build job from GitHub
       # Actions artifact storage. Lands files under `artifact/...`.
+      #
+      # Retried in three attempts like the checkout above, and for the same
+      # reason. The action does retry internally, but all five of its tries
+      # live inside one attempt against one blob-storage redirect URL: when
+      # that URL went bad mid-transfer on this 1.7GB artifact, the five tries
+      # burned 13 minutes and the step failed with "Artifact download failed
+      # after 5 retries", losing a whole shard before it ran a single test.
+      # A fresh attempt asks for a new redirect, which is the part the
+      # internal retries never repeat.
       - name: Download wheel artifact
+        id: wheel_1
         if: inputs.wheel-artifact != ''
-        uses: actions/download-artifact@v4
+        continue-on-error: true
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: ${{ inputs.wheel-artifact }}
+          path: artifact
+
+      # Clear the half-extracted tree first. A truncated wheel here would
+      # otherwise surface much later as an install or import error, and
+      # `artifact/built_pytorch_sha.txt` is read by the very next step.
+      - name: Wait before wheel download retry
+        if: inputs.wheel-artifact != '' && steps.wheel_1.outcome == 'failure'
+        shell: bash
+        run: |
+          rm -rf artifact
+          sleep 60
+
+      - name: Download wheel artifact (retry 2)
+        id: wheel_2
+        if: inputs.wheel-artifact != '' && steps.wheel_1.outcome == 'failure'
+        continue-on-error: true
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: ${{ inputs.wheel-artifact }}
+          path: artifact
+
+      - name: Wait before final wheel download retry
+        if: inputs.wheel-artifact != '' && steps.wheel_1.outcome == 'failure' && steps.wheel_2.outcome == 'failure'
+        shell: bash
+        run: |
+          rm -rf artifact
+          sleep 120
+
+      - name: Download wheel artifact (retry 3)
+        if: inputs.wheel-artifact != '' && steps.wheel_1.outcome == 'failure' && steps.wheel_2.outcome == 'failure'
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: ${{ inputs.wheel-artifact }}
           path: artifact
@@ -252,13 +412,40 @@ jobs:
           repository: pytorch/pytorch
           ref: ${{ steps.ref.outputs.ref }}
           path: pytorch
-          submodules: recursive
+          # Submodules are deliberately NOT fetched by this action - the
+          # retried step below does it instead. actions/checkout aborts the
+          # entire step on the first submodule fetch error and exposes no
+          # retry for that phase, and pytorch's recursive tree reaches deep
+          # third-party hosts (third_party/flash-attention -> aiter ->
+          # ROCm/composable_kernel) where one transient connect failure was
+          # killing shards ~55 minutes into checkout, after the main clone
+          # had already succeeded.
+          submodules: false
           fetch-depth: 1
           show-progress: true
           # This checkout is read-only (the tree is relocated to C:\pt and
           # only built/tested, never pushed), so it does not need a GitHub
           # token persisted in .git/config.
           persist-credentials: false
+
+      # `--jobs 4` also cuts a large chunk off the serial ~55min recursive
+      # clone this replaces.
+      - name: Fetch pytorch submodules (retried)
+        shell: bash
+        working-directory: pytorch
+        run: |
+          set -uo pipefail
+          for attempt in 1 2 3; do
+            if git submodule update --init --recursive --depth 1 --jobs 4; then
+              echo "pytorch submodules ready (attempt ${attempt})"
+              exit 0
+            fi
+            delay=$((attempt * 60))
+            echo "::warning::Submodule fetch attempt ${attempt} failed; retrying in ${delay}s."
+            sleep "${delay}"
+          done
+          echo "::error::pytorch submodule fetch failed after 3 attempts." >&2
+          exit 1
 
       # Windows MAX_PATH (260) mitigation, root cause fix. The runner image
       # already sets the LongPathsEnabled registry flag (packer
@@ -371,10 +558,85 @@ jobs:
           fi
           python -c "import torch; print('torch', torch.__version__, 'cuda', torch.version.cuda); assert torch.cuda.is_available()"
 
+      # pytorch's setup_pytorch_env.bat (called from win-test.sh, deep inside
+      # the single test step below) installs .ci/docker/requirements-ci.txt
+      # and then IGNORES the exit code. pip resolves a requirements file
+      # atomically, so one unavailable pin takes the whole set down with it:
+      # a transient index failure on `onnx==1.21.0` left expecttest, numpy
+      # and hypothesis uninstalled, and the shard then died ~400 log lines
+      # later on `ModuleNotFoundError: No module named 'expecttest'` - a
+      # symptom that points nowhere near the cause.
+      #
+      # So install the same requirements here first, with real retries. The
+      # nested install afterwards becomes a fast "already satisfied" no-op,
+      # and even if it does hiccup the environment is already complete.
+      #
+      # Deliberately NOT gated on pip's exit code: this Linux-oriented
+      # requirements file may legitimately fail on a package with no
+      # win_amd64 wheel, which must not fail the shard. The import check
+      # below is the real gate - it fails fast, and names what is missing.
+      - name: Install test-harness dependencies (retried)
+        shell: bash
+        working-directory: ${{ env.PT_ROOT }}
+        run: |
+          set -uo pipefail
+          for attempt in 1 2 3; do
+            echo "--- requirements-ci.txt install, attempt ${attempt}"
+            if python -m pip install -r .ci/docker/requirements-ci.txt; then
+              break
+            fi
+            if [ "${attempt}" -lt 3 ]; then
+              delay=$((attempt * 30))
+              echo "::warning::requirements-ci.txt install attempt ${attempt} failed; retrying in ${delay}s."
+              sleep "${delay}"
+            fi
+          done
+
+          # Not in requirements-ci.txt, but PYTEST_ADDOPTS below passes
+          # --timeout to every pytest invocation, and an unrecognised
+          # argument would fail every single test file. So this install is
+          # load-bearing and the import check must cover it.
+          python -m pip install "pytest-timeout==2.3.1"
+
+          python - <<'PY'
+          import importlib.util
+          import sys
+
+          # Modules that run_test.py / common_utils.py import before they can
+          # report anything useful themselves. Scoped to what
+          # requirements-ci.txt actually pins - pytest-shard and nvidia-ml-py
+          # come from win-test.sh's own pip line, which has not run yet -
+          # plus pytest_timeout, installed just above.
+          required = ("expecttest", "numpy", "hypothesis", "psutil", "pytest", "pytest_timeout")
+          missing = [m for m in required if importlib.util.find_spec(m) is None]
+          if missing:
+              print(
+                  "::error::Test harness dependencies missing after 3 install attempts: "
+                  + ", ".join(missing)
+                  + ". The requirements-ci.txt resolve failed (usually a transient index "
+                  "error on an unrelated pin) - re-run the shard.",
+                  file=sys.stderr,
+              )
+              sys.exit(1)
+          print("test-harness imports present:", ", ".join(required))
+          PY
+
       # Seed our own test-time stats into pytorch's .additional_ci_files so
       # run_test.py shards deterministically from data we control instead of
       # downloading test-infra stats (or falling back to round-robin). All 5
       # shards read the same committed JSON, so the sharding is consistent.
+      #
+      # A file with no recorded time is also placed badly, not just costed
+      # badly: calculate_shards gives up on cost entirely for it and hands it
+      # out by index (`_get_min_sharded_job` round-robins when `test.time is
+      # None`). So the script backfills a time for every test file in the
+      # checkout, and prints how many it had to invent - a number that climbing
+      # steadily is the signal to regenerate the committed stats
+      # (docs/ci-details.md).
+      #
+      # A recorded time is also what arms run_test.py's own 30min per-file
+      # subprocess timeout - but do not count on that bound, because it cannot
+      # kill anything on Windows. See the watchdog comment below.
       - name: Seed test-time stats (deterministic sharding)
         shell: bash
         run: |
@@ -407,6 +669,28 @@ jobs:
           GITHUB_RUN_ID: ${{ github.run_id }}
           GITHUB_RUN_NUMBER: ${{ github.run_number }}
           GITHUB_RUN_ATTEMPT: ${{ github.run_attempt }}
+          # ---- per-test hang guard. run_test.py hands every test file to
+          # ---- pytest, and pytest reads PYTEST_ADDOPTS itself, so this
+          # ---- reaches all of them without patching upstream's args. The
+          # ---- `thread` method is the only one that works on Windows
+          # ---- (signal-based alarms are POSIX-only); it dumps all thread
+          # ---- stacks and then hard-exits the process, which is what lets
+          # ---- run_test.py record the file as failed and move on instead
+          # ---- of blocking its worker pool forever.
+          PYTEST_ADDOPTS: "--timeout=${{ env.PER_TEST_TIMEOUT_SEC }} --timeout-method=thread"
+          # ---- per-process hang guard, covering the phases pytest-timeout
+          # ---- cannot see: import, collection, and everything after the last
+          # ---- test while the interpreter and CUDA context tear down. Two of
+          # ---- the shards lost to a hang froze in exactly those phases. This
+          # ---- directory holds nothing but sitecustomize.py, which `site`
+          # ---- imports at interpreter startup; it arms only in processes whose
+          # ---- argv[0] is a test file, so run_test.py itself is never bounded.
+          # ---- See scripts/test-bounds/pythonpath/sitecustomize.py.
+          # PER_PROCESS_TIMEOUT_SEC and PER_PROCESS_TIMEOUT_LOG are both
+          # job-level, so they are already in this step's environment; only
+          # PYTHONPATH needs setting, and it is scoped to this step so no other
+          # step's python sees it.
+          PYTHONPATH: ${{ github.workspace }}/oot/scripts/test-bounds/pythonpath
         # Tee the harness output into the test-reports tree so the summary
         # parser can recover failures that never make it into JUnit XML
         # (hard crashes, collection/import errors, whole-file aborts). The
@@ -426,15 +710,161 @@ jobs:
         # derives from $PWD - stays well under MAX_PATH. No subst/drive aliasing
         # is needed (and would not work: setuptools' realpath() canonicalises
         # aliases back to the long physical path).
+        #
+        # Backstop watchdog. Seven shards across four runs were lost to the job
+        # cap, every one the same way: a single CUDA test deadlocked
+        # (TestMemPool::test_graph_capture_pre_capture_stream_use in test_cuda,
+        # _foreach_minimum and max_unpool1d in test_meta), its file never
+        # returned to run_test.py's pool, the parent blocked in pool.join(), and
+        # the orphaned process tree held this step's stdout pipe open so the
+        # step could not even end. GitHub cancelled 70-120 minutes later with no
+        # failure recorded and no stack: the parent sits in Process.join() ->
+        # WaitForSingleObject(INFINITE), which on Windows ignores Ctrl-C, so
+        # only the idle pool workers ever printed a traceback.
+        #
+        # Nothing bounded any of it. run_test.py does arm a 30min timeout on the
+        # subprocess it runs each file in, but only when it knows that file's
+        # expected duration (`test_module.time is not None`) - and the seeded
+        # stats were empty, so it knew none of them.
+        #
+        # Supplying times re-arms that bound, but it is inert on Windows and
+        # must not be relied on. This is an upstream defect in pytorch, not
+        # something we configure: torch.testing._internal.common_utils's
+        # wait_for_process handles its own timeout with
+        # `p.send_signal(signal.SIGINT)` ("send SIGINT to give pytest a chance
+        # to make xml" - sound on POSIX), and the function carries no platform
+        # branch at all. Popen.send_signal on Windows accepts only SIGTERM /
+        # CTRL_C_EVENT / CTRL_BREAK_EVENT, so SIGINT (2) raises ValueError. That
+        # escapes before the `p.kill()` below it, and the handler's
+        # `finally: p.wait()` then waits forever on a child that is still
+        # running - turning a hung child into a permanently blocked parent,
+        # which is the exact symptom above. Nothing we can set fixes it from
+        # outside; it needs a patch upstream (or to the installed torch).
+        # Confirmed by absence: retry_shell's "Command took >Nmin, returning
+        # 124" does not appear in any of the ~9800 shard logs collected so far.
+        # The bound is also armed only for the serial pytest invocation, since
+        # `should_retry` is false once `-n` is in the command.
+        #
+        # Three bounds do work, because none of them needs a signal.
+        # PYTEST_ADDOPTS above caps a single test at 15min: its timer thread
+        # runs inside the child, dumps every thread's stack and hard-exits, so
+        # run_test.py sees an ordinary exit code, records the failure and
+        # carries on. PER_PROCESS_TIMEOUT_SEC caps the whole test-file process
+        # at 45min from inside it, which is what covers the phases
+        # pytest-timeout cannot see - import, collection, and teardown after
+        # the last test - at the cost of one file rather than the shard. And
+        # this watchdog, which uses taskkill.
+        #
+        # So this watchdog is now the last resort proper: a hang in
+        # run_test.py's own process, or in a non-python step, where nothing
+        # inside a test-file interpreter can help.
+        #
+        # Killing python.exe rather than just the win-test.sh child is
+        # deliberate: the grandchildren hold the write end of the pipe into
+        # `tee`, so killing only the shell would leave `tee` blocked and the
+        # step hung anyway. Killing repeatedly is deliberate too - win-test.sh
+        # is a long sequence of python invocations and a single sweep can
+        # leave it limping on to the next one instead of unwinding.
         run: |
           set -o pipefail
           mkdir -p test/test-reports
 
-          bash .ci/pytorch/win-test.sh 2>&1 \
-            | tee "test/test-reports/run_test_shard${SHARD_NUMBER}.log"
+          # sitecustomize.py stays silent when it arms - it is imported by every
+          # python process in the job, so announcing itself there would be
+          # hundreds of lines per shard. State it once here instead, and prove
+          # the file is actually on the path rather than merely configured.
+          if [ -f "${PYTHONPATH}/sitecustomize.py" ]; then
+            echo "per-process bound: ${PER_PROCESS_TIMEOUT_SEC}s, armed from ${PYTHONPATH}/sitecustomize.py"
+          else
+            echo "::warning::per-process bound NOT armed - no sitecustomize.py under '${PYTHONPATH}'. A hang outside a running test will now cost the whole shard."
+          fi
 
-      - name: Stop runner diagnostics
+          watchdog_marker="${RUNNER_TEMP}/win-test-watchdog-fired"
+          rm -f "$watchdog_marker"
+          (
+            sleep "${RUN_TEST_TIMEOUT_SEC}"
+            : > "$watchdog_marker"
+            echo "::error::Watchdog: win-test.sh made no progress within ${RUN_TEST_TIMEOUT_SEC}s; killing test processes so the shard fails cleanly."
+            while true; do
+              taskkill //F //T //IM python.exe >/dev/null 2>&1 || true
+              sleep 20
+            done
+          ) &
+          watchdog_pid=$!
+
+          # AWS_EC2_METADATA_DISABLED stops the doomed S3 telemetry upload from
+          # stalling, but it still runs and still narrates itself once per test
+          # file. That was 1010 lines - 2.2% of the output - in a measured shard
+          # log, for work that cannot ever succeed, so drop just those lines.
+          # Matching is fixed-string and pins the "Unable to locate credentials"
+          # reason, so an upload failing for any other reason is still printed
+          # rather than swallowed.
+          #
+          # `set +e` around the pipeline so a red shard still reaches the
+          # watchdog teardown below. PIPESTATUS[0] is win-test.sh's own exit
+          # code, unmasked by the later stages. `--line-buffered` keeps the live
+          # job log streaming instead of arriving in grep-sized blocks.
+          set +e
+          bash .ci/pytorch/win-test.sh 2>&1 \
+            | grep -v --line-buffered -F \
+                -e 'Failed to parse and upload json test reports: Unable to locate credentials' \
+                -e 'Parsing testcases for test report:' \
+                -e 'Found job id:' \
+                -e 'GITHUB_RUN_ID, GITHUB_RUN_ATTEMPT, or ARTIFACTS_FILE_SUFFIX not set, not uploading' \
+                -e 'Uploading artifacts took' \
+                -e 'SCRIBE_GRAPHQL_ACCESS_TOKEN is NOT set' \
+            | tee "test/test-reports/run_test_shard${SHARD_NUMBER}.log"
+          rc=${PIPESTATUS[0]}
+          set -e
+
+          kill "$watchdog_pid" 2>/dev/null || true
+
+          if [ -f "$watchdog_marker" ]; then
+            echo "::error::Shard timed out after ${RUN_TEST_TIMEOUT_SEC}s. The tail of the log above is where it stopped making progress."
+            exit 1
+          fi
+          exit "$rc"
+
+      # Close the loop on the per-process bound. Without this the only thing a
+      # healthy shard proves is that sitecustomize.py was on PYTHONPATH at step
+      # start - not that any test process actually imported and armed it. Reads
+      # the records the processes appended and states both counts.
+      #
+      # Read-only and never fails the shard: it reports on a guard, and a
+      # broken report is not worth converting into a red shard. A zero count is
+      # a warning rather than an error for the same reason - it means the bound
+      # was inert, which is worth shouting about but is not itself a test
+      # failure. Hence `-u` off and `:-` on the read: the first version of this
+      # step had the path step-scoped to the test step and died on `unbound
+      # variable` in all 20 shards, before printing anything.
+      - name: Report per-process bound coverage
         if: always()
+        shell: bash
+        run: |
+          set -o pipefail
+          rec="${PER_PROCESS_TIMEOUT_LOG:-}"
+          if [ -z "$rec" ] || [ ! -f "$rec" ]; then
+            echo "::warning::No per-process bound records at '$rec'. Either no test file ran, or sitecustomize.py was never imported - in which case a hang outside a running test would cost the whole shard."
+            exit 0
+          fi
+          armed=$(grep -c '"event": "armed"' "$rec" || true)
+          fired=$(grep -c '"event": "fired"' "$rec" || true)
+          echo "per-process bound: armed in ${armed} test-file process(es), fired ${fired} time(s)"
+          if [ "${armed:-0}" -eq 0 ]; then
+            echo "::warning::per-process bound recorded no armed process; treat the bound as inert for this shard."
+          fi
+          if [ "${fired:-0}" -gt 0 ]; then
+            echo "The bound killed these process(es) - each one is a test file that hung outside a running test:"
+            grep '"event": "fired"' "$rec" || true
+          fi
+          exit 0
+
+      # The output-dir guard doubles as an "OOT tree is present" check: when
+      # the monitor never started there is no local action to run either, and
+      # attempting it only adds a bogus "Can't find action.yml" error on top
+      # of the real failure.
+      - name: Stop runner diagnostics
+        if: always() && steps.diag.outputs.output-dir != ''
         uses: ./oot/.github/actions/stop-runner-diagnostics
         with:
           output-dir: ${{ steps.diag.outputs.output-dir }}
@@ -449,16 +879,29 @@ jobs:
         if: always()
         shell: bash
         run: |
-          python "${GITHUB_WORKSPACE}/oot/scripts/test-summary/parse_failures.py" \
+          set -euo pipefail
+          parser="${GITHUB_WORKSPACE}/oot/scripts/test-summary/parse_failures.py"
+          # If the shard died before/inside the OOT checkout there is nothing
+          # to parse with. Say so once instead of failing this step too and
+          # burying the real error under a `can't open file` traceback.
+          if [ ! -f "$parser" ]; then
+            echo "::warning::$parser missing (OOT checkout did not complete); skipping shard summary."
+            exit 0
+          fi
+          python "$parser" \
             --reports-dir "${{ env.PT_ROOT }}/test/test-reports" \
             --title "Failed tests - ${{ inputs.build-environment }} - ${{ inputs.python-label }}/${{ inputs.cuda-label }} - ${{ inputs.arch-name }} - shard ${{ matrix.shard }}/5" \
             >> "$GITHUB_STEP_SUMMARY"
 
-      # DISABLED: GitHub Actions artifact upload. Re-enable by restoring
-      # the original `if: always()` condition below.
+      # Enabled deliberately, despite the build job's copy being disabled.
+      # Diagnosing the seven lost shards meant reconstructing host state from
+      # test logs alone, because these samples - ~12KB of memory, CPU and GPU
+      # timeseries per shard - were the one artifact the test jobs never kept.
+      # They are what distinguishes "one test deadlocked" from "the box was
+      # thrashing", and the answer changes the fix.
       - name: Upload runner diagnostics
-        if: false
-        uses: actions/upload-artifact@v4
+        if: always() && steps.diag.outputs.output-dir != ''
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: runner-diagnostics-${{ inputs.build-environment }}-${{ inputs.python-label }}-${{ inputs.cuda-label }}-shard${{ matrix.shard }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ steps.diag.outputs.output-dir }}/**
@@ -466,13 +909,13 @@ jobs:
           retention-days: 14
 
       # Archive the raw test-reports tree (JUnit XML plus any crash / log
-      # files the harness drops there). upload-artifact@v4 stores the folder
-      # and serves it as a single `<name>.zip` on download. The name is unique
+      # files the harness drops there). upload-artifact stores the folder and
+      # serves it as a single `<name>.zip` on download. The name is unique
       # per cell+shard+run+attempt so the 5 parallel shards never collide
-      # (v4 forbids two jobs uploading the same artifact name).
+      # (v4 and later forbid two jobs uploading the same artifact name).
       - name: Upload test-reports archive
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: test-reports-${{ inputs.build-environment }}-${{ inputs.python-label }}-${{ inputs.cuda-label }}-${{ inputs.arch-name }}-shard${{ matrix.shard }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ env.PT_ROOT }}/test/test-reports/**

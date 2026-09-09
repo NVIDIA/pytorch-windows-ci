@@ -103,6 +103,63 @@ function Invoke-ExtensionGitShallowClone {
     & git @('-C', $LocalDirectoryName, 'checkout', '--detach', 'FETCH_HEAD')
 }
 
+function Invoke-ExtensionPipInstallRetried {
+    <#
+    .SYNOPSIS
+      Run `python -m pip <args>` in the active venv, retrying a failed attempt.
+
+    .DESCRIPTION
+      pip runs here as an ordinary process, so it can die for reasons that have
+      nothing to do with the packages named. One arm64 build lost torchvision
+      when `pip install -r woa-base.txt` exited -1073741819 - 0xC0000005, an
+      access violation - printing no pip diagnostics at all, because the
+      process crashed rather than reporting a problem. Unprotected, a single
+      such crash reds the build job and, with it, the cell.
+
+      Retries every nonzero exit rather than trying to sort a crash from a real
+      error. pip already retries network failures inside one attempt, so what
+      normally survives to here is a genuine resolution failure - and that
+      fails identically on each attempt and still ends up thrown, costing only
+      seconds apiece against a pinned requirements file.
+
+      Throws on exhaustion, so callers keep the failure semantics they had when
+      they checked $LASTEXITCODE themselves.
+
+    .PARAMETER PipArgs
+      Arguments after `-m pip`, e.g. @('install', '-r', $reqs).
+
+    .PARAMETER What
+      Human-readable subject for the warning and throw text.
+
+    .PARAMETER Attempts
+      Total attempts, including the first.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string[]] $PipArgs,
+        [Parameter(Mandatory)][string] $What,
+        [int] $Attempts = 3,
+        [int[]] $BackoffSeconds = @(15, 30)
+    )
+    for ($attempt = 1; $attempt -le $Attempts; $attempt++) {
+        python -m pip @PipArgs
+        $rc = $LASTEXITCODE
+        if ($rc -eq 0) { return }
+
+        # A negative code is an NTSTATUS surfaced as int32, so it says the
+        # process died where a positive one says pip reported a problem. Both
+        # are retried; they are named apart because they want different
+        # follow-up when the retries do not save it.
+        $kind = if ($rc -lt 0) { 'crashed with 0x{0:X8}' -f $rc } else { "failed with exit $rc" }
+        if ($attempt -ge $Attempts) {
+            throw "$What $kind after $Attempts attempt(s)."
+        }
+        $delay = $BackoffSeconds[[Math]::Min($attempt - 1, $BackoffSeconds.Count - 1)]
+        Write-Warning "$What $kind on attempt $attempt/$Attempts; retrying in ${delay}s."
+        Start-Sleep -Seconds $delay
+    }
+}
+
 function Invoke-ExtensionPipWheelLogged {
     <#
     .SYNOPSIS

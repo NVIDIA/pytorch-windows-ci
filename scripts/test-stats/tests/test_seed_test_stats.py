@@ -42,6 +42,14 @@ def _make_data_dir(tmp_path: Path, times, class_times) -> Path:
     return data_dir
 
 
+def _add_test_files(root: Path, *rel_paths: str) -> None:
+    """Create stub test files under ``<root>/test`` for discovery to find."""
+    for rel in rel_paths:
+        path = root / "test" / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("# stub test\n", encoding="utf-8")
+
+
 def _make_pytorch_root(tmp_path: Path, *, with_import_stats: bool = False) -> Path:
     root = tmp_path / "pytorch"
     root.mkdir()
@@ -272,6 +280,194 @@ def test_main_failure_returns_one(tmp_path, valid_times, valid_class_times):
         ["--pytorch-root", str(tmp_path / "missing"), "--data-dir", str(data_dir)]
     )
     assert rc == 1
+
+
+# --------------------------------------------------------------------------- #
+# discover_test_files / backfill_missing_times
+#
+# A file with no entry gets test.time == None, which drops it out of
+# cost-based packing and onto the round-robin counter - see Note [A missing
+# time also loses the cost-based placement]. These cover the guarantee that no
+# discovered file is left without a time.
+# --------------------------------------------------------------------------- #
+def test_discover_finds_nested_test_files(tmp_path):
+    root = _make_pytorch_root(tmp_path)
+    _add_test_files(root, "test_torch.py", "inductor/test_aoti_pdl.py",
+                    "cpp_extensions/test_target_version_guard.py")
+
+    assert seed_mod.discover_test_files(root) == {
+        "test_torch",
+        "inductor/test_aoti_pdl",
+        "cpp_extensions/test_target_version_guard",
+    }
+
+
+def test_discover_ignores_non_test_modules(tmp_path):
+    root = _make_pytorch_root(tmp_path)
+    _add_test_files(root, "test_torch.py")
+    (root / "test" / "conftest.py").write_text("", encoding="utf-8")
+    (root / "test" / "helpers.py").write_text("", encoding="utf-8")
+
+    assert seed_mod.discover_test_files(root) == {"test_torch"}
+
+
+def test_discover_without_test_dir_is_empty(tmp_path):
+    assert seed_mod.discover_test_files(_make_pytorch_root(tmp_path)) == set()
+
+
+def test_backfill_uses_median_of_measured():
+    payload = {"a": 10.0, "b": 20.0, "c": 30.0}
+    added, value = seed_mod.backfill_missing_times(payload, {"a", "b", "c", "new"})
+
+    assert (added, value) == (1, 20.0)
+    assert payload["new"] == 20.0
+
+
+def test_backfill_leaves_measured_values_alone():
+    payload = {"a": 10.0}
+    seed_mod.backfill_missing_times(payload, {"a", "new"}, default_time=5.0)
+
+    assert payload == {"a": 10.0, "new": 5.0}
+
+
+def test_backfill_falls_back_to_threshold_without_measurements():
+    payload: dict = {}
+    added, value = seed_mod.backfill_missing_times(payload, {"new"})
+
+    assert (added, value) == (1, float(seed_mod._THRESHOLD_SECONDS))
+
+
+def test_backfill_ignores_zero_and_non_numeric_when_taking_median():
+    payload = {"a": 0.0, "b": "bogus", "c": 4.0}
+    _, value = seed_mod.backfill_missing_times(payload, {"new"})
+
+    assert value == 4.0
+
+
+def test_backfill_is_a_noop_when_nothing_is_missing():
+    payload = {"a": 1.0}
+    assert seed_mod.backfill_missing_times(payload, {"a"}) == (0, 1.0)
+    assert payload == {"a": 1.0}
+
+
+def test_seed_backfills_files_absent_from_our_stats(
+    tmp_path, valid_times, valid_class_times
+):
+    data_dir = _make_data_dir(tmp_path, valid_times, valid_class_times)
+    root = _make_pytorch_root(tmp_path)
+    # test_foo is measured; the other two are new upstream files.
+    _add_test_files(root, "test_foo.py", "test_bar.py", "inductor/test_brand_new.py")
+
+    times_path, _ = seed_mod.seed(root, data_dir, quiet=True)
+    written = json.loads(times_path.read_text(encoding="utf-8"))["default"]["default"]
+
+    assert written["test_foo"] == 12.5, "a measured time must not be overwritten"
+    assert written["test_bar"] == 3.0
+    # Median of the measured 12.5 / 3.0.
+    assert written["inductor/test_brand_new"] == pytest.approx(7.75)
+    # The whole point: every discovered file now has a time, so run_test.py
+    # arms a timeout for all of them.
+    assert not {"test_foo", "test_bar", "inductor/test_brand_new"} - set(written)
+
+
+def test_seed_backfill_respects_default_time(tmp_path, valid_times, valid_class_times):
+    data_dir = _make_data_dir(tmp_path, valid_times, valid_class_times)
+    root = _make_pytorch_root(tmp_path)
+    _add_test_files(root, "test_new.py")
+
+    times_path, _ = seed_mod.seed(root, data_dir, quiet=True, default_time=42.0)
+    written = json.loads(times_path.read_text(encoding="utf-8"))["default"]["default"]
+
+    assert written["test_new"] == 42.0
+
+
+def test_seed_no_backfill_leaves_stats_untouched(
+    tmp_path, valid_times, valid_class_times
+):
+    data_dir = _make_data_dir(tmp_path, valid_times, valid_class_times)
+    root = _make_pytorch_root(tmp_path)
+    _add_test_files(root, "test_new.py")
+
+    times_path, _ = seed_mod.seed(root, data_dir, quiet=True, backfill=False)
+
+    assert json.loads(times_path.read_text(encoding="utf-8")) == valid_times
+
+
+def test_seed_backfill_keeps_class_times_untouched(
+    tmp_path, valid_times, valid_class_times
+):
+    data_dir = _make_data_dir(tmp_path, valid_times, valid_class_times)
+    root = _make_pytorch_root(tmp_path)
+    _add_test_files(root, "test_new.py")
+
+    _, class_path = seed_mod.seed(root, data_dir, quiet=True)
+
+    assert json.loads(class_path.read_text(encoding="utf-8")) == valid_class_times
+
+
+def test_main_accepts_backfill_flags(tmp_path, valid_times, valid_class_times):
+    data_dir = _make_data_dir(tmp_path, valid_times, valid_class_times)
+    root = _make_pytorch_root(tmp_path)
+    _add_test_files(root, "test_new.py")
+
+    rc = seed_mod.main(
+        ["--pytorch-root", str(root), "--data-dir", str(data_dir),
+         "--quiet", "--default-time", "99"]
+    )
+
+    assert rc == 0
+    written = json.loads(
+        (root / ".additional_ci_files" / "test-times.json").read_text(encoding="utf-8")
+    )
+    assert written["default"]["default"]["test_new"] == 99.0
+
+
+# --------------------------------------------------------------------------- #
+# Observability
+#
+# Nothing downstream logs the sharding decision, so this line is the only
+# positive evidence that every file was placed on cost rather than by the
+# round-robin counter, which is why it is printed unconditionally.
+# --------------------------------------------------------------------------- #
+def test_coverage_line_printed_even_when_nothing_backfilled(
+    tmp_path, capsys, valid_times, valid_class_times
+):
+    data_dir = _make_data_dir(tmp_path, valid_times, valid_class_times)
+    root = _make_pytorch_root(tmp_path)
+    _add_test_files(root, "test_foo.py", "test_bar.py")  # both already measured
+
+    seed_mod.seed(root, data_dir)
+
+    out = capsys.readouterr().out
+    assert "sharding coverage: 2 test file(s) in the checkout" in out
+    assert "0 backfilled" in out
+    assert "0 left without a time" in out
+
+
+def test_coverage_line_reports_backfilled_count(
+    tmp_path, capsys, valid_times, valid_class_times
+):
+    data_dir = _make_data_dir(tmp_path, valid_times, valid_class_times)
+    root = _make_pytorch_root(tmp_path)
+    _add_test_files(root, "test_foo.py", "inductor/test_new.py")
+
+    seed_mod.seed(root, data_dir)
+
+    out = capsys.readouterr().out
+    assert "1 backfilled at" in out
+    assert "0 left without a time" in out
+
+
+def test_no_coverage_line_when_backfill_disabled(
+    tmp_path, capsys, valid_times, valid_class_times
+):
+    data_dir = _make_data_dir(tmp_path, valid_times, valid_class_times)
+    root = _make_pytorch_root(tmp_path)
+    _add_test_files(root, "test_foo.py")
+
+    seed_mod.seed(root, data_dir, backfill=False)
+
+    assert "sharding coverage" not in capsys.readouterr().out
 
 
 def test_repo_shipped_data_is_valid():

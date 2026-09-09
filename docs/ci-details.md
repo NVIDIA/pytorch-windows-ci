@@ -416,7 +416,10 @@ that, compare the files a run actually executed against the committed data.
 
 ### Timeout bounds
 
-Four bounds apply to a test shard, at descending granularity.
+Four bounds apply to an x86 test shard, at descending granularity. The arm64
+shards carry the same set at different values, and take their per-test and
+per-shard bounds from the vendored harness rather than from the workflow - see
+[WoA timeout bounds](woa-ci.md#timeout-bounds).
 
 | Bound | Where | Value | On expiry |
 | --- | --- | --- | --- |

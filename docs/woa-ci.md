@@ -154,6 +154,31 @@ principle as a failing test shard) yet never blocks the torch wheel or the other
 cells (`fail-fast: false`). The missing extension wheel simply won't be in the artifact,
 and the test job warns and continues.
 
+## Timeout bounds
+
+Four bounds hold a hung shard, at descending granularity. The per-test and
+per-shard ones are the vendored harness's; the per-process one is this repo's.
+
+| Bound | Knob | Value | On expiry |
+| --- | --- | --- | --- |
+| per test | `PYTORCH_WIN_TEST_PER_TEST_TIMEOUT_SEC` (harness default) | 15 min | fails that test; the shard carries on |
+| per test-file process | `PER_PROCESS_TIMEOUT_SEC`, armed by `scripts/test-bounds/pythonpath/sitecustomize.py` | 30 min | dumps all thread stacks, kills that file's process tree, logs `::error::PER_PROCESS_TIMEOUT`; the shard carries on and the file is reported failed |
+| per shard | `PYTORCH_WIN_TEST_RUN_TEST_TIMEOUT_SEC` (harness watchdog) | 180 min | kills `run_test.py` and synthesizes a `WATCHDOG_TIMEOUT` JUnit naming the closest test |
+| per job | `timeout-minutes` on the test job | 240 min | GitHub cancels the job; nothing is reported |
+
+The shard watchdog is set below the harness default of 210 min so that it fires
+inside the job cap — setup before `run_test.py` takes 41-45 min on this pool,
+which leaves the default no room to report.
+
+The per-process bound assumes cost-based sharding, where `run_test.py` splits
+any file over 10 min into pytest shards. When the shard has no per-file costs in
+`.additional_ci_files/test-times.json`, files run whole instead, so the test step
+unsets `PER_PROCESS_TIMEOUT_SEC` and warns rather than arming it. Each armed
+process appends a line to `PER_PROCESS_TIMEOUT_LOG`, which rides along in the
+`test-reports` artifact; the `Report per-process bound coverage` step summarises
+those counts. See [Test sharding](ci-details.md#test-sharding) for the seeding
+step and [Timeout bounds](ci-details.md#timeout-bounds) for the x86 values.
+
 ## Troubleshooting
 
 | Symptom | Likely cause / fix |
@@ -162,7 +187,9 @@ and the test job warns and continues.
 | `woa-create-venv` fails | No ARM64 interpreter for the cell (or an x64 one shadows it), or a **strict core** package failed to install. Extended (best-effort) failures only warn. Re-provision the arm64 CPython; check the pip log in the step. |
 | `WHEEL_OUT_ROOT marker not found` in an extension step | The torch build step didn't complete in the same job, or `CI_PROJECT_DIR` differs between steps. Extensions read the marker the torch step writes. |
 | Test shard fails with `TORCH_IMPORT_FAILED` | The installed wheel can't load torch (e.g. a missing embedded DLL → WinError 126). A synthetic failing JUnit is emitted so the shard stays visible in the summary. |
-| Shard goes non-green with `WATCHDOG_TIMEOUT` | A test hung; `run_test.py` was killed after the wall-clock cap (`RunTestTimeoutSec`). The watchdog synthesizes a JUnit naming the closest test. |
+| Shard goes non-green with `WATCHDOG_TIMEOUT` | A test hung; `run_test.py` was killed after the wall-clock cap (`RunTestTimeoutSec`). The watchdog synthesizes a JUnit naming the closest test. See [Timeout bounds](#timeout-bounds). |
+| A test file fails with `PER_PROCESS_TIMEOUT` | That file's process outlived the per-process bound. Its stack dump is in the shard log above the error; the file is attributed to `run_test.py` in the summary. |
+| `per-process bound NOT armed` warning | The shard has no per-file costs, so the bound self-disabled. Check the `Seed test-time stats` step. |
 | `Join-Path` / parser errors in a build/test step | The library needs `pwsh` 7 — confirm the step is `shell: pwsh` and `pwsh` is on the runner. |
 | A test cell is skipped | Its build cell produced no wheel (the build failed for that Python). Every Python cell always runs — there is no version-subset input. |
 

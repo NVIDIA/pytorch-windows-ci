@@ -95,6 +95,10 @@ For the repository's WoA CI workflow rather than a local build, see the
 [WoA operator guide](docs/woa-ci.md) and
 [WoA design and runner contract](docs/woa-ci-plan.md).
 
+Both nightly workflows also publish their results to the upstream PyTorch HUD
+through the Cross-Repo CI Relay — see
+[HUD reporting](docs/crcr-hud-reporting.md).
+
 # Requirements
 
 - Self-hosted Windows runners from NVIDIA infrastructure, labelled for the

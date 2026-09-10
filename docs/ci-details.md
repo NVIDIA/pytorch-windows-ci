@@ -49,9 +49,9 @@ nightly `schedule`; the third is manual-only for now:
 
 Both active schedules sit after `pytorch/pytorch` cuts the day's `nightly`
 commit, which over the 57 days to 2026-09-09 landed between 07:35 and 08:47
-UTC. This matters because the build checks out `nightly` at whatever the branch
-tip happens to be when it starts — a cron that fires earlier does not wait for
-the day's commit, it builds and tests the previous day's again.
+UTC. This matters because `prep` resolves the newest nightly at or before the
+run's start — a cron that fires earlier does not wait for the day's commit, it
+builds, tests and reports the previous day's again.
 
 The reusable workflows (`_rtx-build.yml`, `_rtx-test.yml`, `_woa-build.yml`,
 `_woa-test.yml`) are called by the orchestrators and are not run directly.
@@ -67,8 +67,14 @@ third-party OSS notices.
 | Workflow | Purpose | Triggers | Compute |
 | --- | --- | --- | --- |
 | `windows-rtx-wheel-test.yml`           | Each test cell checks out `pytorch/pytorch` at `pytorch-ref` (default `nightly`) via `actions/checkout@v7` (which resolves the branch to a concrete commit), records the actual HEAD SHA + commit date into the cell's job summary, then greps `download.pytorch.org/whl/nightly/torch/` for the wheel whose filename carries that exact `devYYYYMMDD` tag together with the matrix `cu<label>` / `cp<pyshort>` tags and `pip install`s the resolved absolute URL before running `.ci/pytorch/win-test.sh`. Fails fast if no matching wheel exists, so the wheel under test always shares its commit date with the pytorch source on disk. No preflight job, no artifact transit. | `workflow_dispatch`; the nightly cron is currently commented out | `_rtx-test.yml` (sm89 + sm120 in one matrix) |
-| `windows-rtx-build-test.yml`            | Full source build (multi-arch wheel) + test. Manual runs can narrow the matrix via subset filters and target a `pytorch-ref` or `pytorch-pr`. Also carries the parked path for RFC-0050 events. | `schedule` (`20 9 * * *` = 14:50 IST), `workflow_dispatch`, `repository_dispatch:[pytorch-pr-trigger]` (parked behind `dispatch-gate`) | `prep` -> `_rtx-build.yml` -> `_rtx-test.yml` (sm89 + sm120 in one matrix) |
-| `windows-woa-build-test.yml` | Builds and tests the WoA wheel matrix from source on the shared arm64 pool. | `schedule` (`50 9 * * *` = 15:20 IST); no manual trigger | `prep` -> `_woa-build.yml` -> `_woa-test.yml` -> `test-summary` |
+| `windows-rtx-build-test.yml`            | Full source build (multi-arch wheel) + test. Manual runs can narrow the matrix via subset filters and target a `pytorch-ref` or `pytorch-pr`. Also carries the parked path for RFC-0050 events. | `schedule` (`20 9 * * *` = 14:50 IST), `workflow_dispatch`, `repository_dispatch:[pytorch-pr-trigger]` (parked behind `dispatch-gate`) | `prep` -> `_rtx-build.yml` -> `_rtx-test.yml` (sm89 + sm120 in one matrix); `report-*-crcr` |
+| `windows-woa-build-test.yml` | Builds and tests the WoA wheel matrix from source on the shared arm64 pool. | `schedule` (`50 9 * * *` = 15:20 IST); no manual trigger | `prep` -> `_woa-build.yml` -> `_woa-test.yml` -> `test-summary`; `report-*-crcr` |
+
+Both build/test orchestrators end in two terminal `report-*-crcr` jobs that
+publish the nightly's results to the upstream PyTorch HUD. They hang off the
+matrix rather than feeding it, so a reporting failure can never skip a build or
+a test. See [HUD reporting](crcr-hud-reporting.md) for the row names, how a
+conclusion is decided, and why re-runs must resolve the same upstream SHA.
 
 Both RTX workflows fan out across `(config)` for builds and
 `(config x arch)` for tests. **Sharding is not a top-level axis on

@@ -1,0 +1,257 @@
+# Thin wrapper around pytorch/test-infra's `cross-repo-ci-relay-callback`.
+#
+# WHY THIS EXISTS
+# Every `uses:` in this repository resolves to either `actions/*` or a local
+# `./` path, because organisation policy can restrict which third-party
+# actions may run. That restriction bites at workflow *parse* time: a
+# disallowed `uses:` anywhere in the file makes the entire run a
+# `startup_failure`, even in a job that would never have executed. It cannot
+# be left in place behind a condition - it has to go.
+#
+# So the upstream repository is cloned during the run and its script is
+# executed from the clone. A local `./` action is exempt from the policy, and
+# a path resolved from the workspace at runtime is not a `uses:` the policy
+# can see. Nothing about the relay protocol is copied into this repository:
+# the payload shape, its schema version and every field the relay understands
+# live in upstream's `report_callback.py`, which is fetched fresh on each run.
+# An earlier vendored copy did drift - upstream added `failed_tests_detail`
+# and this repository silently kept sending the older payload.
+#
+# WHAT IS OURS, AND WHY
+# Two things are deliberately not taken from upstream's `action.yml`:
+#
+#   * OIDC minting, done here with curl. Upstream uses
+#     `actions/github-script`, which would add a second action for the policy
+#     to resolve at runtime, and hardcodes the audience.
+#
+#   * Retry around the callback. Upstream retries the token mint but sends the
+#     callback exactly once, and a lost callback means a missing HUD row for
+#     the day. The retry below is classified rather than blind: only transport
+#     failures and the HTTP codes that mean "try later" are retried, so a
+#     malformed or rejected payload is never resent.
+#
+# Everything else - inputs, their names and their meanings - mirrors upstream,
+# so if the shared action is ever permitted here, switching to it is one line
+# per call site.
+
+name: CRCR Callback
+description: >
+  Report the status of a downstream CI job to the PyTorch Cross-Repo CI Relay,
+  using the callback script from pytorch/test-infra cloned at run time. The
+  calling job must grant `id-token: write`.
+
+inputs:
+  status:
+    description: >
+      Status to report: "in_progress" or "completed". Nightly and periodic
+      event types accept only "completed".
+    required: true
+  conclusion:
+    description: >
+      Conclusion of the run, passed to the check run as-is. Required when
+      status is "completed"; ignored when "in_progress".
+    required: false
+    default: ''
+  delivery-id:
+    description: >
+      Correlation key on the HUD. For nightly/periodic, the upstream commit
+      SHA that was tested. Read from client_payload for PR/push, so leave
+      unset there.
+    required: false
+    default: ''
+  event-type:
+    description: >
+      "nightly" or "periodic" for self-triggered runs. Read from
+      client_payload for PR/push, so leave unset there.
+    required: false
+    default: ''
+  test-results:
+    description: >
+      Optional JSON summary of test counts (passed/failed/skipped/total).
+      Counts only - full results belong in artifacts, linked via artifact-url.
+    required: false
+    default: ''
+  failed-tests-detail:
+    description: >
+      Optional JSON array of individual failed tests, each with at least a
+      "name". Upstream caps it at 1000 entries. Mirrored here for parity with
+      upstream; no caller in this repository sends it yet.
+    required: false
+    default: ''
+  callback-url:
+    description: Base URL of the relay callback server.
+    required: false
+    default: https://gwuj7w5coh4y4l66urspge6mnm0pwaxq.lambda-url.us-east-1.on.aws/github/callback/
+  artifact-url:
+    description: Publicly reachable URL for downstream logs and reports.
+    required: false
+    default: ''
+  max-time:
+    description: Seconds to wait for one callback HTTP request.
+    required: false
+    default: 10
+  job-name:
+    description: >
+      Identifier for this job, used to name the upstream check run. Defaults
+      to github.job, which is wrong for a matrix job - every leg shares one
+      github.job and would collide on a single check run, so matrix callers
+      must pass a name that includes the matrix values.
+    required: false
+    default: ${{ github.job }}
+  oidc-audience:
+    description: Audience claim requested for the OIDC token.
+    required: false
+    default: pytorch-cross-repo-ci-relay
+  source-repo:
+    description: Repository holding the callback script.
+    required: false
+    default: pytorch/test-infra
+  source-ref:
+    description: >
+      Ref of `source-repo` to run. `main` is deliberate: tracking it is the
+      whole point of cloning instead of vendoring, and it is the ref upstream
+      documents for this action. Pin a SHA here if a run ever needs to be
+      reproducible against a known-good upstream, or if upstream breaks us.
+    required: false
+    default: main
+  max-attempts:
+    description: >
+      Total attempts at the callback, including the first. Kept small on
+      purpose: this runs once per HUD row, and the relay should not absorb a
+      long retry train from every row at once.
+    required: false
+    default: 4
+
+runs:
+  using: composite
+  steps:
+    # Sparse and shallow: test-infra is a large monorepo and all that is needed
+    # is one directory. Credentials are not persisted because nothing after
+    # this runs git against the clone.
+    - name: Clone the upstream callback action
+      uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+      with:
+        repository: ${{ inputs.source-repo }}
+        ref: ${{ inputs.source-ref }}
+        path: .crcr-upstream
+        sparse-checkout: .github/actions/cross-repo-ci-relay-callback
+        fetch-depth: 1
+        persist-credentials: false
+        show-progress: false
+
+    # Which upstream commit actually ran is the one piece of provenance a
+    # floating ref throws away, so record it next to the row it produced.
+    - name: Record which upstream commit is being used
+      id: source
+      shell: bash
+      env:
+        SOURCE_REPO: ${{ inputs.source-repo }}
+        SOURCE_REF: ${{ inputs.source-ref }}
+      run: |
+        set -euo pipefail
+        dir=".crcr-upstream/.github/actions/cross-repo-ci-relay-callback"
+        script="${dir}/report_callback.py"
+        if [ ! -f "${script}" ]; then
+          echo "::error title=CRCR callback::${SOURCE_REPO}@${SOURCE_REF} has no ${script#*/.crcr-upstream/}. The action was probably moved or renamed upstream." >&2
+          exit 1
+        fi
+        sha=$(git -C .crcr-upstream rev-parse HEAD)
+        echo "script=${GITHUB_WORKSPACE}/${script}" >> "$GITHUB_OUTPUT"
+        echo "Using ${SOURCE_REPO}@${sha} (ref ${SOURCE_REF})"
+        {
+          echo "<sub>CRCR callback from \`${SOURCE_REPO}\` @ \`${sha}\` (ref \`${SOURCE_REF}\`)</sub>"
+          echo
+        } >> "$GITHUB_STEP_SUMMARY"
+
+    - name: Report to the Cross-Repo CI Relay
+      shell: bash
+      env:
+        SCHEMA_VERSION: 1
+        STATUS: ${{ inputs.status }}
+        CONCLUSION: ${{ inputs.conclusion }}
+        WORKFLOW_NAME: ${{ github.workflow }}
+        WORKFLOW_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        TEST_RESULTS: ${{ inputs.test-results }}
+        FAILED_TESTS_DETAIL: ${{ inputs.failed-tests-detail }}
+        CLIENT_PAYLOAD: ${{ toJson(github.event.client_payload) }}
+        CALLBACK_URL: ${{ inputs.callback-url }}
+        ARTIFACT_URL: ${{ inputs.artifact-url }}
+        JOB_NAME: ${{ inputs.job-name }}
+        CHECK_RUN_ID: ${{ job.check_run_id }}
+        RUN_ID: ${{ github.run_id }}
+        RUN_ATTEMPT: ${{ github.run_attempt }}
+        MAX_TIME: ${{ inputs.max-time }}
+        DELIVERY_ID_OVERRIDE: ${{ inputs.delivery-id }}
+        EVENT_TYPE_OVERRIDE: ${{ inputs.event-type }}
+        AUDIENCE: ${{ inputs.oidc-audience }}
+        SCRIPT: ${{ steps.source.outputs.script }}
+        MAX_ATTEMPTS: ${{ inputs.max-attempts }}
+      run: |
+        set -euo pipefail
+
+        if [ -z "${ACTIONS_ID_TOKEN_REQUEST_URL:-}" ] || [ -z "${ACTIONS_ID_TOKEN_REQUEST_TOKEN:-}" ]; then
+          echo "::error title=CRCR callback::No OIDC token endpoint in this job. The calling job needs 'permissions: id-token: write'." >&2
+          exit 1
+        fi
+
+        response=$(curl --silent --show-error --fail-with-body --max-time 10 \
+          -H "Authorization: bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" \
+          "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=${AUDIENCE}")
+
+        OIDC_TOKEN=$(printf '%s' "${response}" | jq -r '.value // empty')
+        if [ -z "${OIDC_TOKEN}" ]; then
+          echo "::error title=CRCR callback::Token endpoint returned no value for audience '${AUDIENCE}'." >&2
+          exit 1
+        fi
+        echo "::add-mask::${OIDC_TOKEN}"
+        export OIDC_TOKEN
+
+        log=$(mktemp)
+        attempt=1
+        while :; do
+          rc=0
+          python3 "${SCRIPT}" > "${log}" 2>&1 || rc=$?
+          cat "${log}"
+          if [ "${rc}" -eq 0 ]; then
+            break
+          fi
+
+          # Upstream exits with curl's own status, which is what makes the
+          # class of failure readable without parsing prose: 22 is the only
+          # code that means "the relay answered, and refused". For that one
+          # the HTTP status decides, and upstream prints it. Should upstream
+          # ever reword that line, `http` comes back empty and the payload is
+          # treated as rejected - erring towards not resending.
+          http=$(sed -n 's/.*returned HTTP \([0-9][0-9][0-9]\).*/\1/p' "${log}" | tail -n 1)
+          retryable=false
+          case "${rc}" in
+            # DNS, connect, timeout, TLS handshake, empty reply, send/recv.
+            6|7|28|35|52|55|56) retryable=true ;;
+            22)
+              # 408/429 and 5xx are the relay asking to be tried later.
+              # Everything else 4xx is this payload being wrong, and it will
+              # be just as wrong next time, so resending only adds load.
+              case "${http}" in
+                408|429|5??) retryable=true ;;
+              esac
+              ;;
+          esac
+          where="curl ${rc}${http:+, HTTP ${http}}"
+
+          if [ "${retryable}" != true ]; then
+            echo "::error title=CRCR callback::Relay rejected this callback (${where}) and will reject it again; not retrying." >&2
+            exit "${rc}"
+          fi
+
+          if [ "${attempt}" -ge "${MAX_ATTEMPTS}" ]; then
+            echo "::error title=CRCR callback::Callback still failing after ${MAX_ATTEMPTS} attempts (${where}). The HUD row for this job is missing; a re-run resolves the same upstream SHA and will refile it." >&2
+            exit "${rc}"
+          fi
+
+          # Exponential, with jitter so that every row in the matrix does not
+          # come back at the relay in lockstep during an outage.
+          backoff=$(( 5 * 2 ** (attempt - 1) + RANDOM % 4 ))
+          echo "::warning title=CRCR callback::Attempt ${attempt}/${MAX_ATTEMPTS} failed (${where}); retrying in ${backoff}s."
+          sleep "${backoff}"
+          attempt=$(( attempt + 1 ))
+        done

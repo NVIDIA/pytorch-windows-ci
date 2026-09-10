@@ -46,10 +46,26 @@ name: windows-rtx-build-test
 
 on:
   schedule:
+    # Sits after pytorch/pytorch has cut the day's `nightly` commit, which over
+    # the 57 days to 2026-09-09 landed between 07:35 and 08:47 UTC on 55 of
+    # them (median 08:00). Timing is not cosmetic here: the build checks out
+    # `nightly` at whatever the branch tip happens to be when it starts, so
+    # firing beforehand does not wait for the day's commit -- it silently
+    # builds and tests yesterday's again. The previous 03:05 did exactly that
+    # on all 57 days sampled.
+    #
+    # Off the hour because that is when the shared Actions scheduler is most
+    # congested, and scheduled runs are only ever delivered late.
+    #
+    # The two stragglers in that window (2026-08-27 10:49, 2026-08-28 11:15)
+    # are not covered. Chasing them would cost every other day ~2.5h of extra
+    # staleness, and a nightly missed this way is not lost: the next run picks
+    # it up as the newest commit at or before its own start.
+    #
     # GitHub attributes a scheduled run to whoever last pushed a change to this
     # cron expression, so it must be (re)pushed by an account with a verified
     # email or every run fails at startup.
-    - cron: "5 3 * * *"
+    - cron: "20 9 * * *"
   workflow_dispatch:
     inputs:
       pytorch-pr:

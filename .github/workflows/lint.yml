@@ -8,19 +8,23 @@ name: lint
 #                    valid and matches the GitHub Actions schema.
 #   * `powershell` - the vendored WoA build/test library under `tools/woa-build`
 #                    parses and passes PSScriptAnalyzer (errors fail the job).
+#   * `scripts`    - unit tests for the python helpers under `scripts/` that the
+#                    workflows call (test summarisation, CRCR HUD reporting).
 # Catches broken workflows / scripts before they reach a real build/test runner.
-# Both jobs run on ubuntu-latest (has python + pwsh preinstalled).
+# All jobs run on ubuntu-latest (has python + pwsh preinstalled).
 
 on:
   pull_request:
     paths:
       - ".github/**"
       - "tools/woa-build/**"
+      - "scripts/**"
   push:
     branches: [main]
     paths:
       - ".github/**"
       - "tools/woa-build/**"
+      - "scripts/**"
   workflow_dispatch:
   # repository_dispatch:
 
@@ -69,6 +73,33 @@ jobs:
         run: |
           check-jsonschema --builtin-schema vendor.github-workflows \
             .github/workflows/*.yml
+
+  # The workflows above call these helpers to decide what gets reported as a
+  # pass or a failure - including, for `scripts/crcr`, what gets published to
+  # the upstream PyTorch HUD. Their fail-closed behaviour is only worth
+  # anything if it is actually enforced, so run their tests on every change.
+  #
+  # Runs on Linux because that is where these helpers run in production: the
+  # reporting and summary jobs are all `ubuntu-latest`. The exception is
+  # `scripts/test-bounds`, which bounds a hung test *on the Windows shards*;
+  # the handful of its cases that assert the `taskkill` path are marked
+  # Windows-only and report as skipped here.
+  scripts:
+    name: unit-test CI scripts
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          show-progress: false
+
+      - name: Install pytest
+        shell: bash
+        run: python -m pip install --user --quiet "pytest>=7"
+
+      - name: Run script unit tests
+        shell: bash
+        run: python -m pytest scripts -q
 
   powershell:
     name: lint PowerShell (woa-build)

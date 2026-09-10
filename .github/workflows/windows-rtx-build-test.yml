@@ -48,11 +48,11 @@ on:
   schedule:
     # Sits after pytorch/pytorch has cut the day's `nightly` commit, which over
     # the 57 days to 2026-09-09 landed between 07:35 and 08:47 UTC on 55 of
-    # them (median 08:00). Timing is not cosmetic here: the build checks out
-    # `nightly` at whatever the branch tip happens to be when it starts, so
-    # firing beforehand does not wait for the day's commit -- it silently
-    # builds and tests yesterday's again. The previous 03:05 did exactly that
-    # on all 57 days sampled.
+    # them (median 08:00). Timing is not cosmetic here: `prep` resolves the
+    # newest nightly at or before this run's start, so firing beforehand does
+    # not wait for the day's commit -- it silently builds, tests and reports
+    # yesterday's again. The previous 03:05 did exactly that on all 57 days
+    # sampled.
     #
     # Off the hour because that is when the shared Actions scheduler is most
     # congested, and scheduled runs are only ever delivered late.
@@ -91,6 +91,18 @@ on:
         description: "Comma-separated subset of sm89,sm120 to test (build is always multi-arch)."
         required: false
         default: "sm89,sm120"
+      report-to-hud:
+        description: >
+          Publish per-cell results to the PyTorch HUD via the Cross-Repo CI
+          Relay. Off by default: a manual run is usually a matrix experiment,
+          and the HUD row for an upstream commit should normally be written by
+          the nightly schedule rather than overwritten by a hand-started run.
+          Only has any effect on a nightly run (no `pytorch-pr`, `pytorch-ref`
+          left at `nightly`), since the HUD keys results by the upstream main
+          SHA. Tick it only when deliberately re-filing a nightly row.
+        type: boolean
+        required: false
+        default: false
 
 concurrency:
   group: windows-rtx-build-test-${{ github.event.client_payload.pr_number || github.run_id }}
@@ -131,13 +143,29 @@ jobs:
           echo "::notice title=dispatch-gate::repository_dispatch event acknowledged; source build + test fanout is paused. Remove the dispatch-gate guards in .github/workflows/ to re-enable."
 
   # ===========================================================================
-  # Resolve the pytorch ref to build, once, before the matrix fans out. A PR
-  # number (if given) wins: we ask the GitHub API for its head SHA so the
-  # build pins to the exact commit (works for fork PRs too - the head commit
-  # is reachable via pytorch/pytorch's refs/pull/<n>/head). Otherwise fall
-  # back to `pytorch-ref` (defaulting to `nightly` for schedule runs, where
-  # the workflow_dispatch inputs are empty). The build records this SHA into
-  # built_pytorch_sha.txt; each test cell pins its own checkout to it.
+  # Resolve the pytorch ref to build, once, before the matrix fans out, and
+  # decide whether this run is allowed to publish to the upstream HUD.
+  #
+  # Three paths, in priority order:
+  #
+  #   1. `pytorch-pr` - ask the API for its head SHA and build that exact
+  #      commit (works for fork PRs too; the head commit is reachable via
+  #      pytorch/pytorch's refs/pull/<n>/head). Never reported to the HUD.
+  #   2. `pytorch-ref` left at `nightly` (also the schedule case, where the
+  #      workflow_dispatch inputs are empty) - resolve the upstream `main`
+  #      commit that nightly was cut from and build *that*. See
+  #      `scripts/crcr/resolve_nightly_commits.py` for why the nightly branch
+  #      tip itself is unusable as a HUD key. This is the only path that
+  #      reports.
+  #   3. any other explicit `pytorch-ref` - build it verbatim, report nothing.
+  #
+  # `crcr-delivery-id` carries the decision downstream: non-empty means "this
+  # is a genuine nightly of upstream main, publish it", empty means "run the
+  # matrix but stay off the HUD". Keeping the policy here means the reusable
+  # workflows never have to re-derive it.
+  #
+  # The build records the resolved SHA into built_pytorch_sha.txt; each test
+  # cell pins its own checkout to it.
   # ===========================================================================
   prep:
     name: resolve pytorch ref
@@ -146,7 +174,14 @@ jobs:
     timeout-minutes: 5
     outputs:
       pytorch-ref: ${{ steps.ref.outputs.pytorch-ref }}
+      crcr-delivery-id: ${{ steps.ref.outputs.crcr-delivery-id }}
     steps:
+      - name: Checkout repository (for CRCR scripts)
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          fetch-depth: 1
+          show-progress: false
+
       - name: Resolve pytorch ref
         id: ref
         shell: bash
@@ -157,8 +192,13 @@ jobs:
           PYTHON_VERSIONS: ${{ inputs.python-versions }}
           CUDA_VERSIONS: ${{ inputs.cuda-versions }}
           TEST_ARCHITECTURES: ${{ inputs.test-architectures }}
+          # Scheduled runs always report; manual runs must opt in. Dispatch
+          # inputs are empty on `schedule`, so the first clause carries it
+          # there and `report-to-hud`'s `false` default only binds a manual run.
+          REPORT_TO_HUD: ${{ github.event_name != 'workflow_dispatch' || inputs.report-to-hud }}
         run: |
           set -euo pipefail
+          delivery_id=""
           if [ -n "${PR}" ]; then
             if ! [[ "${PR}" =~ ^[0-9]+$ ]]; then
               echo "::error::pytorch-pr must be a number, got '${PR}'." >&2
@@ -172,11 +212,63 @@ jobs:
             title=$(gh api "repos/pytorch/pytorch/pulls/${PR}" -q '.title')
             echo "Resolved PR #${PR} -> ${sha} (${title})"
             ref="${sha}"
+          elif [ "${FALLBACK_REF}" = "nightly" ]; then
+            # Pin resolution to when the run was *first* started, not to now.
+            # The nightly tip advances every night, so resolving "the tip" on a
+            # re-run would silently retarget a different main SHA: the re-run
+            # would build a different commit and file its HUD row under a
+            # different delivery-id, instead of replacing the row for the day
+            # it was meant to repair. Attempt 1's `run_started_at` is immutable,
+            # unlike the run-level field, which resets on every re-run.
+            as_of=$(gh api \
+              "repos/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}/attempts/1" \
+              -q '.run_started_at')
+            if [ -z "${as_of}" ] || [ "${as_of}" = "null" ]; then
+              echo "::error::Could not read attempt 1's start time; refusing to resolve nightly against a moving tip." >&2
+              exit 1
+            fi
+            echo "Resolving nightly as of ${as_of} (attempt 1 start)"
+
+            # Deep enough to still contain that day's nightly when a run is
+            # re-run weeks later; `resolve_nightly_commits.py` fails loudly
+            # rather than guessing if the window still falls short.
+            gh api "repos/pytorch/pytorch/commits?sha=nightly&per_page=100" > nightly-commits.json
+            python3 scripts/crcr/resolve_nightly_commits.py \
+              --commits-json nightly-commits.json \
+              --as-of "${as_of}" \
+              --github-output resolved.env \
+              --summary "$GITHUB_STEP_SUMMARY"
+            ref=$(sed -n 's/^source-sha=//p' resolved.env)
+            if ! [[ "${ref}" =~ ^[0-9a-f]{40}$ ]]; then
+              echo "::error::Nightly resolution produced an invalid source SHA '${ref}'." >&2
+              exit 1
+            fi
+            echo "Nightly resolves to upstream main ${ref}"
+            delivery_id="${ref}"
           else
             ref="${FALLBACK_REF}"
             echo "No PR given; using pytorch-ref='${ref}'"
           fi
+
+          # Belt-and-braces on top of the path selection above: only the two
+          # self-triggered event types may publish, so re-enabling the parked
+          # repository_dispatch path cannot start writing nightly rows.
+          case "${GITHUB_EVENT_NAME}" in
+            schedule|workflow_dispatch) ;;
+            *) delivery_id="" ;;
+          esac
+          if [ "${REPORT_TO_HUD}" != "true" ]; then
+            delivery_id=""
+          fi
+
           echo "pytorch-ref=${ref}" >> "$GITHUB_OUTPUT"
+          echo "crcr-delivery-id=${delivery_id}" >> "$GITHUB_OUTPUT"
+
+          if [ -n "${delivery_id}" ]; then
+            hud_status="enabled -> ${delivery_id}"
+          else
+            hud_status="disabled"
+          fi
           {
             echo "## windows-rtx-build-test config"
             echo ""
@@ -188,6 +280,7 @@ jobs:
             echo "| python-versions | \`${PYTHON_VERSIONS:-(all)}\` |"
             echo "| cuda-versions | \`${CUDA_VERSIONS:-(all)}\` |"
             echo "| test-architectures | \`${TEST_ARCHITECTURES:-(all)}\` |"
+            echo "| HUD reporting | \`${hud_status}\` |"
           } >> "$GITHUB_STEP_SUMMARY"
 
   build:
@@ -202,9 +295,15 @@ jobs:
         # One entry per actual runner pairing. Add/remove a line to
         # introduce/drop a (python, cuda) combination. The build job needs a
         # machine labelled `[rtx-build, <python.label>, <cuda.label>]` per entry.
+        # `build_name` names the GitHub jobs; `hud_env` names the upstream HUD
+        # rows. They are deliberately separate: `hud_env` mirrors pytorch's own
+        # `<build-environment> / <job>` convention so our rows read natively
+        # next to upstream's, and must stay stable across runs because it is
+        # the identity a HUD result is filed under, so changing one orphans
+        # that row's history upstream.
         config: &config
-          - { python: { version: "3.12", label: "py312" }, cuda: { version: "13.0", label: "cu130" }, build_name: "wheel-py312-cu130" }
-          - { python: { version: "3.12", label: "py312" }, cuda: { version: "13.2", label: "cu132" }, build_name: "wheel-py312-cu132" }
+          - { python: { version: "3.12", label: "py312" }, cuda: { version: "13.0", label: "cu130" }, build_name: "wheel-py312-cu130", hud_env: "win-rtx-py312-cu130" }
+          - { python: { version: "3.12", label: "py312" }, cuda: { version: "13.2", label: "cu132" }, build_name: "wheel-py312-cu132", hud_env: "win-rtx-py312-cu132" }
           # TODO: re-add Python 3.13 (py313 / cu132) to the matrix in the future.
     uses: ./.github/workflows/_rtx-build.yml
     with:
@@ -236,7 +335,7 @@ jobs:
       fail-fast: false
       matrix:
         config: *config
-        arch:
+        arch: &arch
           - { name: sm89,  runner: rtx-40x0-test, arch_list: "8.9"  }
           - { name: sm120, runner: rtx-50x0-test, arch_list: "12.0" }
     uses: ./.github/workflows/_rtx-test.yml
@@ -317,3 +416,268 @@ jobs:
             --shards-root all-reports \
             --title "Aggregate failed tests - all shards (run ${{ github.run_id }})" \
             >> "$GITHUB_STEP_SUMMARY"
+
+  # ===========================================================================
+  # Cross-Repo CI Relay (CRCR) HUD reporting - trust level L2.
+  #
+  # Publishes one HUD row per logical cell against the upstream pytorch/pytorch
+  # `main` commit this run built (`prep`'s `crcr-delivery-id`). Only ever active
+  # for a genuine nightly: `prep` leaves the delivery id empty for PR-targeted
+  # or arbitrary-ref runs, which switches both jobs off via their `if:`.
+  #
+  # Two properties drive the shape of these jobs:
+  #
+  #   * They are TERMINAL. Nothing depends on them, so a relay outage can never
+  #     skip a build or a test. This is why they are not steps inside the
+  #     reusable workflows: `report-build` living inside `_rtx-build.yml` would
+  #     make the caller's `build` job red on a callback failure, which would in
+  #     turn skip the whole `test` matrix behind it.
+  #   * They are per-cell MATRIX jobs with `fail-fast: false`, so each HUD row
+  #     is delivered independently and one failed callback cannot suppress the
+  #     other five.
+  #
+  # Being terminal costs us `needs.<cell>.result` (in the caller that expression
+  # collapses to one aggregate over every matrix leg), so each leg recovers its
+  # own conclusion from the Jobs API via `resolve_cell_conclusion.py`.
+  #
+  # Neither job carries `continue-on-error`: a callback we could not deliver
+  # has to be visible as a failed job rather than a missing row.
+  # ===========================================================================
+  report-build-crcr:
+    name: report ${{ matrix.config.build_name }}-build to HUD
+    needs: [prep, build]
+    if: always() && needs.prep.outputs.crcr-delivery-id != '' && needs.build.result != 'skipped'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      actions: read
+      id-token: write
+    strategy:
+      fail-fast: false
+      matrix:
+        config: *config
+    steps:
+      - name: Checkout repository (for CRCR scripts)
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          fetch-depth: 1
+          show-progress: false
+
+      # Mirrors the subset filter the reusable workflow applies to itself. A
+      # cell the operator narrowed out of this run never produced jobs to read
+      # a conclusion from, and must not be reported as anything at all.
+      - name: Check cell is in this run's subset
+        id: subset
+        shell: bash
+        env:
+          PYTHON_VERSIONS: ${{ inputs.python-versions }}
+          CUDA_VERSIONS: ${{ inputs.cuda-versions }}
+          PY: ${{ matrix.config.python.version }}
+          CU: ${{ matrix.config.cuda.version }}
+        run: |
+          set -euo pipefail
+          selected=true
+          if [ -n "${PYTHON_VERSIONS}" ] && [[ "${PYTHON_VERSIONS}" != *"${PY}"* ]]; then
+            selected=false
+          fi
+          if [ -n "${CUDA_VERSIONS}" ] && [[ "${CUDA_VERSIONS}" != *"${CU}"* ]]; then
+            selected=false
+          fi
+          echo "selected=${selected}" >> "$GITHUB_OUTPUT"
+
+      - name: Resolve cell conclusion
+        id: cell
+        if: steps.subset.outputs.selected == 'true'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh api --paginate \
+            "repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/attempts/${{ github.run_attempt }}/jobs" \
+            -q '.jobs[]' | jq -s '.' > jobs.json
+          python3 scripts/crcr/resolve_cell_conclusion.py \
+            --jobs-json jobs.json \
+            --cell "${{ matrix.config.build_name }}-build" \
+            --github-output "$GITHUB_OUTPUT" \
+            --summary "$GITHUB_STEP_SUMMARY"
+
+      - name: Report build result to CRCR
+        if: steps.subset.outputs.selected == 'true' && steps.cell.outputs.should-report == 'true'
+        uses: ./.github/actions/crcr-callback
+        with:
+          event-type: nightly
+          delivery-id: ${{ needs.prep.outputs.crcr-delivery-id }}
+          job-name: ${{ matrix.config.hud_env }} / build
+          status: completed
+          conclusion: ${{ steps.cell.outputs.conclusion }}
+          artifact-url: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}/attempts/${{ github.run_attempt }}
+
+  report-test-crcr:
+    name: report ${{ matrix.config.build_name }}-${{ matrix.arch.name }}-test to HUD
+    needs: [prep, test]
+    if: always() && needs.prep.outputs.crcr-delivery-id != '' && needs.test.result != 'skipped'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      actions: read
+      id-token: write
+    strategy:
+      fail-fast: false
+      matrix:
+        config: *config
+        arch: *arch
+    steps:
+      - name: Checkout repository (for CRCR scripts)
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          fetch-depth: 1
+          show-progress: false
+
+      - name: Check cell is in this run's subset
+        id: subset
+        shell: bash
+        env:
+          PYTHON_VERSIONS: ${{ inputs.python-versions }}
+          CUDA_VERSIONS: ${{ inputs.cuda-versions }}
+          TEST_ARCHITECTURES: ${{ inputs.test-architectures }}
+          PY: ${{ matrix.config.python.version }}
+          CU: ${{ matrix.config.cuda.version }}
+          ARCH: ${{ matrix.arch.name }}
+        run: |
+          set -euo pipefail
+          selected=true
+          if [ -n "${PYTHON_VERSIONS}" ] && [[ "${PYTHON_VERSIONS}" != *"${PY}"* ]]; then
+            selected=false
+          fi
+          if [ -n "${CUDA_VERSIONS}" ] && [[ "${CUDA_VERSIONS}" != *"${CU}"* ]]; then
+            selected=false
+          fi
+          if [ -n "${TEST_ARCHITECTURES}" ] && [[ "${TEST_ARCHITECTURES}" != *"${ARCH}"* ]]; then
+            selected=false
+          fi
+          echo "selected=${selected}" >> "$GITHUB_OUTPUT"
+
+      - name: Resolve cell conclusion
+        id: cell
+        if: steps.subset.outputs.selected == 'true'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh api --paginate \
+            "repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/attempts/${{ github.run_attempt }}/jobs" \
+            -q '.jobs[]' | jq -s '.' > jobs.json
+          python3 scripts/crcr/resolve_cell_conclusion.py \
+            --jobs-json jobs.json \
+            --cell "${{ matrix.config.build_name }}-${{ matrix.arch.name }}-test" \
+            --github-output "$GITHUB_OUTPUT" \
+            --summary "$GITHUB_STEP_SUMMARY"
+
+      # Scoped to this cell's own five shards: the artifact name embeds the
+      # build-environment, python/cuda labels, arch and run attempt, so the
+      # pattern cannot pick up a sibling cell's reports.
+      #
+      # `continue-on-error` here does not mask an undelivered callback - that
+      # rule applies to the callback step, which is left bare below. A cell whose
+      # shards died before uploading anything still owes upstream a red row, so
+      # a failed download has to fall through to the summariser (which reports
+      # `failure` on any shortfall against `--expected-shards`) rather than
+      # abort before reporting.
+      - name: Download this cell's shard test-reports
+        id: download
+        if: steps.subset.outputs.selected == 'true' && steps.cell.outputs.should-report == 'true'
+        continue-on-error: true
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: test-reports-win-rtx-${{ matrix.arch.name }}-${{ matrix.config.python.label }}-${{ matrix.config.cuda.label }}-${{ matrix.arch.name }}-shard*-${{ github.run_id }}-${{ github.run_attempt }}
+          path: cell-reports
+
+      # `--expected-shards` is the number of shard jobs the Jobs API reported
+      # for this cell, so it tracks `_rtx-test.yml`'s shard matrix without a
+      # second copy of the fanout to keep in sync. Any shard that left no
+      # reports makes the cell `failure`: `upload-artifact` is configured
+      # `if-no-files-found: warn`, so a shard that died before writing its
+      # reports tree uploads nothing and still goes green - the short count is
+      # the only evidence that part of the cell never ran.
+      - name: Summarize cell test results
+        id: results
+        if: steps.subset.outputs.selected == 'true' && steps.cell.outputs.should-report == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 scripts/crcr/build_test_results.py \
+            --shards-root cell-reports \
+            --expected-shards "${{ steps.cell.outputs.matched-jobs }}" \
+            --title "HUD test results - ${{ matrix.config.build_name }}-${{ matrix.arch.name }}-test" \
+            --github-output "$GITHUB_OUTPUT" \
+            --summary "$GITHUB_STEP_SUMMARY"
+
+      # Two independent signals must agree before a cell is called green: the
+      # shard jobs' own GitHub outcome, and the JUnit evidence they left behind.
+      # Each alone has a blind spot - a shard cancelled before writing any XML
+      # looks clean to the summariser, and a harness that exits 0 while
+      # reporting failed cases looks clean to GitHub.
+      - name: Combine conclusions
+        id: conclusion
+        if: steps.subset.outputs.selected == 'true' && steps.cell.outputs.should-report == 'true'
+        shell: bash
+        env:
+          JOB_CONCLUSION: ${{ steps.cell.outputs.conclusion }}
+          REPORT_CONCLUSION: ${{ steps.results.outputs.conclusion }}
+          DOWNLOAD_OUTCOME: ${{ steps.download.outcome }}
+          CELL: ${{ matrix.config.build_name }}-${{ matrix.arch.name }}-test
+        run: |
+          set -euo pipefail
+          if [ "${JOB_CONCLUSION}" = "cancelled" ]; then
+            conclusion=cancelled
+          elif [ "${JOB_CONCLUSION}" = "success" ] && [ "${REPORT_CONCLUSION}" = "success" ]; then
+            conclusion=success
+          else
+            conclusion=failure
+          fi
+          echo "conclusion=${conclusion}" >> "$GITHUB_OUTPUT"
+          if [ "${DOWNLOAD_OUTCOME}" != "success" ]; then
+            echo "::warning title=CRCR artifacts::Could not download shard reports for ${CELL}; test counts may be incomplete."
+          fi
+          {
+            echo ""
+            echo "| conclusion input | value |"
+            echo "| --- | --- |"
+            echo "| shard jobs result | \`${JOB_CONCLUSION}\` |"
+            echo "| report evidence | \`${REPORT_CONCLUSION}\` |"
+            echo "| artifact download | \`${DOWNLOAD_OUTCOME}\` |"
+            echo "| **reported conclusion** | \`${conclusion}\` |"
+            echo "| delivery-id (upstream main SHA) | \`${{ needs.prep.outputs.crcr-delivery-id }}\` |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Report test results to CRCR
+        if: steps.subset.outputs.selected == 'true' && steps.cell.outputs.should-report == 'true'
+        uses: ./.github/actions/crcr-callback
+        with:
+          event-type: nightly
+          delivery-id: ${{ needs.prep.outputs.crcr-delivery-id }}
+          job-name: ${{ matrix.config.hud_env }} / test (${{ matrix.arch.name }})
+          status: completed
+          conclusion: ${{ steps.conclusion.outputs.conclusion }}
+          test-results: ${{ steps.results.outputs.test-results }}
+          artifact-url: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}/attempts/${{ github.run_attempt }}
+
+      # The HUD and GitHub conclusions have to agree. The shard
+      # jobs can go green while their reports say otherwise - a harness that
+      # exits 0 with failed cases, or shards that left no evidence at all - and
+      # in that case the callback above has already told upstream `failure`.
+      # Fail here too, so whoever opens the run sees the same answer the HUD
+      # shows. Ordered after the callback deliberately: the result has to be
+      # delivered before this job goes red.
+      - name: Match GitHub to the reported conclusion
+        if: steps.conclusion.outputs.conclusion == 'failure' && steps.cell.outputs.conclusion == 'success'
+        shell: bash
+        env:
+          CELL: ${{ matrix.config.build_name }}-${{ matrix.arch.name }}-test
+        run: |
+          echo "::error title=CRCR conclusion::Shard jobs for ${CELL} all passed, but their reports show failures or missing evidence. Reported 'failure' to the HUD; failing this job so GitHub agrees."
+          exit 1

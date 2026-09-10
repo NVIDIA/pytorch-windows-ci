@@ -24,6 +24,15 @@ import pytest
 PYTHONPATH_DIR = Path(__file__).resolve().parents[1] / "pythonpath"
 MODULE_PATH = PYTHONPATH_DIR / "sitecustomize.py"
 
+# The bound is enforced with `taskkill /T`, which is the reason this module
+# exists at all: `Popen.send_signal(SIGINT)` raises on Windows. Assertions that
+# a process was really killed, and that a Windows argv path is recognised, only
+# hold there. Everything else here is platform-independent, so the suite still
+# runs on the Linux job that lints these scripts.
+windows_only = pytest.mark.skipif(
+    os.name != "nt", reason="Windows-only behaviour (taskkill /T, ntpath argv)"
+)
+
 
 def _load():
     """Load the module under a private name, so we never touch the real one."""
@@ -82,7 +91,9 @@ def test_configured_bound_never_raises_on_odd_types():
     [
         "test_cuda.py",
         "test_meta.py",
-        r"C:\pt\test\test_cuda.py",
+        # `os.path.basename` keeps the whole string off Windows, so this only
+        # looks like a test file where the separator is native.
+        pytest.param(r"C:\pt\test\test_cuda.py", marks=windows_only),
         "/pt/test/test_sparse_csr.py",
         "inductor/test_aoti_pdl.py",
     ],
@@ -281,6 +292,7 @@ def _run(script_name, body, tmp_path, bound="3", budget=90, record=None):
     return time.time() - started, proc
 
 
+@windows_only
 def test_e2e_hung_test_file_is_killed_at_the_bound(tmp_path):
     elapsed, proc = _run("test_hang.py", HUNG, tmp_path)
     assert elapsed < 30, f"not bounded: ran {elapsed:.1f}s against a 3s bound"
@@ -348,6 +360,7 @@ def test_e2e_record_proves_a_real_test_process_armed(tmp_path):
     assert recs[0]["pid"] > 0
 
 
+@windows_only
 def test_e2e_record_captures_a_kill(tmp_path):
     rec = tmp_path / "rec.jsonl"
     elapsed, _ = _run("test_hang.py", HUNG, tmp_path, record=rec)
@@ -363,6 +376,7 @@ def test_e2e_parent_leaves_no_record(tmp_path):
     assert not rec.exists()
 
 
+@windows_only
 def test_e2e_recording_is_optional(tmp_path):
     """With PER_PROCESS_TIMEOUT_LOG unset the bound still works."""
     elapsed, proc = _run("test_hang.py", HUNG, tmp_path, record=None)
@@ -399,6 +413,7 @@ def test_e2e_concurrent_processes_all_land_a_record(tmp_path):
     assert len({r["pid"] for r in recs}) == n, "each process should be distinct"
 
 
+@windows_only
 def test_e2e_child_processes_are_killed_too(tmp_path):
     """An orphaned child holds the step's stdout pipe open, wedging the step.
 

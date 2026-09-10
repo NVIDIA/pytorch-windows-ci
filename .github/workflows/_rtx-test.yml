@@ -90,7 +90,8 @@ on:
       # call to this reusable workflow == one (config x arch) test
       # cell, period. To change the shard count, edit both the
       # `shard:` list under `strategy.matrix` and the `NUM_TEST_SHARDS`
-      # env in the test step.
+      # env in the test step. The caller's `report-test-crcr` job needs
+      # no update: it counts this cell's shard jobs via the Jobs API.
       test-config:
         description: "Test-config name forwarded as TEST_CONFIG (e.g. 'default')."
         type: string

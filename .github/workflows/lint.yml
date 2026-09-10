@@ -78,6 +78,12 @@ jobs:
   # pass or a failure - including, for `scripts/crcr`, what gets published to
   # the upstream PyTorch HUD. Their fail-closed behaviour is only worth
   # anything if it is actually enforced, so run their tests on every change.
+  #
+  # Runs on Linux because that is where these helpers run in production: the
+  # reporting and summary jobs are all `ubuntu-latest`. The exception is
+  # `scripts/test-bounds`, which bounds a hung test *on the Windows shards*;
+  # the handful of its cases that assert the `taskkill` path are marked
+  # Windows-only and report as skipped here.
   scripts:
     name: unit-test CI scripts
     runs-on: ubuntu-latest

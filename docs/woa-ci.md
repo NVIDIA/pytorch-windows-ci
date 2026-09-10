@@ -31,8 +31,12 @@ prep (resolve pytorch ref)                        ubuntu-latest
 ## Running it
 
 **`windows-woa-build-test`** runs automatically on a **nightly schedule**
-(`cron: 0 5 * * *`) — there is **no** manual `workflow_dispatch` trigger. Every
-run builds and tests the **full** matrix with a fixed config:
+(`cron: 50 9 * * *`, i.e. 09:50 UTC) — there is **no** manual
+`workflow_dispatch` trigger. The time is chosen to fall after `pytorch/pytorch`
+cuts the day's `nightly` commit, which normally lands between 07:35 and 08:47
+UTC; running before that does not wait for the new commit, it just builds the
+*previous* day's again. Every run builds and tests the **full** matrix with a
+fixed config:
 
 | Setting | Value | Meaning |
 | --- | --- | --- |

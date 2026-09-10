@@ -34,7 +34,17 @@ on:
   schedule:
     # Nightly build + test of the full WoA matrix against pytorch `nightly`.
     # Manual/workflow_dispatch is intentionally NOT offered for this repo.
-    - cron: "0 5 * * *"
+    #
+    # Timed to land after pytorch/pytorch cuts the day's `nightly` commit
+    # (07:35-08:47 UTC on 55 of the 57 days to 2026-09-09); see the longer note
+    # in `windows-rtx-build-test.yml`. The previous 05:00 was ahead of it on
+    # every day sampled, so this matrix only ever built the day-old nightly.
+    #
+    # Half an hour behind the RTX cron. The two use disjoint runner pools
+    # (`woa-arm64` vs `rtx-build`/`sm89`/`sm120`) so they do not contend for
+    # agents; the offset just keeps the two nightlies distinguishable when
+    # something upstream breaks both.
+    - cron: "50 9 * * *"
 
 # No `concurrency:` group: the shared arm64 pool runs one job per agent, and the
 # only trigger is the once-a-day schedule, so runs never overlap. A run_id-keyed

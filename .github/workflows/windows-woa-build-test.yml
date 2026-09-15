@@ -288,7 +288,10 @@ jobs:
 
   test:
     name: woa-${{ matrix.config.label }}-cu134-arm64-test
-    needs: build
+    # `prep` is here for its `num-shards` output below, not for ordering: a
+    # `needs.<job>` reference outside the job's own `needs` evaluates to '' rather
+    # than erroring, and an explicit '' overrides the callee's own default.
+    needs: [prep, build]
     # Run the test matrix even when SOME build cells failed. With a plain `needs: build`
     # a single failed build cell marks the whole build job `failure` and GitHub auto-skips
     # every test cell - so a partial build (e.g. py311/py313 pass, py314t fails) would test

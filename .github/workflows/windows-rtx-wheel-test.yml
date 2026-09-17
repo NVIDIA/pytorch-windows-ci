@@ -51,29 +51,49 @@ name: windows-rtx-wheel-test
 # TORCH_CUDA_ARCH_LIST value, so a single job declaration drives both
 # RTX 40x0 (sm89) and RTX 50x0 (sm120).
 
+# PARKED - this workflow has no live trigger and cannot currently start.
+#
+# `workflow_dispatch` was its only trigger (the nightly cron below has been
+# commented out since before this change), and external-CI security guidelines
+# do not allow a hand-started run to aim the self-hosted RTX pool at an
+# arbitrary upstream ref. Rather than delete the file - it is the worked
+# `test`-only example the CI reference documents, and its wheel-resolution
+# logic is not reproduced anywhere else - the trigger is reduced to
+# `workflow_call`, which is schema-valid, offers no UI or API "Run workflow",
+# and is called by nothing in this repo.
+#
+# To bring it back: uncomment the cron for an unattended nightly (the
+# schedule-only shape both build-test orchestrators use), or re-add
+# `workflow_dispatch` if the guidelines change. The inputs below are typed for
+# `workflow_call` so either path works without further edits.
 on:
   # schedule:
   #   - cron: "0 17 * * *"
-  workflow_dispatch:
+  workflow_call:
     inputs:
       pytorch-ref:
         description: "pytorch/pytorch ref to test against (branch, tag, or SHA). Default: nightly."
+        type: string
         required: false
         default: "nightly"
       python-versions:
         description: "Comma-separated subset of 3.12,3.13 to test."
+        type: string
         required: false
         default: "3.12"
       cuda-versions:
         description: "Comma-separated subset of 13.0,13.2 to test."
+        type: string
         required: false
         default: "13.0,13.2"
       test-architectures:
         description: "Comma-separated subset of sm89,sm120 to test."
+        type: string
         required: false
         default: "sm89,sm120"
       wheel-index-url:
         description: "Override the nightly wheel index page (default: https://download.pytorch.org/whl/nightly/torch/)."
+        type: string
         required: false
         default: ""
 

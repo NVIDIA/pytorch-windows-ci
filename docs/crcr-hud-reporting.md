@@ -174,24 +174,22 @@ failures that have since been fixed. Use "Re-run all jobs".
 is switched on by it being non-empty. A run can never publish a row for a
 commit that is not upstream `main`.
 
-**WoA** has no manual trigger at all: the nightly schedule is its only caller,
-so every run reports and there is nothing to opt out of.
+Neither orchestrator has a manual trigger any more, so the nightly schedule is
+the only caller of either and every run reports. There is nothing to opt out of
+on the WoA side, and nothing left to opt in to on the RTX side.
 
-**RTX** also accepts `workflow_dispatch`, so it carries the extra conditions:
+RTX used to accept `workflow_dispatch` and so carried extra conditions — no
+`pytorch-pr`, `pytorch-ref` left at `nightly`, the event being `schedule` or
+`workflow_dispatch`, and a `report-to-hud` opt-in that defaulted to off so a
+matrix experiment could not overwrite a nightly row. The conditions are still
+in `prep`, but with no dispatch inputs they all resolve the same way on every
+run: `PR` is empty, the ref is `nightly`, and `REPORT_TO_HUD` is `true`. They
+are kept for the same reason the ref-resolution branches are — re-adding the
+trigger restores the old behaviour without further edits.
 
-- no `pytorch-pr` input (PR builds are not nightly results);
-- `pytorch-ref` left at `nightly`, so the SHA came from the resolver above;
-- the event is `schedule` or `workflow_dispatch`;
-- `report-to-hud` is ticked.
-
-**`report-to-hud` is off by default**, so a manual RTX run left at its defaults
-publishes nothing even though `pytorch-ref` defaults to `nightly`. That is the
-intended asymmetry: manual runs are usually matrix or runner experiments, and
-the row for an upstream commit should be written by the schedule rather than
-overwritten by a hand-started run. Tick it only when deliberately re-filing a
-nightly row — and prefer **Re-run all jobs** on the original run for that, since
-a re-run re-resolves the same SHA (see below) while a fresh manual run resolves
-whatever nightly is current.
+To re-file a row for a day that failed, use **Re-run all jobs** on that day's
+run: a re-run re-resolves the same SHA (see below), which is exactly what
+repairing a row needs.
 
 ## Job shape
 

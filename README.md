@@ -117,14 +117,19 @@ Local build prerequisites are listed in each architecture-specific build guide.
 
 # Usage
 
-Two of the three top-level workflows run automatically on a nightly `schedule`:
+Two of the three top-level workflows run automatically on a nightly `schedule`,
+and none of them can be started by hand — external-CI security guidelines do
+not allow a hand-started run to aim the self-hosted Windows pools at an
+arbitrary upstream commit, so no orchestrator carries a `workflow_dispatch`
+trigger:
 
 - **`windows-rtx-build-test.yml`** — full RTX source build + test, nightly.
-  Also accepts `workflow_dispatch`, where subset inputs can narrow the matrix.
+  Scheduled only; every run covers the full matrix.
 - **`windows-woa-build-test.yml`** — WoA (arm64) source build + test, nightly.
-  Scheduled only; a manual trigger is deliberately not offered.
-- **`windows-rtx-wheel-test.yml`** — published-wheel test. Its nightly cron is
-  currently commented out, so it runs on `workflow_dispatch` only.
+  Scheduled only.
+- **`windows-rtx-wheel-test.yml`** — published-wheel test, **parked**: its
+  nightly cron is commented out and `workflow_dispatch` was its only other
+  trigger, so nothing starts it. Uncomment the cron to bring it back.
 
 The reusable workflows (`_rtx-build.yml`, `_rtx-test.yml`, `_woa-build.yml`,
 `_woa-test.yml`) are called by the orchestrators and are not run directly.

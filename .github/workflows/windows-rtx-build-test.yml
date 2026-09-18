@@ -66,6 +66,35 @@ on:
     # cron expression, so it must be (re)pushed by an account with a verified
     # email or every run fails at startup.
     - cron: "20 9 * * *"
+
+  # Called by `upstream-pull.yml` to validate an approved upstream PR. Kept
+  # separate from `workflow_dispatch` on purpose: a PR run is started by the
+  # relay path after a maintainer approves it, never by hand, so it needs no
+  # entry in the Actions UI. The inputs it accepts are deliberately narrower
+  # than the manual ones - a PR is pinned to one already-resolved commit, so
+  # `pytorch-pr` (which would re-resolve the head) is not offered.
+  workflow_call:
+    inputs:
+      pytorch-ref:
+        description: "Full 40-hex commit SHA to build. For a PR, its approved head."
+        type: string
+        required: true
+      python-versions:
+        description: "Comma-separated subset of 3.12 to build/test. Empty = all."
+        type: string
+        required: false
+        default: ""
+      cuda-versions:
+        description: "Comma-separated subset of 13.0,13.2 to build/test. Empty = all."
+        type: string
+        required: false
+        default: ""
+      test-architectures:
+        description: "Comma-separated subset of sm89,sm120 to test. Empty = all."
+        type: string
+        required: false
+        default: ""
+
   workflow_dispatch:
     inputs:
       pytorch-pr:

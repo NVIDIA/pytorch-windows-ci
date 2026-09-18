@@ -94,6 +94,45 @@ def test_called_pipelines_accept_workflow_call(workflow: dict) -> None:
         assert "pytorch-ref" in inputs, f"{name} takes no pytorch-ref input"
 
 
+def requested_permissions(workflow: dict) -> dict[str, str]:
+    """Every permission the workflow or any of its jobs asks for, strongest wins."""
+    rank = {"none": 0, "read": 1, "write": 2}
+    wanted: dict[str, str] = {}
+    blocks = [workflow.get("permissions") or {}]
+    blocks += [j.get("permissions") or {} for j in workflow["jobs"].values()]
+    for block in blocks:
+        if not isinstance(block, dict):
+            continue
+        for scope, level in block.items():
+            if rank.get(str(level), 0) > rank.get(wanted.get(scope, "none"), 0):
+                wanted[scope] = str(level)
+    return wanted
+
+
+def test_callers_grant_what_the_called_workflows_request(workflow: dict) -> None:
+    """GitHub checks this at parse time, for every nested job, ignoring `if:`.
+
+    A caller that grants less is rejected before any job runs - "The nested job
+    'report-build-crcr' is requesting 'id-token: write', but is only allowed
+    'id-token: none'" - which is a startup failure for the whole run rather than
+    a skipped job. The CRCR reporting jobs ask for `id-token: write` even though
+    they are unreachable on the PR path, so the caller has to grant it anyway.
+    """
+    rank = {"none": 0, "read": 1, "write": 2}
+    for job_name, called_file in reusable_jobs(workflow).items():
+        granted = workflow["jobs"][job_name].get("permissions")
+        assert isinstance(granted, dict), (
+            f"job {job_name!r} calls {called_file} but declares no permissions block; "
+            "it inherits the workflow's, which may be too narrow"
+        )
+        for scope, level in requested_permissions(load(WORKFLOWS / called_file)).items():
+            have = granted.get(scope, "none")
+            assert rank.get(have, 0) >= rank[level], (
+                f"job {job_name!r} grants {scope}: {have}, but {called_file} "
+                f"requests {scope}: {level}. GitHub rejects the run at startup."
+            )
+
+
 def test_approval_is_environment_gated(workflow: dict) -> None:
     """The approval is enforced by the environment, not by anything in the file."""
     assert workflow["jobs"]["approval"]["environment"] == "pr-ci-approval"

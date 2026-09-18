@@ -120,11 +120,6 @@ concurrency:
 permissions:
   contents: read
   # `authorize` reads this run's review history to record who approved it.
-  #
-  # Deliberately not `id-token: write`, which the called pipelines' CRCR
-  # reporting jobs ask for: those jobs are unreachable on this path, because
-  # `prep` leaves `crcr-delivery-id` empty for a non-nightly ref. A PR run
-  # cannot file a HUD row, so it does not need the token that would let it.
   actions: read
 
 env:
@@ -409,10 +404,33 @@ jobs:
   #
   # Both are named in `PIPELINES` above, which the audit record reports and a
   # contract test keeps in step with these jobs.
+  #
+  # Note [Why these grant id-token: write when nothing here mints a token]
+  #     Each pipeline's two CRCR reporting jobs declare `id-token: write` for
+  #     the OIDC handshake, and GitHub validates a called workflow's permission
+  #     requests against the caller *at parse time, for every nested job,
+  #     before any `if:` is evaluated*. So a caller that grants less is rejected
+  #     with "The nested job 'report-build-crcr' is requesting 'id-token:
+  #     write', but is only allowed 'id-token: none'" - a startup failure that
+  #     takes out the whole run, not a skipped job.
+  #
+  #     Granting it does not let a PR run reach the HUD. Those jobs are still
+  #     gated on a non-empty `crcr-delivery-id`, which `prep` leaves empty for a
+  #     non-nightly ref, so they skip and no token is ever minted. The grant
+  #     satisfies a static check; it is not a capability this path exercises.
+  #
+  #     Granted per job rather than workflow-wide so `gate`, `approval` and
+  #     `authorize` keep the smaller token they actually need.
+  #     `test_upstream_pull_contract.py` asserts these stay a superset of what
+  #     the called workflows ask for.
   # ===========================================================================
   rtx:
     name: windows-rtx-build-test
     needs: [gate, authorize]
+    permissions:
+      contents: read
+      actions: read
+      id-token: write
     uses: ./.github/workflows/windows-rtx-build-test.yml
     with:
       pytorch-ref: ${{ needs.gate.outputs.head-sha }}
@@ -420,6 +438,10 @@ jobs:
   woa:
     name: windows-woa-build-test
     needs: [gate, authorize]
+    permissions:
+      contents: read
+      actions: read
+      id-token: write
     uses: ./.github/workflows/windows-woa-build-test.yml
     with:
       pytorch-ref: ${{ needs.gate.outputs.head-sha }}

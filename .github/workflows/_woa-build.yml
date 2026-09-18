@@ -130,7 +130,7 @@ jobs:
       # Expected install paths on every woa-arm64 runner: CTK/cuDNN under
       # C:\Program Files\NVIDIA, tools/vcpkg/APL under C:\DevToolKit.
       WOA_CUDA_PATH: 'C:\Program Files\NVIDIA\CUDA\v13.4'
-      WOA_CUDNN_ROOT: 'C:\Program Files\NVIDIA\CUDNN\v9.25'
+      WOA_CUDNN_ROOT: 'C:\Program Files\NVIDIA\CUDNN\v9.26'
       # arm64 MSVC entry point verified by woa-preflight-build (fail fast if absent).
       # VS 2026 BuildTools: install root is major version 18, outside the '(x86)' prefix.
       WOA_VCVARS_BAT: 'C:\Program Files\Microsoft Visual Studio\18\BuildTools\VC\Auxiliary\Build\vcvarsarm64.bat'

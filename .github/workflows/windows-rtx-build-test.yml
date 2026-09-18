@@ -19,9 +19,16 @@ name: windows-rtx-build-test
 #                           Target a specific commit with `pytorch-ref`, or
 #                           a PR with `pytorch-pr` (its head SHA is resolved
 #                           automatically and overrides `pytorch-ref`).
-#   - `repository_dispatch` - RFC-0050 relay (PARKED behind `dispatch-gate`;
-#                             inspect-dispatch prints the payload, build/test
-#                             are skipped). Grep `dispatch-gate` to re-enable.
+#   - `workflow_call`     - an upstream PR approved by `upstream-pull.yml`,
+#                           pinned to the approved head SHA. Never HUD-eligible.
+#
+# There is no `repository_dispatch` arm. There used to be a parked one, whose
+# `dispatch-gate` guards skipped every job when the event was a dispatch. Those
+# guards outlived the trigger and then misfired: a called workflow sees the
+# *caller's* event, so once `upstream-pull.yml` began calling this one over the
+# relay path, `prep` and the whole fanout skipped while the parked
+# inspect-dispatch job ran instead. Removed - the relay path now belongs to
+# `upstream-pull.yml`, which does its own payload inspection.
 #
 # Shape:
 #
@@ -66,6 +73,35 @@ on:
     # cron expression, so it must be (re)pushed by an account with a verified
     # email or every run fails at startup.
     - cron: "20 9 * * *"
+
+  # Called by `upstream-pull.yml` to validate an approved upstream PR. Kept
+  # separate from `workflow_dispatch` on purpose: a PR run is started by the
+  # relay path after a maintainer approves it, never by hand, so it needs no
+  # entry in the Actions UI. The inputs it accepts are deliberately narrower
+  # than the manual ones - a PR is pinned to one already-resolved commit, so
+  # `pytorch-pr` (which would re-resolve the head) is not offered.
+  workflow_call:
+    inputs:
+      pytorch-ref:
+        description: "Full 40-hex commit SHA to build. For a PR, its approved head."
+        type: string
+        required: true
+      python-versions:
+        description: "Comma-separated subset of 3.12 to build/test. Empty = all."
+        type: string
+        required: false
+        default: ""
+      cuda-versions:
+        description: "Comma-separated subset of 13.0,13.2 to build/test. Empty = all."
+        type: string
+        required: false
+        default: ""
+      test-architectures:
+        description: "Comma-separated subset of sm89,sm120 to test. Empty = all."
+        type: string
+        required: false
+        default: ""
+
   workflow_dispatch:
     inputs:
       pytorch-pr:
@@ -105,43 +141,14 @@ on:
         default: false
 
 concurrency:
-  group: windows-rtx-build-test-${{ github.event.client_payload.pr_number || github.run_id }}
-  cancel-in-progress: ${{ github.event_name == 'repository_dispatch' }}
+  group: windows-rtx-build-test-${{ github.run_id }}
+  cancel-in-progress: false
 
 permissions:
   contents: read
   actions: read
 
 jobs:
-  # ===========================================================================
-  # Once-per-dispatch observability hook for the relay payload. Gated to
-  # `repository_dispatch` so schedule / workflow_dispatch runs don't waste a
-  # runner on it.
-  #
-  # TODO(dispatch-gate): repository_dispatch handling is currently parked -
-  # the build / test jobs below carry a matching `dispatch-gate` guard.
-  # Remove the guards together to re-enable a real PR-driven build + test.
-  # ===========================================================================
-  inspect-dispatch:
-    name: inspect relay dispatch (parked)
-    if: github.event_name == 'repository_dispatch'
-    runs-on: [rtx-build]
-    timeout-minutes: 5
-    steps:
-      - name: Checkout repository (for composite actions)
-        uses: actions/checkout@v7
-        with:
-          fetch-depth: 1
-          show-progress: false
-
-      - name: Inspect repository_dispatch event
-        uses: ./.github/actions/inspect-dispatch-event
-
-      - name: Note parked state
-        shell: bash
-        run: |
-          echo "::notice title=dispatch-gate::repository_dispatch event acknowledged; source build + test fanout is paused. Remove the dispatch-gate guards in .github/workflows/ to re-enable."
-
   # ===========================================================================
   # Resolve the pytorch ref to build, once, before the matrix fans out, and
   # decide whether this run is allowed to publish to the upstream HUD.
@@ -169,7 +176,6 @@ jobs:
   # ===========================================================================
   prep:
     name: resolve pytorch ref
-    if: github.event_name != 'repository_dispatch'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     outputs:
@@ -286,9 +292,6 @@ jobs:
   build:
     name: ${{ matrix.config.build_name }}-build
     needs: prep
-    # TODO(dispatch-gate): remove this guard once relay-driven source
-    # builds are ready to run. Currently scheduled / manual runs only.
-    if: github.event_name != 'repository_dispatch'
     strategy:
       fail-fast: false
       matrix:
@@ -326,11 +329,6 @@ jobs:
   test:
     name: ${{ matrix.config.build_name }}-${{ matrix.arch.name }}-test
     needs: build
-    # TODO(dispatch-gate): remove this guard once relay-driven testing is
-    # ready. With `needs: build` the test job would already inherit the
-    # skip via the build gate, but stating the gate explicitly makes the
-    # intent obvious at the job level.
-    if: github.event_name != 'repository_dispatch'
     strategy:
       fail-fast: false
       matrix:
@@ -368,7 +366,7 @@ jobs:
   test-summary:
     name: test-summary
     needs: test
-    if: always() && github.event_name != 'repository_dispatch'
+    if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:

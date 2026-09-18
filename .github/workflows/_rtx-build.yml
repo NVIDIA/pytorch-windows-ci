@@ -14,10 +14,10 @@ name: _rtx-build
 # drives Python and CUDA toolkit variations via its own matrix and passes
 # the cell's values in as `python-{version,label}` and `cuda-{version,label}`.
 #
-# The pytorch ref to build is resolved here per matrix cell:
-#   - repository_dispatch  -> RFC-0050 `pytorch/actions/checkout-pr@v1`
-#                             (uses `client_payload.head_sha`)
-#   - schedule / manual    -> actions/checkout against `pytorch-ref`
+# Every caller gets the same checkout: `pytorch-ref`, which the caller has
+# already resolved to a commit. A PR head needs nothing special - see the note
+# on the checkout step. It used to branch on the event name instead, which is
+# what made the relay path check out nothing at all.
 #
 # After checkout, the resolved commit SHA is recorded into
 # `built_pytorch_sha.txt` and shipped in the same artifact as the wheel,
@@ -77,7 +77,7 @@ on:
         type: string
         required: true
       pytorch-ref:
-        description: "pytorch/pytorch ref for non-dispatch runs (branch / tag / SHA)."
+        description: "pytorch/pytorch ref to build (branch / tag / SHA)."
         type: string
         required: false
         default: "nightly"
@@ -180,8 +180,25 @@ jobs:
         id: diag
         uses: ./oot/.github/actions/start-runner-diagnostics
 
-      - name: Checkout pytorch/pytorch (scheduled / manual)
-        if: github.event_name != 'repository_dispatch'
+      # One checkout for every caller, guarded by nothing.
+      #
+      # It used to branch on `github.event_name != 'repository_dispatch'` and
+      # call `pytorch/actions/checkout-pr@v1` on the other arm. That action was
+      # removed - a third-party `uses:` the org policy does not permit, see the
+      # long note in `.github/actions/crcr-callback/action.yml` - but its guards
+      # were left behind, so a dispatched run checked out no pytorch source at
+      # all and died on the next step's `git -C pytorch rev-parse HEAD`.
+      #
+      # Note [A PR head needs no special checkout]
+      #     The obvious replacement was a second arm fetching
+      #     refs/pull/<n>/head, on the assumption that a fork's head commit is
+      #     not reachable from pytorch/pytorch by SHA alone. It is: GitHub
+      #     republishes PR heads in the base repo, and `git fetch <fork-PR-sha>`
+      #     against pytorch/pytorch succeeds - checked directly against a live
+      #     fork PR. So the caller resolving the PR to a SHA and passing it as
+      #     `pytorch-ref` is all that is needed, and one unguarded path is
+      #     better than two where only one is ever taken.
+      - name: Checkout pytorch/pytorch
         uses: actions/checkout@v7
         with:
           repository: pytorch/pytorch
@@ -198,7 +215,6 @@ jobs:
           path: pytorch
 
       - name: Fetch pytorch submodules (retried)
-        if: github.event_name != 'repository_dispatch'
         shell: bash
         working-directory: pytorch
         run: |

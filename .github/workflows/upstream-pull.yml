@@ -1,0 +1,450 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: MIT
+
+name: upstream-pull
+
+# Per-PR validation of `pytorch/pytorch` pull requests, driven by the upstream
+# Relay Server (RFC-0050).
+#
+# This workflow builds nothing itself. It receives the relay's dispatch,
+# decides whether the PR is worth a maintainer's attention, asks for approval,
+# and then calls both Windows pipelines pinned to the approved commit:
+#
+#   gate ---- author on allowlist ----> approval ----> authorize --+--> windows-rtx-build-test
+#      \                              (a maintainer)   (records    |
+#       `-- anyone else -> nothing                       who)      `--> windows-woa-build-test
+#                          at all
+#
+# The pipelines are *called*, not dispatched, so a PR validation shows up as
+# one run with the build and test jobs nested inside it - the approval, the
+# audit record and every job it authorised share a single page. It also means
+# this workflow needs no `actions: write`, and no manual trigger has to exist
+# on either pipeline for the PR path to work.
+#
+# Three rules, and the first two are easy to read backwards:
+#
+#   * Approval is always required. The allowlist decides whether a maintainer
+#     is *asked* about a PR; it never lets one skip approval.
+#   * Not being on the allowlist is silent - no request, no notification, no
+#     run. That is what keeps the volume survivable: the relay forwards every
+#     upstream PR event, on the order of one every few minutes.
+#   * An approved PR runs everything. There is no per-PR choice of pipeline;
+#     the decision is whether this PR gets CI, not which CI it gets.
+#
+# Note [Why there is no per-pipeline selection]
+#     Routing on a label on the upstream PR was considered and does not work:
+#     a label has to exist in `pytorch/pytorch` before it can be applied, which
+#     needs write access there, and applying one needs triage permission - which
+#     the contributors whose PRs this validates do not have. Creating and
+#     governing such a label is upstream's call; their `.github/allowlist.yml`
+#     documents `ciflow/oot/<name>` for trust level L3.
+#
+#     Capacity is therefore controlled by who is on the allowlist and by
+#     approval being mandatory, and - if that needs to be tighter - by the
+#     subset inputs passed to each pipeline below.
+#
+# ---------------------------------------------------------------------------
+# PR_CI_MODE - the switch that decides whether any of this is live
+# ---------------------------------------------------------------------------
+# Repository variable (Settings -> Secrets and variables -> Actions):
+#
+#   unset / `off`  Nothing happens. Every job is skipped, so a dispatch costs
+#                  nothing and appears in the Actions tab as a skipped run.
+#                  This is the default, and the kill switch.
+#   `live`         The allowlist applies and an approved run starts both
+#                  pipelines.
+#
+# Anything else fails `gate` loudly, so a typo'd value cannot read as
+# "quietly do nothing".
+#
+# It must be a *repository* variable, not an environment one: the mode is read
+# in `gate`'s job-level `if:`, and `gate` declares no environment because it
+# runs before the approval. An environment-scoped value resolves only for jobs
+# that reference that environment, so it would read as empty and skip every
+# dispatch while looking correctly configured. `UPSTREAM_PR_ALLOWLIST` is
+# repository-scoped for the same reason.
+#
+# ---------------------------------------------------------------------------
+# Dispatch payload
+# ---------------------------------------------------------------------------
+# Two shapes are accepted, because the relay's schema moved and this has to
+# keep working across the change:
+#
+#   nested (current, matches `inspect-dispatch-event`):
+#     client_payload.payload.pull_request.number / .head.sha / .user.login
+#   flat (legacy RFC-0050):
+#     client_payload.pr_number / client_payload.head_sha
+#
+# The flat shape carries no author, so it can never satisfy the allowlist.
+# That is intended, not a gap: a payload that cannot say who opened the PR is
+# not one to build unattended.
+#
+# Both dispatch *types* are listened for, because the relay has used
+# `pytorch-pr-trigger` and `pull_request`. Listening for one and being sent
+# the other is indistinguishable from the relay being down.
+
+on:
+  repository_dispatch:
+    types: [pytorch-pr-trigger, pull_request]
+
+# Every dispatch looks identical in the Actions list otherwise - GitHub titles
+# a `repository_dispatch` run after its action type, so a page of them all read
+# "pull_request", with no way to tell which PR each one was or whether several
+# are one PR firing repeatedly.
+run-name: >-
+  PR #${{ github.event.client_payload.payload.pull_request.number
+  || github.event.client_payload.pr_number || '?' }}
+  -> ${{ github.event.client_payload.payload.pull_request.base.ref
+  || github.event.client_payload.base_ref || '?' }}
+  (${{ github.event.client_payload.payload.action || github.event.action }})
+
+# One group per PR, so PRs are independent: several can await approval at once
+# and several can build at once. Rate control is the allowlist's job, not the
+# scheduler's.
+#
+# Deliberately *not* one shared group. That would serialize every PR behind one
+# approval, and GitHub keeps at most one pending run per group - so a third
+# dispatch cancels the second rather than joining a queue.
+#
+# `cancel-in-progress` supersedes a run when its own PR is pushed to again,
+# which is what makes accepting `synchronize` safe rather than noisy: approval
+# is granted against the head SHA shown in the run, so once that PR moves on,
+# the thing that was approved is gone. A ghstack push can fire two events a
+# second apart; the last one wins and nothing accumulates.
+concurrency:
+  group: >-
+    upstream-pr-${{ github.event.client_payload.payload.pull_request.number
+    || github.event.client_payload.pr_number || github.run_id }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  # `authorize` reads this run's review history to record who approved it.
+  #
+  # Deliberately not `id-token: write`, which the called pipelines' CRCR
+  # reporting jobs ask for: those jobs are unreachable on this path, because
+  # `prep` leaves `crcr-delivery-id` empty for a non-nightly ref. A PR run
+  # cannot file a HUD row, so it does not need the token that would let it.
+  actions: read
+
+env:
+  # Recorded in the audit line as what this approval started. Must list the
+  # reusable-workflow jobs at the bottom of this file;
+  # `scripts/pr-gate/tests/test_workflow_contract.py` asserts that it does, so
+  # adding a pipeline without updating this is caught in lint rather than by a
+  # misleading audit record.
+  PIPELINES: windows-rtx-build-test.yml windows-woa-build-test.yml
+
+jobs:
+  # ===========================================================================
+  # Decide whether to ask a maintainer about this PR.
+  #
+  # Skipped entirely when `PR_CI_MODE` is unset or `off`, which is what makes
+  # the default state free: the run is created by the dispatch, every job
+  # skips, and nothing else in the file is reachable.
+  #
+  # Always green when it does run. "Not worth raising" is not an error, and a
+  # red gate would be indistinguishable from the gate being broken. The one
+  # exception is a payload it cannot parse, which is a real fault.
+  # ===========================================================================
+  gate:
+    name: triage PR dispatch
+    if: vars.PR_CI_MODE != '' && vars.PR_CI_MODE != 'off'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      proceed: ${{ steps.decide.outputs.proceed }}
+      author: ${{ steps.check.outputs.author }}
+      allowed: ${{ steps.check.outputs.allowed }}
+      pr-number: ${{ steps.payload.outputs.pr-number }}
+      head-sha: ${{ steps.payload.outputs.head-sha }}
+      base-ref: ${{ steps.payload.outputs.base-ref }}
+    steps:
+      - name: Resolve mode
+        shell: bash
+        env:
+          MODE: ${{ vars.PR_CI_MODE }}
+        run: |
+          set -euo pipefail
+          if [ "${MODE}" != "live" ]; then
+            echo "::error title=PR gate::PR_CI_MODE is '${MODE}', which is not one of off / live. Fix the repository variable; refusing to guess what was meant." >&2
+            exit 1
+          fi
+          echo "PR_CI_MODE=${MODE}"
+
+      - name: Checkout repository (for the gate scripts)
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          fetch-depth: 1
+          show-progress: false
+
+      # Resolved once, here, so nothing downstream re-reads the payload. A
+      # malformed payload is a hard error, unlike an author we do not follow: a
+      # maintainer approves a specific head SHA, so a run that cannot name its
+      # head SHA has nothing meaningful to approve.
+      - name: Extract and validate the relay payload
+        id: payload
+        shell: bash
+        env:
+          NESTED_PR: ${{ github.event.client_payload.payload.pull_request.number }}
+          NESTED_SHA: ${{ github.event.client_payload.payload.pull_request.head.sha }}
+          NESTED_AUTHOR: ${{ github.event.client_payload.payload.pull_request.user.login }}
+          NESTED_BASE: ${{ github.event.client_payload.payload.pull_request.base.ref }}
+          NESTED_ACTION: ${{ github.event.client_payload.payload.action }}
+          FLAT_PR: ${{ github.event.client_payload.pr_number }}
+          FLAT_SHA: ${{ github.event.client_payload.head_sha }}
+          FLAT_BASE: ${{ github.event.client_payload.base_ref }}
+        run: |
+          set -euo pipefail
+          pr="${NESTED_PR:-${FLAT_PR:-}}"
+          sha="${NESTED_SHA:-${FLAT_SHA:-}}"
+          author="${NESTED_AUTHOR:-}"
+          base="${NESTED_BASE:-${FLAT_BASE:-}}"
+          action="${NESTED_ACTION:-}"
+
+          if ! [[ "${pr}" =~ ^[0-9]+$ ]] || [ "${pr}" -le 0 ]; then
+            echo "::error title=PR gate::Dispatch payload has no usable PR number (got '${pr}'). Neither client_payload.payload.pull_request.number nor client_payload.pr_number was set. The inspect-dispatch job prints what actually arrived." >&2
+            exit 1
+          fi
+          if ! [[ "${sha}" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error title=PR gate::Dispatch payload has no usable head SHA (got '${sha}'). Refusing to guess a ref to build." >&2
+            exit 1
+          fi
+
+          {
+            echo "pr-number=${pr}"
+            echo "head-sha=${sha}"
+            echo "author=${author}"
+            echo "base-ref=${base}"
+            echo "action=${action}"
+          } >> "$GITHUB_OUTPUT"
+          echo "pytorch PR #${pr} @ ${sha}"
+          echo "  author: ${author:-<none in payload>}"
+          echo "  base:   ${base:-<none in payload>}"
+          echo "  action: ${action:-<none in payload>}"
+
+      - name: Check PR author against allowlist
+        id: check
+        shell: bash
+        env:
+          PR_AUTHOR: ${{ steps.payload.outputs.author }}
+          ALLOWLIST: ${{ vars.UPSTREAM_PR_ALLOWLIST }}
+        run: |
+          set -euo pipefail
+          python3 scripts/pr-gate/evaluate_allowlist.py \
+            --author "${PR_AUTHOR}" \
+            --allowlist "${ALLOWLIST:-}" \
+            --github-output "$GITHUB_OUTPUT" \
+            --summary "$GITHUB_STEP_SUMMARY"
+
+      # Two filters run ahead of the allowlist, because they are about whether
+      # the event describes a PR worth looking at rather than about who may run
+      # one:
+      #
+      #   * Base branch. Roughly a third of upstream's open PRs target
+      #     `gh/<user>/<n>/base` rather than `main` - those are ghstack
+      #     intermediates, the internal plumbing of someone's stacked PR, where
+      #     testing the intermediate means nothing. Release branches are
+      #     excluded on the same grounds: this validates changes headed for
+      #     main.
+      #
+      #   * Event action: `opened` or `synchronize`, the two that mean there is
+      #     code to test. The relay forwards the whole `pull_request` webhook
+      #     family; `closed`, `reopened`, `edited`, `assigned` and the rest are
+      #     ignored.
+      #
+      #     Note [Why `labeled` is not accepted]
+      #         Upstream's bots and maintainers apply several labels to a PR
+      #         over its life (`open source`, `triaged`, `release notes: ...`).
+      #         Since no label selects anything here, accepting `labeled` would
+      #         raise a fresh approval request for a commit that had already
+      #         been approved, every time one was added.
+      #
+      #     `synchronize` fires only when the head SHA changes: commits pushed,
+      #     a force-push, or the head being updated from its base. It does not
+      #     fire for comments, reviews, title edits or labels, and re-targeting
+      #     a PR is `edited`. So every accepted one means different code.
+      #
+      # An absent value passes. Only the legacy flat payload omits these, and it
+      # is already inert because it carries no author - blocking on absence
+      # would make it invisible rather than safe.
+      - name: Decide whether to raise a request
+        id: decide
+        shell: bash
+        env:
+          ALLOWED: ${{ steps.check.outputs.allowed }}
+          BASE_REF: ${{ steps.payload.outputs.base-ref }}
+          ACTION: ${{ steps.payload.outputs.action }}
+        run: |
+          set -euo pipefail
+          proceed=false
+          if [ -n "${BASE_REF}" ] && [ "${BASE_REF}" != "main" ]; then
+            why="PR targets '${BASE_REF}', not main (ghstack intermediate or release branch)"
+          elif [ -n "${ACTION}" ] && ! grep -qwF -- "${ACTION}" <<< "opened synchronize"; then
+            why="event action '${ACTION}' does not introduce code to test"
+          elif [ "${ALLOWED}" != "true" ]; then
+            why="author is not on the allowlist"
+          else
+            proceed=true
+            why="allowlisted author"
+          fi
+          echo "proceed=${proceed}" >> "$GITHUB_OUTPUT"
+          echo "proceed=${proceed} (${why})"
+          {
+            echo ""
+            echo "| triage | value |"
+            echo "| --- | --- |"
+            echo "| base branch | \`${BASE_REF:-(none in payload)}\` |"
+            echo "| event action | \`${ACTION:-(none in payload)}\` |"
+            echo ""
+            echo "**Approval request: $([ "${proceed}" = true ] && echo "raised" || echo "not raised")** - ${why}."
+            if [ "${proceed}" = true ]; then
+              echo ""
+              echo "Approving will start: $(for p in ${PIPELINES}; do printf '`%s` ' "$p"; done)"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # ===========================================================================
+  # The approval itself. Gating is GitHub's own: this job declares
+  # `environment: pr-ci-approval`, and that environment carries the required
+  # reviewers (Settings -> Environments). The run parks in `waiting`, GitHub
+  # notifies them, and the job only starts once one approves - so the rule is
+  # enforced by the platform rather than by anything in this file, and the
+  # decision lands in the run's own timeline.
+  #
+  # Deliberately not on a self-hosted runner: nothing has been approved at the
+  # point this is queued, so it must not occupy a build pool while it waits.
+  # `timeout-minutes` covers only the trivial execution after approval; the
+  # wait is bounded by GitHub's 30-day cap on a pending deployment.
+  # ===========================================================================
+  approval:
+    name: await maintainer approval
+    needs: gate
+    if: needs.gate.outputs.proceed == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    environment: pr-ci-approval
+    steps:
+      - name: Note that approval was granted
+        shell: bash
+        env:
+          PR_AUTHOR: ${{ needs.gate.outputs.author }}
+          PR_NUMBER: ${{ needs.gate.outputs.pr-number }}
+          HEAD_SHA: ${{ needs.gate.outputs.head-sha }}
+        run: |
+          echo "Approved: pytorch PR #${PR_NUMBER} @ ${HEAD_SHA} by '${PR_AUTHOR:-<none in payload>}'."
+          echo "Pipelines: ${PIPELINES}."
+          echo "The approver is recorded by the 'authorize' job."
+
+  # ===========================================================================
+  # The audit record. Ordered before the pipelines so no run starts without one.
+  #
+  # GitHub enforces the approval but does not pass the approver into the run,
+  # so the review history is the only in-run source. Best-effort: the approval
+  # has already happened by now, so a failure to read it is a hole in the
+  # record, not a hole in the gate, and must not fail an approved run.
+  # ===========================================================================
+  authorize:
+    name: record authorization
+    needs: [gate, approval]
+    if: needs.approval.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      approver: ${{ steps.record.outputs.approver }}
+    steps:
+      - name: Checkout repository (for the audit script)
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          fetch-depth: 1
+          show-progress: false
+
+      - name: Fetch this run's review history
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -uo pipefail
+          if ! gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}/approvals" > approvals.json; then
+            echo "::warning title=PR CI authorization::Could not read this run's review history; the approver will be recorded as 'unknown'."
+            printf '[]' > approvals.json
+          fi
+
+      - name: Record the authorization
+        id: record
+        shell: bash
+        env:
+          PR_AUTHOR: ${{ needs.gate.outputs.author }}
+          ALLOWLISTED: ${{ needs.gate.outputs.allowed }}
+          PR_NUMBER: ${{ needs.gate.outputs.pr-number }}
+          HEAD_SHA: ${{ needs.gate.outputs.head-sha }}
+        run: |
+          set -euo pipefail
+          python3 scripts/pr-gate/summarize_authorization.py \
+            --author "${PR_AUTHOR}" \
+            --allowlisted "${ALLOWLISTED}" \
+            --approvals-json approvals.json \
+            --environment pr-ci-approval \
+            --pr-number "${PR_NUMBER}" \
+            --head-sha "${HEAD_SHA}" \
+            --targets "${PIPELINES}" \
+            --github-output "$GITHUB_OUTPUT" \
+            --summary "$GITHUB_STEP_SUMMARY"
+
+  # ===========================================================================
+  # The pipelines. Both run for every approved PR - see Note [Why there is no
+  # per-pipeline selection].
+  #
+  # `pytorch-ref` is the head SHA the gate validated and the maintainer
+  # approved, not the PR number: both pipelines pass a full SHA straight
+  # through to their build workflow, and a fork PR's head commit is fetchable
+  # from `pytorch/pytorch` because GitHub republishes it under `refs/pull/*`.
+  # Pinning the SHA tests exactly what was approved, rather than re-resolving
+  # the PR head and possibly building a commit that landed afterwards.
+  #
+  # Neither call opts out of HUD reporting, because neither can reach it: an
+  # explicit non-nightly `pytorch-ref` leaves `crcr-delivery-id` empty in both
+  # `prep` jobs, and both also clear it for any event that is not `schedule` or
+  # `workflow_dispatch`. A PR run cannot file a row against an upstream commit.
+  #
+  # Both are named in `PIPELINES` above, which the audit record reports and a
+  # contract test keeps in step with these jobs.
+  # ===========================================================================
+  rtx:
+    name: windows-rtx-build-test
+    needs: [gate, authorize]
+    uses: ./.github/workflows/windows-rtx-build-test.yml
+    with:
+      pytorch-ref: ${{ needs.gate.outputs.head-sha }}
+
+  woa:
+    name: windows-woa-build-test
+    needs: [gate, authorize]
+    uses: ./.github/workflows/windows-woa-build-test.yml
+    with:
+      pytorch-ref: ${{ needs.gate.outputs.head-sha }}
+
+  # ===========================================================================
+  # Observability: render the relay payload (table + full event JSON) into the
+  # run's step summary, so the exact shape and dispatch type that arrived is
+  # visible. Independent of the gate's decision, so a payload that failed
+  # validation or an author we do not follow still leaves a record.
+  #
+  # Carries the same mode guard as `gate`: in the default `off` state a dispatch
+  # should cost nothing at all, and this would otherwise run a job for every
+  # upstream PR event.
+  # ===========================================================================
+  inspect-dispatch:
+    name: inspect upstream PR dispatch
+    if: vars.PR_CI_MODE != '' && vars.PR_CI_MODE != 'off'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout repository (for composite actions)
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          fetch-depth: 1
+          show-progress: false
+
+      - name: Inspect repository_dispatch event
+        uses: ./.github/actions/inspect-dispatch-event

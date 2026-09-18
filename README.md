@@ -47,6 +47,40 @@ built by this CI.
 > build from source using the
 > [x86_64 build guide](docs/build_pytorch_windows_x86_64.md).
 
+### Windows ARM64 compatibility
+
+The published-wheel and CI coverage are intentionally distinguished below. A
+wheel being present in an index means that configuration is available to
+install; the **CI-tested** row identifies the configuration exercised by the
+current nightly workflow.
+
+| Component | Windows ARM64 coverage |
+| --- | --- |
+| Operating system | Windows 11 on Arm, version 24H2 or later (`win_arm64`). |
+| Host architecture | Native ARM64. x64-emulated Python is not supported for source builds. |
+| NVIDIA GPU | An NVIDIA GPU supported by CUDA 13.4 is required. Wheels are built for CUDA architectures `8.9`, `10.3+PTX`, `12.0`, and `12.1+PTX`. |
+| NVIDIA driver | NVIDIA R615 or later is required. |
+| CUDA | CUDA 13.4. Published wheels embed the required ARM64 CUDA runtime libraries; a compatible NVIDIA driver is still required. |
+| cuDNN | cuDNN 9.25 ARM64 runtime libraries are embedded in the published wheel. |
+| Python packages | The stable and nightly package indexes below are the source of truth for the Python versions that currently have `win_arm64` wheels. |
+| CI-tested configuration | The current Windows-on-Arm nightly workflow builds and tests Python 3.13 with CUDA 13.4. |
+| Stable framework versions | PyTorch 2.14.0, TorchVision 0.29.0, and TorchAudio 2.11.0 with CUDA 13.4. |
+| Nightly framework versions | PyTorch, TorchVision, and TorchAudio pre-release wheels are published to the nightly index below. |
+
+The CUDA architecture list describes what is compiled into the wheel; it is
+not a claim that every corresponding GPU model is present in the nightly test
+pool. See the [Windows-on-Arm CI guide](docs/woa-ci.md) for the exact CI matrix
+and the [Windows ARM64 build guide](docs/build_pytorch_windows_arm64.md) for
+toolchain and source-build requirements.
+
+See the [CUDA - Windows on Arm platform support](docs/platform-support.md)
+document for upstream integration, supported APIs, and disabled or untested
+functionality.
+
+See the [release and package policy](docs/release-policy.md) for release history,
+CI and package cadence, artifact retention, and the package-policy commitments
+that still require release-owner confirmation.
+
 ### Stable release
 
 Install the CUDA 13.4 stable release from the NVIDIA stable index:
@@ -169,19 +203,23 @@ Refer to [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Governance & Maintainers
 
-Maintained by the NVIDIA PyTorch Windows CI team. Open an issue or pull request
-for questions, triage, or proposed changes.
+Maintained by the NVIDIA PyTorch Windows CI team. See the
+[CUDA - Windows on Arm support policy](docs/support.md) for the responsible
+maintainers, issue-routing guidance, escalation contact, and response target.
 
 ## Security
 
 Please report security vulnerabilities responsibly. See
 [SECURITY.md](SECURITY.md) for the disclosure process. Do not file public issues
-for security reports.
+for security reports. Vulnerabilities affecting in-tree PyTorch code also follow
+the upstream [PyTorch security policy](https://github.com/pytorch/pytorch/security/policy).
 
 ## Support
 
-Maintained on a best-effort basis. For questions, bugs, or feature requests,
-open a GitHub issue in this repository.
+PyTorch bugs should be reported upstream, while CI, build, packaging, workflow,
+and published-wheel infrastructure issues should be reported in this
+repository. See the [support policy](docs/support.md) for routing details and
+the one-week acknowledgement target.
 
 # Community
 

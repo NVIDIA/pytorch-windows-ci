@@ -140,7 +140,7 @@ jobs:
       # ---- WoA preinstall contract (single-drive C: runners; docs/woa-ci-plan.md) -------
       # Expected install paths on every woa-arm64 runner (single C: drive).
       WOA_CUDA_PATH: 'C:\Program Files\NVIDIA\CUDA\v13.4'
-      WOA_CUDNN_ROOT: 'C:\Program Files\NVIDIA\CUDNN\v9.25'
+      WOA_CUDNN_ROOT: 'C:\Program Files\NVIDIA\CUDNN\v9.26'
       PT_ROOT: 'C:\pt'
       WOA_SCRATCH: 'C:\ci\woa\scratch'
       # Fresh per-job venv + pip cache pinned inside scratch (strict-clean wipes both);

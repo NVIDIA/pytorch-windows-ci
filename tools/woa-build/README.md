@@ -74,7 +74,7 @@ rest):
 The WoA runner contract lives here (overridable via the `PYTORCH_WIN_*` env
 vars above), describing the expected single-drive `C:` arm64 runner layout:
 CUDA `C:\Program Files\NVIDIA\CUDA\v13.4` + cuDNN
-`C:\Program Files\NVIDIA\CUDNN\v9.25`, APL/libuv under `C:\DevToolKit`, the fresh
+`C:\Program Files\NVIDIA\CUDNN\v9.26`, APL/libuv under `C:\DevToolKit`, the fresh
 per-job venv under `C:\ci\woa\scratch\venv\<pylabel>` (built by `woa-create-venv`
 from the runner's clean ARM64 interpreter — no preinstalled venvs),
 wheel/scratch/ext-work roots under

@@ -25,7 +25,7 @@ inputs:
   cudnn-root:
     description: "cuDNN root that must exist."
     required: false
-    default: 'C:\Program Files\NVIDIA\CUDNN\v9.25'
+    default: 'C:\Program Files\NVIDIA\CUDNN\v9.26'
 
 runs:
   using: "composite"

@@ -30,7 +30,7 @@ inputs:
   cudnn-root:
     description: "cuDNN root that must exist."
     required: false
-    default: 'C:\Program Files\NVIDIA\CUDNN\v9.25'
+    default: 'C:\Program Files\NVIDIA\CUDNN\v9.26'
   vcvars-bat:
     description: "Path to the arm64 vcvarsall.bat that must exist. Empty = skip the MSVC check."
     required: false

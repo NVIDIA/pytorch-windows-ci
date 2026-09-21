@@ -148,6 +148,7 @@ jobs:
         uses: actions/checkout@v7
         with:
           path: oot
+          persist-credentials: false
 
       - name: Wait before OOT checkout retry
         if: steps.oot_checkout_1.outcome == 'failure'
@@ -161,6 +162,7 @@ jobs:
         uses: actions/checkout@v7
         with:
           path: oot
+          persist-credentials: false
 
       - name: Wait before final OOT checkout retry
         if: steps.oot_checkout_1.outcome == 'failure' && steps.oot_checkout_2.outcome == 'failure'
@@ -172,6 +174,7 @@ jobs:
         uses: actions/checkout@v7
         with:
           path: oot
+          persist-credentials: false
 
       # Start sampling host + GPU metrics before the heavy checkout/build
       # steps so the time-series covers the exact window where the runner
@@ -213,6 +216,12 @@ jobs:
           fetch-depth: 1
           show-progress: false
           path: pytorch
+          # Every checkout in this job sets this, because the next step runs
+          # the checked-out PR's own build scripts on a self-hosted runner. A
+          # token left in any `.git/config` on that filesystem - this tree or
+          # the `oot` one beside it - is readable by the thing being built.
+          # Nothing here pushes, so nothing needs the credential.
+          persist-credentials: false
 
       - name: Fetch pytorch submodules (retried)
         shell: bash

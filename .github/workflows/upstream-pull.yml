@@ -152,8 +152,10 @@ jobs:
       author: ${{ steps.check.outputs.author }}
       allowed: ${{ steps.check.outputs.allowed }}
       pr-number: ${{ steps.payload.outputs.pr-number }}
-      head-sha: ${{ steps.payload.outputs.head-sha }}
-      base-ref: ${{ steps.payload.outputs.base-ref }}
+      # From `verify`, not `payload`: everything downstream acts on what
+      # upstream says, not on what the relay claimed.
+      head-sha: ${{ steps.verify.outputs.head-sha }}
+      base-ref: ${{ steps.verify.outputs.base-ref }}
     steps:
       - name: Resolve mode
         shell: bash
@@ -173,10 +175,14 @@ jobs:
           fetch-depth: 1
           show-progress: false
 
-      # Resolved once, here, so nothing downstream re-reads the payload. A
-      # malformed payload is a hard error, unlike an author we do not follow: a
-      # maintainer approves a specific head SHA, so a run that cannot name its
-      # head SHA has nothing meaningful to approve.
+      # Read the payload for its *shape* only. The PR number is the one field
+      # taken forward at face value, because it is what the upstream lookup
+      # below is keyed on; the author, head SHA and base branch it carries are
+      # kept solely to be compared against upstream's answer.
+      #
+      # A malformed payload is a hard error, unlike an author we do not follow:
+      # a maintainer approves a specific head SHA, so a run that cannot name a
+      # PR has nothing meaningful to approve.
       - name: Extract and validate the relay payload
         id: payload
         shell: bash
@@ -218,11 +224,54 @@ jobs:
           echo "  base:   ${base:-<none in payload>}"
           echo "  action: ${action:-<none in payload>}"
 
+      # Re-derive the PR's facts from upstream rather than believing the relay.
+      #
+      # The summary a maintainer reads before approving is rendered from these
+      # fields, so a payload that misreports them would have the approval click
+      # authorise something other than what was displayed. Forgery is not the
+      # concern - sending a dispatch needs write access here - but a relay that
+      # is buggy, mid-schema-change or compromised is, and this costs one public
+      # API call against a 5000/hour limit.
+      #
+      # Fails the gate if the lookup does not answer. Waving a dispatch through
+      # on the payload's word when verification failed would put the gate back
+      # where it started, so an unverifiable dispatch is a fault, not a skip.
+      - name: Look up the PR upstream
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ steps.payload.outputs.pr-number }}
+        run: |
+          set -euo pipefail
+          if ! gh api "repos/pytorch/pytorch/pulls/${PR_NUMBER}" > pr.json; then
+            echo "::error title=PR gate::Could not read pytorch/pytorch PR #${PR_NUMBER} from the API; refusing to act on the relay payload alone." >&2
+            exit 1
+          fi
+
+      - name: Verify the payload against upstream
+        id: verify
+        shell: bash
+        env:
+          PR_NUMBER: ${{ steps.payload.outputs.pr-number }}
+          CLAIMED_AUTHOR: ${{ steps.payload.outputs.author }}
+          CLAIMED_SHA: ${{ steps.payload.outputs.head-sha }}
+          CLAIMED_BASE: ${{ steps.payload.outputs.base-ref }}
+        run: |
+          set -euo pipefail
+          python3 scripts/pr-gate/verify_pr.py \
+            --pr-json pr.json \
+            --expect-pr "${PR_NUMBER}" \
+            --payload-author "${CLAIMED_AUTHOR}" \
+            --payload-head-sha "${CLAIMED_SHA}" \
+            --payload-base-ref "${CLAIMED_BASE}" \
+            --github-output "$GITHUB_OUTPUT" \
+            --summary "$GITHUB_STEP_SUMMARY"
+
       - name: Check PR author against allowlist
         id: check
         shell: bash
         env:
-          PR_AUTHOR: ${{ steps.payload.outputs.author }}
+          PR_AUTHOR: ${{ steps.verify.outputs.author }}
           ALLOWLIST: ${{ vars.UPSTREAM_PR_ALLOWLIST }}
         run: |
           set -euo pipefail
@@ -268,12 +317,15 @@ jobs:
         shell: bash
         env:
           ALLOWED: ${{ steps.check.outputs.allowed }}
-          BASE_REF: ${{ steps.payload.outputs.base-ref }}
+          BASE_REF: ${{ steps.verify.outputs.base-ref }}
+          IS_OPEN: ${{ steps.verify.outputs.is-open }}
           ACTION: ${{ steps.payload.outputs.action }}
         run: |
           set -euo pipefail
           proceed=false
-          if [ -n "${BASE_REF}" ] && [ "${BASE_REF}" != "main" ]; then
+          if [ "${IS_OPEN}" != "true" ]; then
+            why="PR is not open upstream"
+          elif [ -n "${BASE_REF}" ] && [ "${BASE_REF}" != "main" ]; then
             why="PR targets '${BASE_REF}', not main (ghstack intermediate or release branch)"
           elif [ -n "${ACTION}" ] && ! grep -qwF -- "${ACTION}" <<< "opened synchronize"; then
             why="event action '${ACTION}' does not introduce code to test"
@@ -289,7 +341,8 @@ jobs:
             echo ""
             echo "| triage | value |"
             echo "| --- | --- |"
-            echo "| base branch | \`${BASE_REF:-(none in payload)}\` |"
+            echo "| base branch | \`${BASE_REF}\` |"
+            echo "| open upstream | \`${IS_OPEN}\` |"
             echo "| event action | \`${ACTION:-(none in payload)}\` |"
             echo ""
             echo "**Approval request: $([ "${proceed}" = true ] && echo "raised" || echo "not raised")** - ${why}."

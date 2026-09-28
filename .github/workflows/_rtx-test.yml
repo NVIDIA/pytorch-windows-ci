@@ -310,6 +310,11 @@ jobs:
         with:
           path: oot
           show-progress: false
+          # The pytorch checkout below already does this; these need it for the
+          # same reason. The test harness runs the PR's own test code on this
+          # runner, so a token in any `.git/config` on the filesystem is
+          # readable by it. Nothing here pushes.
+          persist-credentials: false
 
       - name: Wait before OOT checkout retry
         if: steps.oot_checkout_1.outcome == 'failure'
@@ -324,6 +329,11 @@ jobs:
         with:
           path: oot
           show-progress: false
+          # The pytorch checkout below already does this; these need it for the
+          # same reason. The test harness runs the PR's own test code on this
+          # runner, so a token in any `.git/config` on the filesystem is
+          # readable by it. Nothing here pushes.
+          persist-credentials: false
 
       - name: Wait before final OOT checkout retry
         if: steps.oot_checkout_1.outcome == 'failure' && steps.oot_checkout_2.outcome == 'failure'
@@ -336,6 +346,11 @@ jobs:
         with:
           path: oot
           show-progress: false
+          # The pytorch checkout below already does this; these need it for the
+          # same reason. The test harness runs the PR's own test code on this
+          # runner, so a token in any `.git/config` on the filesystem is
+          # readable by it. Nothing here pushes.
+          persist-credentials: false
 
       # Pull the wheel + SHA produced by the paired build job from GitHub
       # Actions artifact storage. Lands files under `artifact/...`.

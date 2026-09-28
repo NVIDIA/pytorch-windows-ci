@@ -56,6 +56,17 @@ builds, tests and reports the previous day's again.
 The reusable workflows (`_rtx-build.yml`, `_rtx-test.yml`, `_woa-build.yml`,
 `_woa-test.yml`) are called by the orchestrators and are not run directly.
 
+Separate from those three, **`upstream-pull.yml`** is driven by the upstream
+relay rather than by anyone here: it validates a `pytorch/pytorch` pull request
+whenever the relay dispatches one. Whether a given PR runs is decided by a
+maintainer-controlled allowlist plus an explicit approval, after which it calls
+both build/test orchestrators as reusable workflows, pinned to the approved
+commit — see
+[per-PR CI: the allowlist and maintainer approval](per-pr-ci-triggering.md).
+This is also why `windows-rtx-build-test.yml` and `windows-woa-build-test.yml`
+each carry a `workflow_call` trigger; it does not make either of them manually
+startable.
+
 ## License and notices
 
 This repository is released under MIT terms. See [LICENSE](../LICENSE) for
@@ -254,10 +265,11 @@ test-stats scripts, and the vendored WoA build/test library under
     windows-rtx-wheel-test.yml       # published-wheel test (manual; cron commented out)
     _rtx-build.yml                   # reusable: build source (.ci/pytorch/win-build.sh), uploads wheel artifact
     _rtx-test.yml                    # reusable: test a wheel (artifact OR pip-index install path)
-    windows-woa-build-test.yml       # WoA arm64 source build + test (nightly)
+    windows-woa-build-test.yml       # WoA arm64 source build + test (nightly; workflow_call for PR runs)
     _woa-build.yml                   # reusable WoA source build
     _woa-test.yml                    # reusable WoA wheel tests
     lint.yml                         # PR-time YAML and PowerShell lint
+    upstream-pull.yml                # relay-driven per-PR validation (allowlist + approval)
   actions/
     start-runner-diagnostics/        # composite: spawn monitor.ps1 in background
     stop-runner-diagnostics/         # composite: signal stop, flush, summarise
@@ -275,6 +287,7 @@ scripts/
   test-stats/                        # committed test times that seed shard balancing
   local-artifact/                    # host-local artifact staging helpers
   dispatch-event/                    # repository_dispatch payload summary
+  pr-gate/                           # PR-author allowlist decision + authorization audit record
 tools/
   woa-build/                         # vendored PowerShell WoA build/test library
 ```

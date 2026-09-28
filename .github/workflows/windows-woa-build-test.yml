@@ -41,13 +41,30 @@ name: windows-woa-build-test
 # nightly run serializes on the pool.
 
 on:
+  # Called by `upstream-pull.yml` to validate an approved upstream PR, pinned
+  # to the commit a maintainer approved.
+  #
+  # `workflow_call` rather than `workflow_dispatch` is the whole point: this
+  # workflow still offers no way to start it by hand, so the only two callers
+  # are the nightly schedule below and the relay path behind an approval. A PR
+  # run is never HUD-eligible, and that does not rely on an opt-out input -
+  # `prep` clears `crcr-delivery-id` both because the ref is not `nightly` and
+  # because the event is not `schedule` (see the guards there).
+  workflow_call:
+    inputs:
+      pytorch-ref:
+        description: "Full 40-hex commit SHA to build. For a PR, its approved head."
+        type: string
+        required: true
+
   schedule:
     # Nightly build + test of the full WoA matrix against pytorch `nightly`.
     # Manual/workflow_dispatch is intentionally NOT offered for this repo.
     #
-    # The schedule is therefore the only caller, so every run is a genuine
-    # nightly of upstream `main` - which is what makes it eligible to publish
-    # to the PyTorch HUD, and why there is no opt-out input either.
+    # So every *scheduled* run is a genuine nightly of upstream `main`, which
+    # is what makes it eligible to publish to the PyTorch HUD, and why there is
+    # no opt-out input: the only other caller is the PR path above, which is
+    # excluded by `prep`'s guards rather than by a flag.
     #
     # Timed to land after pytorch/pytorch cuts the day's `nightly` commit
     # (07:35-08:47 UTC on 55 of the 57 days to 2026-09-09); see the longer note
@@ -124,7 +141,7 @@ jobs:
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
-          REF: "nightly"
+          REF: ${{ inputs.pytorch-ref || 'nightly' }}
           AUDIO_REF: "main"
           VISION_REF: "main"
           PYTHON_VERSIONS: ""
@@ -148,41 +165,56 @@ jobs:
               exit 1
             fi
           }
-          # `REF` is fixed to `nightly` above - this workflow has no ref input -
-          # so pytorch is always resolved through the nightly release commit
-          # rather than by `resolve_ref`, which stays in use for audio/vision.
-          #
-          # Pin resolution to when the run was *first* started, not to now. The
-          # nightly tip advances every night, so resolving "the tip" on a re-run
-          # would silently retarget a different main SHA: the re-run would build
-          # a different commit and file its HUD row under a different
-          # delivery-id, instead of replacing the row for the day it was meant
-          # to repair. Attempt 1's `run_started_at` is immutable, unlike the
-          # run-level field, which resets on every re-run.
-          as_of=$(gh api \
-            "repos/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}/attempts/1" \
-            -q '.run_started_at')
-          if [ -z "${as_of}" ] || [ "${as_of}" = "null" ]; then
-            echo "::error::Could not read attempt 1's start time; refusing to resolve nightly against a moving tip." >&2
-            exit 1
-          fi
-          echo "Resolving nightly as of ${as_of} (attempt 1 start)"
+          # Two paths for pytorch. The scheduled nightly takes the first; a PR
+          # validation run called via `workflow_call` passes an explicit SHA and
+          # takes the second. `resolve_ref` stays in use for audio/vision either
+          # way.
+          delivery_id=""
+          if [ "${REF}" = "nightly" ]; then
+            # Resolve the upstream `main` commit the nightly was cut from and
+            # build *that* rather than the nightly branch tip. The tip is a
+            # generated commit that does not exist on `main`, so it cannot key a
+            # HUD row; see `scripts/crcr/resolve_nightly_commits.py`.
+            #
+            # Pin resolution to when the run was *first* started, not to now.
+            # The nightly tip advances every night, so resolving "the tip" on a
+            # re-run would silently retarget a different main SHA: the re-run
+            # would build a different commit and file its HUD row under a
+            # different delivery-id, instead of replacing the row for the day it
+            # was meant to repair. Attempt 1's `run_started_at` is immutable,
+            # unlike the run-level field, which resets on every re-run.
+            as_of=$(gh api \
+              "repos/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}/attempts/1" \
+              -q '.run_started_at')
+            if [ -z "${as_of}" ] || [ "${as_of}" = "null" ]; then
+              echo "::error::Could not read attempt 1's start time; refusing to resolve nightly against a moving tip." >&2
+              exit 1
+            fi
+            echo "Resolving nightly as of ${as_of} (attempt 1 start)"
 
-          # Deep enough to still contain that day's nightly when a run is
-          # re-run weeks later; `resolve_nightly_commits.py` fails loudly
-          # rather than guessing if the window still falls short.
-          gh api "repos/pytorch/pytorch/commits?sha=nightly&per_page=100" > nightly-commits.json
-          python3 scripts/crcr/resolve_nightly_commits.py \
-            --commits-json nightly-commits.json \
-            --as-of "${as_of}" \
-            --github-output resolved.env \
-            --summary "$GITHUB_STEP_SUMMARY"
-          sha="$(sed -n 's/^source-sha=//p' resolved.env)"; require_sha pytorch "${sha}" "${REF}"
-          # Date the wheels from the nightly release itself rather than today's
-          # clock, so a re-run reproduces the same wheel version the original
-          # attempt built - the same reasoning as the SHA pin above.
-          nightly_date="$(sed -n 's/^nightly-date=//p' resolved.env)"
-          delivery_id="${sha}"
+            # Deep enough to still contain that day's nightly when a run is
+            # re-run weeks later; `resolve_nightly_commits.py` fails loudly
+            # rather than guessing if the window still falls short.
+            gh api "repos/pytorch/pytorch/commits?sha=nightly&per_page=100" > nightly-commits.json
+            python3 scripts/crcr/resolve_nightly_commits.py \
+              --commits-json nightly-commits.json \
+              --as-of "${as_of}" \
+              --github-output resolved.env \
+              --summary "$GITHUB_STEP_SUMMARY"
+            sha="$(sed -n 's/^source-sha=//p' resolved.env)"; require_sha pytorch "${sha}" "${REF}"
+            # Date the wheels from the nightly release itself rather than today's
+            # clock, so a re-run reproduces the same wheel version the original
+            # attempt built - the same reasoning as the SHA pin above.
+            nightly_date="$(sed -n 's/^nightly-date=//p' resolved.env)"
+            delivery_id="${sha}"
+          else
+            # A PR head is not a nightly of upstream main, so it is never
+            # HUD-eligible and has no nightly release to take a date from - fall
+            # back to today's clock for the wheel version. `delivery_id` stays
+            # empty, which is what switches both reporting jobs off.
+            sha="$(resolve_ref "https://github.com/pytorch/pytorch" "${REF}")"; require_sha pytorch "${sha}" "${REF}"
+            nightly_date="$(date -u +%Y%m%d)"
+          fi
           if ! [[ "${nightly_date}" =~ ^[0-9]{8}$ ]]; then
             echo "::error::Could not derive a yyyyMMdd wheel date (got '${nightly_date:-<empty>}')." >&2
             exit 1

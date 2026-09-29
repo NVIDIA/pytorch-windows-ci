@@ -14,7 +14,7 @@ ARM64 using Visual Studio 2026, ARM64 Python, CUDA 13.4, cuDNN, APL, and libuv.
 - Native ARM64 Python supported by the PyTorch revision being built; do not use
   x64-emulated Python.
 - CUDA Toolkit 13.4 at `C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v13.4`.
-- cuDNN 9.25 at `C:\Program Files\NVIDIA\CUDNN\v9.25`.
+- cuDNN 9.26 at `C:\Program Files\NVIDIA\CUDNN\v9.26`.
 - Arm Performance Libraries, for example `C:\DevToolKit\APL\armpl_26.01`.
 - vcpkg libuv at `C:\DevToolKit\vcpkg\packages\libuv_arm64-windows`.
 - CMake, Ninja, and Git.
@@ -124,7 +124,7 @@ so `FindCUDA.cmake` does not clear the ARM64 library overrides on first configur
 
 ```powershell
 $cuda = 'C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v13.4'
-$cudnn = 'C:\Program Files\NVIDIA\CUDNN\v9.25'
+$cudnn = 'C:\Program Files\NVIDIA\CUDNN\v9.26'
 $apl = 'C:\DevToolKit\APL\armpl_26.01'
 $libuv = 'C:\DevToolKit\vcpkg\packages\libuv_arm64-windows'
 $cupti = "$cuda\extras\CUPTI\lib\arm64"

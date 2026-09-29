@@ -92,7 +92,7 @@ Summary:
     runners). Rust/Cargo is preinstalled so Rust-sdist deps (`tlparse`, `lintrunner`)
     build when no win_arm64 wheel exists.
 - **Toolchain (CTK 13.4):** CUDA `C:\Program Files\NVIDIA\CUDA\v13.4`, cuDNN
-  `C:\Program Files\NVIDIA\CUDNN\v9.25`, MSVC arm64 `vcvarsall.bat`, APL
+  `C:\Program Files\NVIDIA\CUDNN\v9.26`, MSVC arm64 `vcvarsall.bat`, APL
   (`C:\DevToolKit\APL`) + vcpkg libuv (`C:\DevToolKit\vcpkg`). These are the
   single-drive `C:` install paths every arm64 runner must provide.
 - Build + test share the pool; the test runners additionally need a **GPU**

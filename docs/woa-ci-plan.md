@@ -287,7 +287,7 @@ wipes it, so nothing a job installs can leak into the next job.
 | Purpose | Default path (override env) |
 | --- | --- |
 | CUDA toolkit | `C:\Program Files\NVIDIA\CUDA\v13.4\` (`WOA_CUDA_PATH`) |
-| cuDNN root | `C:\Program Files\NVIDIA\CUDNN\v9.25\` (`WOA_CUDNN_ROOT`) |
+| cuDNN root | `C:\Program Files\NVIDIA\CUDNN\v9.26\` (`WOA_CUDNN_ROOT`) |
 | cuDNN lib / include / bin | `...\lib\13.4\arm64` / `...\include\13.4` / `...\bin\13.4\arm64` |
 | APL include / lib | `C:\DevToolKit\APL\armpl_26.01\include` / `...\lib` |
 | vcpkg libuv | `C:\DevToolKit\vcpkg\packages\libuv_arm64-windows` |

@@ -5,7 +5,8 @@ name: lint
 
 # Cheap PR-time check:
 #   * `yaml`       - every workflow YAML in `.github/workflows` is syntactically
-#                    valid and matches the GitHub Actions schema.
+#                    valid, matches the GitHub Actions schema, and offers no
+#                    manual (`workflow_dispatch`) trigger.
 #   * `powershell` - the vendored WoA build/test library under `tools/woa-build`
 #                    parses and passes PSScriptAnalyzer (errors fail the job).
 #   * `scripts`    - unit tests for the python helpers under `scripts/` that the
@@ -25,8 +26,9 @@ on:
       - ".github/**"
       - "tools/woa-build/**"
       - "scripts/**"
-  workflow_dispatch:
-  # repository_dispatch:
+  # No `workflow_dispatch`: no workflow in this repo can be started by hand. A
+  # lint run can still be repeated with "Re-run jobs" on the PR or push that
+  # started it.
 
 
 concurrency:
@@ -73,6 +75,28 @@ jobs:
         run: |
           check-jsonschema --builtin-schema vendor.github-workflows \
             .github/workflows/*.yml
+
+      # External-CI security guidelines do not allow a hand-started run, so no
+      # workflow here may offer `workflow_dispatch`. Enforced rather than only
+      # documented, because re-adding the trigger is a two-line change that
+      # nothing else would flag.
+      - name: No manual triggers
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import pathlib, sys, yaml
+          bad = []
+          for p in sorted(pathlib.Path(".github/workflows").glob("*.y*ml")):
+              # `on` parses as the boolean True in YAML 1.1.
+              on = yaml.safe_load(p.read_text(encoding="utf-8")).get(True)
+              events = on if isinstance(on, (dict, list)) else [on]
+              if "workflow_dispatch" in events:
+                  bad.append(p)
+          for p in bad:
+              print(f"::error file={p}::{p.name} offers workflow_dispatch; manual triggers are not allowed in this repo")
+          sys.exit(1 if bad else 0)
+          PY
 
   # The workflows above call these helpers to decide what gets reported as a
   # pass or a failure - including, for `scripts/crcr`, what gets published to

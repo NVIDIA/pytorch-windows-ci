@@ -35,17 +35,23 @@ toolchain, persistent-runner cleanup, and operational details.
 
 ## Triggering workflows
 
+> **Nothing in this repo can be started by hand.** No workflow has a
+> `workflow_dispatch` trigger: external-CI security guidelines do not allow a
+> hand-started run to aim the self-hosted pools at an arbitrary upstream
+> commit. A finished run can still be repeated with **Re-run jobs**, which
+> re-resolves the same commit (see [HUD reporting](crcr-hud-reporting.md)).
+
 There are three top-level workflows. Two of them run automatically on a
-nightly `schedule`; the third is manual-only for now:
+nightly `schedule`; the third is parked:
 
 - **`windows-rtx-build-test.yml`** — full source build + test, nightly at
-  `20 9 * * *` (14:50 IST). Also accepts `workflow_dispatch` for manual runs.
+  `20 9 * * *` (14:50 IST).
 - **`windows-woa-build-test.yml`** — WoA (arm64) source build + test, nightly
-  at `50 9 * * *` (15:20 IST). Scheduled only; a manual trigger is
-  deliberately not offered.
+  at `50 9 * * *` (15:20 IST).
 - **`windows-rtx-wheel-test.yml`** — published-wheel test. Its nightly cron
-  (`0 17 * * *` / 22:30 IST) is currently commented out, so the workflow runs
-  on `workflow_dispatch` only.
+  (`0 17 * * *` / 22:30 IST) is commented out and its only other trigger is a
+  `workflow_call` that nothing calls, so it cannot currently start. Uncomment
+  the cron to bring it back.
 
 Both active schedules sit after `pytorch/pytorch` cuts the day's `nightly`
 commit, which over the 57 days to 2026-09-09 landed between 07:35 and 08:47
@@ -64,8 +70,8 @@ both build/test orchestrators as reusable workflows, pinned to the approved
 commit — see
 [per-PR CI: the allowlist and maintainer approval](per-pr-ci-triggering.md).
 This is also why `windows-rtx-build-test.yml` and `windows-woa-build-test.yml`
-each carry a `workflow_call` trigger; it does not make either of them manually
-startable.
+each carry a `workflow_call` trigger; it adds no way to start either of them by
+hand.
 
 ## License and notices
 
@@ -77,9 +83,9 @@ third-party OSS notices.
 
 | Workflow | Purpose | Triggers | Compute |
 | --- | --- | --- | --- |
-| `windows-rtx-wheel-test.yml`           | Each test cell checks out `pytorch/pytorch` at `pytorch-ref` (default `nightly`) via `actions/checkout@v7` (which resolves the branch to a concrete commit), records the actual HEAD SHA + commit date into the cell's job summary, then greps `download.pytorch.org/whl/nightly/torch/` for the wheel whose filename carries that exact `devYYYYMMDD` tag together with the matrix `cu<label>` / `cp<pyshort>` tags and `pip install`s the resolved absolute URL before running `.ci/pytorch/win-test.sh`. Fails fast if no matching wheel exists, so the wheel under test always shares its commit date with the pytorch source on disk. No preflight job, no artifact transit. | `workflow_dispatch`; the nightly cron is currently commented out | `_rtx-test.yml` (sm89 + sm120 in one matrix) |
-| `windows-rtx-build-test.yml`            | Full source build (multi-arch wheel) + test. Manual runs can narrow the matrix via subset filters and target a `pytorch-ref` or `pytorch-pr`. Also carries the parked path for RFC-0050 events. | `schedule` (`20 9 * * *` = 14:50 IST), `workflow_dispatch`, `repository_dispatch:[pytorch-pr-trigger]` (parked behind `dispatch-gate`) | `prep` -> `_rtx-build.yml` -> `_rtx-test.yml` (sm89 + sm120 in one matrix); `report-*-crcr` |
-| `windows-woa-build-test.yml` | Builds and tests the WoA wheel matrix from source on the shared arm64 pool. | `schedule` (`50 9 * * *` = 15:20 IST); no manual trigger | `prep` -> `_woa-build.yml` -> `_woa-test.yml` -> `test-summary`; `report-*-crcr` |
+| `windows-rtx-wheel-test.yml`           | Each test cell checks out `pytorch/pytorch` at `pytorch-ref` (default `nightly`) via `actions/checkout@v7` (which resolves the branch to a concrete commit), records the actual HEAD SHA + commit date into the cell's job summary, then greps `download.pytorch.org/whl/nightly/torch/` for the wheel whose filename carries that exact `devYYYYMMDD` tag together with the matrix `cu<label>` / `cp<pyshort>` tags and `pip install`s the resolved absolute URL before running `.ci/pytorch/win-test.sh`. Fails fast if no matching wheel exists, so the wheel under test always shares its commit date with the pytorch source on disk. No preflight job, no artifact transit. | Parked: `workflow_call` only (nothing calls it); the nightly cron is commented out | `_rtx-test.yml` (sm89 + sm120 in one matrix) |
+| `windows-rtx-build-test.yml`            | Full source build (multi-arch wheel) + test. A PR run, called by `upstream-pull.yml`, is pinned to the approved head SHA and may narrow the matrix via subset filters. | `schedule` (`20 9 * * *` = 14:50 IST), `workflow_call` (from `upstream-pull.yml`); no manual trigger | `prep` -> `_rtx-build.yml` -> `_rtx-test.yml` (sm89 + sm120 in one matrix); `report-*-crcr` |
+| `windows-woa-build-test.yml` | Builds and tests the WoA wheel matrix from source on the shared arm64 pool. | `schedule` (`50 9 * * *` = 15:20 IST), `workflow_call` (from `upstream-pull.yml`); no manual trigger | `prep` -> `_woa-build.yml` -> `_woa-test.yml` -> `test-summary`; `report-*-crcr` |
 
 Both build/test orchestrators end in two terminal `report-*-crcr` jobs that
 publish the nightly's results to the upstream PyTorch HUD. They hang off the
@@ -261,8 +267,8 @@ test-stats scripts, and the vendored WoA build/test library under
 ```
 .github/
   workflows/
-    windows-rtx-build-test.yml       # full source build + test (nightly + manual; parked PR path)
-    windows-rtx-wheel-test.yml       # published-wheel test (manual; cron commented out)
+    windows-rtx-build-test.yml       # full source build + test (nightly; workflow_call for PR runs)
+    windows-rtx-wheel-test.yml       # published-wheel test (parked; cron commented out)
     _rtx-build.yml                   # reusable: build source (.ci/pytorch/win-build.sh), uploads wheel artifact
     _rtx-test.yml                    # reusable: test a wheel (artifact OR pip-index install path)
     windows-woa-build-test.yml       # WoA arm64 source build + test (nightly; workflow_call for PR runs)
@@ -342,26 +348,26 @@ To add or remove cells:
 - **shard count**: edit `_rtx-test.yml` in two places - the
   `strategy.matrix.shard` list and the `NUM_TEST_SHARDS` env literal.
   Orchestrators are agnostic to the shard count.
-- **per-event matrix filters** (`workflow_dispatch` only): both
-  orchestrators expose three comma-separated subset inputs and forward
-  them verbatim via `with:` to the called reusable workflows
-  (`_rtx-build.yml` / `_rtx-test.yml`), whose own job-level `if:`
-  performs the match against the cell's own `python-version`,
+- **per-run matrix filters** (`workflow_call` only): both RTX
+  orchestrators accept three comma-separated subset inputs from their
+  caller and forward them verbatim via `with:` to the called reusable
+  workflows (`_rtx-build.yml` / `_rtx-test.yml`), whose own job-level
+  `if:` performs the match against the cell's own `python-version`,
   `cuda-version`, and `arch-name` inputs. The filter lives one layer
   down because GitHub Actions disallows `matrix.*` in the `if:` of a
-  job that calls a reusable workflow. Schedule and
-  `repository_dispatch` runs always cover every cell (the orchestrator
-  forwards the empty string, which disables the corresponding filter
-  dimension in the reusable workflow).
+  job that calls a reusable workflow. Scheduled runs always cover
+  every cell (their inputs are empty, which disables the corresponding
+  filter dimension in the reusable workflow), and `upstream-pull.yml`
+  passes no filters today, so a PR run covers every cell as well.
 
-  | Input | Default | Filters |
-  | --- | --- | --- |
-  | `python-versions`    | `3.12,3.13`   | `build` + `test` (matches the cell's `python-version`) |
-  | `cuda-versions`      | `13.0,13.2`   | `build` + `test` (matches the cell's `cuda-version`)   |
-  | `test-architectures` | `sm89,sm120`  | `test` only (matches the cell's `arch-name`)           |
+  | Input | Filters |
+  | --- | --- |
+  | `python-versions`    | `build` + `test` (matches the cell's `python-version`) |
+  | `cuda-versions`      | `build` + `test` (matches the cell's `cuda-version`)   |
+  | `test-architectures` | `test` only (matches the cell's `arch-name`)           |
 
   Cells dropped by the filter show up in the GitHub UI with their
-  inner reusable-workflow job in the "skipped" state, so a manual run
+  inner reusable-workflow job in the "skipped" state, so a narrowed run
   that only covered py3.12 / cu13.0 still leaves an audit trail of
   every other slot as "this cell exists, was deliberately not
   exercised".
@@ -556,9 +562,9 @@ remain responsible for the workflow result.
 
 | RFC concept | This repo |
 | --- | --- |
-| Downstream CI on real PR-time events | `windows-rtx-build-test.yml` subscribes to `repository_dispatch:[pytorch-pr-trigger]`. The arm is parked behind `dispatch-gate`: `inspect-dispatch` prints the payload and the build/test/summary jobs stay dormant. |
-| `concurrency: upstream-pr-<pr_number>` | `windows-rtx-build-test.yml` keys `concurrency.group` on `client_payload.pr_number` when present |
-| `pytorch/actions/checkout-pr@v1` (RFC Action #1) | Used as-is in `_rtx-build.yml` for `repository_dispatch`; falls back to `actions/checkout@v7` against `pytorch/pytorch@<ref>` for schedule / manual runs |
+| Downstream CI on real PR-time events | `upstream-pull.yml` subscribes to `repository_dispatch` (`pull_request`, plus the legacy `pytorch-pr-trigger`). An allowlisted author's PR waits for a maintainer's approval, then both build/test orchestrators are called pinned to the approved head SHA; see [per-PR CI](per-pr-ci-triggering.md). |
+| `concurrency: upstream-pr-<pr_number>` | `upstream-pull.yml` keys `concurrency.group` on the PR number with `cancel-in-progress`, so a newer push to a PR cancels its older run |
+| `pytorch/actions/checkout-pr@v1` (RFC Action #1) | Not used. `_rtx-build.yml` checks out `pytorch/pytorch` at the resolved SHA with `actions/checkout@v7` alone; a fork PR's head is fetchable by SHA from `pytorch/pytorch` |
 | `pytorch/actions/report-ci-result@v1` (RFC Action #2) | Not yet wired — result acknowledgement is pending publication of the upstream action |
 
 ## Local workflow validation

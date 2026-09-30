@@ -8,19 +8,18 @@ name: windows-rtx-build-test
 # `tools/pytorch-build/win-build.sh` flow (`_rtx-build.yml`), tests it
 # (`_rtx-test.yml`), then rolls up failures (`test-summary`).
 #
-# This single workflow serves both the scheduled nightly and on-demand
-# (manual / PR-targeted) use cases:
+# Two triggers, and neither can be started by hand:
 #
-#   - `schedule`          - daily; builds/tests the full matrix.
-#   - `workflow_dispatch` - manual; the same matrix, narrowable via the
-#                           `python-versions` / `cuda-versions` /
-#                           `test-architectures` subset filters (set each
-#                           to a single value to run one cell as a sandbox).
-#                           Target a specific commit with `pytorch-ref`, or
-#                           a PR with `pytorch-pr` (its head SHA is resolved
-#                           automatically and overrides `pytorch-ref`).
-#   - `workflow_call`     - an upstream PR approved by `upstream-pull.yml`,
-#                           pinned to the approved head SHA. Never HUD-eligible.
+#   - `schedule`      - daily; builds/tests the full matrix against the
+#                       upstream `main` commit the day's nightly was cut from.
+#   - `workflow_call` - an upstream PR approved by `upstream-pull.yml`,
+#                       pinned to the approved head SHA. Never HUD-eligible.
+#
+# There is deliberately NO `workflow_dispatch`. External-CI security guidelines
+# do not allow a hand-started run to aim this repo's self-hosted RTX pool at an
+# arbitrary upstream commit, which is what its `pytorch-pr` / `pytorch-ref`
+# inputs did. The only way to point this workflow at a PR is the relay path,
+# behind the allowlist and a maintainer's approval.
 #
 # There is no `repository_dispatch` arm. There used to be a parked one, whose
 # `dispatch-gate` guards skipped every job when the event was a dispatch. Those
@@ -45,7 +44,8 @@ name: windows-rtx-build-test
 # per python/cuda combination). The subset-filter inputs are forwarded to
 # the reusable workflows, whose own job-level `if:` performs the per-cell
 # match (GitHub forbids `matrix.*` in the `if:` of a reusable-workflow-
-# calling job, so the filter lives one layer down). Empty = no filter.
+# calling job, so the filter lives one layer down). Empty = no filter, which
+# is every scheduled run.
 #
 # Cell-name shape mirrors pytorch/pytorch's generated nightly:
 #   build cell -> `<build_name>-build`        e.g. `wheel-py312-cu130-build`
@@ -74,12 +74,11 @@ on:
     # email or every run fails at startup.
     - cron: "20 9 * * *"
 
-  # Called by `upstream-pull.yml` to validate an approved upstream PR. Kept
-  # separate from `workflow_dispatch` on purpose: a PR run is started by the
-  # relay path after a maintainer approves it, never by hand, so it needs no
-  # entry in the Actions UI. The inputs it accepts are deliberately narrower
-  # than the manual ones - a PR is pinned to one already-resolved commit, so
-  # `pytorch-pr` (which would re-resolve the head) is not offered.
+  # Called by `upstream-pull.yml` to validate an approved upstream PR. A PR run
+  # is started by the relay path after a maintainer approves it, never by hand,
+  # and `workflow_call` puts no "Run workflow" entry in the Actions UI or API.
+  # A PR is pinned to one already-resolved commit, so the only ref input is
+  # that SHA - nothing here re-resolves a PR's head.
   workflow_call:
     inputs:
       pytorch-ref:
@@ -102,44 +101,6 @@ on:
         required: false
         default: ""
 
-  workflow_dispatch:
-    inputs:
-      pytorch-pr:
-        description: >
-          pytorch/pytorch PR number to build + test. When set, its head SHA
-          is resolved automatically and overrides `pytorch-ref`. Leave empty
-          to use `pytorch-ref` instead.
-        required: false
-        default: ""
-      pytorch-ref:
-        description: "pytorch/pytorch ref to build (branch / tag / SHA). Ignored when pytorch-pr is set."
-        required: false
-        default: "nightly"
-      python-versions:
-        description: "Comma-separated subset of 3.12 to build/test."
-        required: false
-        default: "3.12"
-      cuda-versions:
-        description: "Comma-separated subset of 13.0,13.2 to build/test."
-        required: false
-        default: "13.0,13.2"
-      test-architectures:
-        description: "Comma-separated subset of sm89,sm120 to test (build is always multi-arch)."
-        required: false
-        default: "sm89,sm120"
-      report-to-hud:
-        description: >
-          Publish per-cell results to the PyTorch HUD via the Cross-Repo CI
-          Relay. Off by default: a manual run is usually a matrix experiment,
-          and the HUD row for an upstream commit should normally be written by
-          the nightly schedule rather than overwritten by a hand-started run.
-          Only has any effect on a nightly run (no `pytorch-pr`, `pytorch-ref`
-          left at `nightly`), since the HUD keys results by the upstream main
-          SHA. Tick it only when deliberately re-filing a nightly row.
-        type: boolean
-        required: false
-        default: false
-
 concurrency:
   group: windows-rtx-build-test-${{ github.run_id }}
   cancel-in-progress: false
@@ -153,18 +114,15 @@ jobs:
   # Resolve the pytorch ref to build, once, before the matrix fans out, and
   # decide whether this run is allowed to publish to the upstream HUD.
   #
-  # Three paths, in priority order:
+  # Two paths:
   #
-  #   1. `pytorch-pr` - ask the API for its head SHA and build that exact
-  #      commit (works for fork PRs too; the head commit is reachable via
-  #      pytorch/pytorch's refs/pull/<n>/head). Never reported to the HUD.
-  #   2. `pytorch-ref` left at `nightly` (also the schedule case, where the
-  #      workflow_dispatch inputs are empty) - resolve the upstream `main`
-  #      commit that nightly was cut from and build *that*. See
-  #      `scripts/crcr/resolve_nightly_commits.py` for why the nightly branch
-  #      tip itself is unusable as a HUD key. This is the only path that
-  #      reports.
-  #   3. any other explicit `pytorch-ref` - build it verbatim, report nothing.
+  #   1. `pytorch-ref` empty or `nightly` - the schedule case, which has no
+  #      inputs - resolve the upstream `main` commit that nightly was cut from
+  #      and build *that*. See `scripts/crcr/resolve_nightly_commits.py` for
+  #      why the nightly branch tip itself is unusable as a HUD key. This is
+  #      the only path that reports.
+  #   2. an explicit `pytorch-ref` - a PR head passed in via `workflow_call` -
+  #      build it verbatim, report nothing.
   #
   # `crcr-delivery-id` carries the decision downstream: non-empty means "this
   # is a genuine nightly of upstream main, publish it", empty means "run the
@@ -193,32 +151,14 @@ jobs:
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
-          PR: ${{ inputs.pytorch-pr }}
-          FALLBACK_REF: ${{ inputs.pytorch-ref || 'nightly' }}
+          REF: ${{ inputs.pytorch-ref || 'nightly' }}
           PYTHON_VERSIONS: ${{ inputs.python-versions }}
           CUDA_VERSIONS: ${{ inputs.cuda-versions }}
           TEST_ARCHITECTURES: ${{ inputs.test-architectures }}
-          # Scheduled runs always report; manual runs must opt in. Dispatch
-          # inputs are empty on `schedule`, so the first clause carries it
-          # there and `report-to-hud`'s `false` default only binds a manual run.
-          REPORT_TO_HUD: ${{ github.event_name != 'workflow_dispatch' || inputs.report-to-hud }}
         run: |
           set -euo pipefail
           delivery_id=""
-          if [ -n "${PR}" ]; then
-            if ! [[ "${PR}" =~ ^[0-9]+$ ]]; then
-              echo "::error::pytorch-pr must be a number, got '${PR}'." >&2
-              exit 1
-            fi
-            sha=$(gh api "repos/pytorch/pytorch/pulls/${PR}" -q '.head.sha')
-            if ! [[ "${sha}" =~ ^[0-9a-f]{40}$ ]]; then
-              echo "::error::Could not resolve head SHA for PR #${PR} (got '${sha}')." >&2
-              exit 1
-            fi
-            title=$(gh api "repos/pytorch/pytorch/pulls/${PR}" -q '.title')
-            echo "Resolved PR #${PR} -> ${sha} (${title})"
-            ref="${sha}"
-          elif [ "${FALLBACK_REF}" = "nightly" ]; then
+          if [ "${REF}" = "nightly" ]; then
             # Pin resolution to when the run was *first* started, not to now.
             # The nightly tip advances every night, so resolving "the tip" on a
             # re-run would silently retarget a different main SHA: the re-run
@@ -252,20 +192,18 @@ jobs:
             echo "Nightly resolves to upstream main ${ref}"
             delivery_id="${ref}"
           else
-            ref="${FALLBACK_REF}"
-            echo "No PR given; using pytorch-ref='${ref}'"
+            ref="${REF}"
+            echo "Using explicit pytorch-ref='${ref}'"
           fi
 
-          # Belt-and-braces on top of the path selection above: only the two
-          # self-triggered event types may publish, so re-enabling the parked
-          # repository_dispatch path cannot start writing nightly rows.
+          # Belt-and-braces on top of the path selection above: only a
+          # scheduled run may publish. A PR run arrives via `workflow_call`
+          # carrying its caller's event, `repository_dispatch`, so it is kept
+          # off the HUD here as well as by its explicit ref.
           case "${GITHUB_EVENT_NAME}" in
-            schedule|workflow_dispatch) ;;
+            schedule) ;;
             *) delivery_id="" ;;
           esac
-          if [ "${REPORT_TO_HUD}" != "true" ]; then
-            delivery_id=""
-          fi
 
           echo "pytorch-ref=${ref}" >> "$GITHUB_OUTPUT"
           echo "crcr-delivery-id=${delivery_id}" >> "$GITHUB_OUTPUT"
@@ -281,7 +219,6 @@ jobs:
             echo "| field | value |"
             echo "| --- | --- |"
             echo "| trigger | \`${{ github.event_name }}\` |"
-            echo "| pytorch-pr | \`${PR:-(none)}\` |"
             echo "| pytorch-ref (resolved) | \`${ref}\` |"
             echo "| python-versions | \`${PYTHON_VERSIONS:-(all)}\` |"
             echo "| cuda-versions | \`${CUDA_VERSIONS:-(all)}\` |"
@@ -321,7 +258,7 @@ jobs:
       # Must match the `wheel-artifact:` value passed to the paired test
       # call below so the test job picks up exactly this build's wheel.
       wheel-artifact: ${{ matrix.config.build_name }}-${{ github.run_id }}-${{ github.run_attempt }}
-      # Forward the dispatcher's subset filters; the reusable workflow's
+      # Forward the caller's subset filters; the reusable workflow's
       # job-level `if:` evaluates them. Empty string = no filter.
       python-versions: ${{ inputs.python-versions }}
       cuda-versions: ${{ inputs.cuda-versions }}
@@ -348,7 +285,7 @@ jobs:
       build-environment: win-rtx-${{ matrix.arch.name }}
       test-config: "default"
       wheel-artifact: ${{ matrix.config.build_name }}-${{ github.run_id }}-${{ github.run_attempt }}
-      # Forward the dispatcher's subset filters; the reusable workflow's
+      # Forward the caller's subset filters; the reusable workflow's
       # job-level `if:` evaluates them. Empty string = no filter.
       python-versions: ${{ inputs.python-versions }}
       cuda-versions: ${{ inputs.cuda-versions }}
@@ -361,7 +298,6 @@ jobs:
   # each shard's own summary (see `_rtx-test.yml`). Informational only:
   # `if: always()` so it runs even when tests fail, and it never reports a
   # non-zero status of its own - the test cells already carry red/green.
-  # Skipped under the parked repository_dispatch gate to match build/test.
   # ===========================================================================
   test-summary:
     name: test-summary
@@ -420,8 +356,8 @@ jobs:
   #
   # Publishes one HUD row per logical cell against the upstream pytorch/pytorch
   # `main` commit this run built (`prep`'s `crcr-delivery-id`). Only ever active
-  # for a genuine nightly: `prep` leaves the delivery id empty for PR-targeted
-  # or arbitrary-ref runs, which switches both jobs off via their `if:`.
+  # for a genuine nightly: `prep` leaves the delivery id empty for a PR run,
+  # which switches both jobs off via their `if:`.
   #
   # Two properties drive the shape of these jobs:
   #

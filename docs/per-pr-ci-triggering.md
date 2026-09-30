@@ -211,13 +211,13 @@ PR head and possibly building a commit that landed afterwards.
 
 **A PR run cannot publish to the upstream HUD**, and this does not depend on an
 opt-out flag. Both `prep` jobs leave `crcr-delivery-id` empty for a non-nightly
-`pytorch-ref`, and both also clear it for any event that is not `schedule` or
-`workflow_dispatch` — so a relay-driven run is excluded twice over. See
+`pytorch-ref`, and both also clear it for any event that is not `schedule` — so
+a relay-driven run is excluded twice over. See
 [HUD reporting](crcr-hud-reporting.md).
 
-Note that `windows-woa-build-test.yml` still offers **no manual trigger**. It
-gained a `workflow_call` arm for this path only, so its callers remain the
-nightly schedule and an approved PR.
+Neither pipeline offers a **manual trigger**. Each carries a `workflow_call` arm
+for this path only, so their only callers are the nightly schedule and an
+approved PR.
 
 ## What gets recorded
 

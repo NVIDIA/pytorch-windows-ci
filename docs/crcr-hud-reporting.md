@@ -174,24 +174,18 @@ failures that have since been fixed. Use "Re-run all jobs".
 is switched on by it being non-empty. A run can never publish a row for a
 commit that is not upstream `main`.
 
-**WoA** has no manual trigger at all: the nightly schedule is its only caller,
-so every run reports and there is nothing to opt out of.
+Neither orchestrator can be started by hand, so both apply the same two
+conditions:
 
-**RTX** also accepts `workflow_dispatch`, so it carries the extra conditions:
+- `pytorch-ref` is empty or `nightly`, so the SHA came from the resolver above;
+- the event is `schedule`.
 
-- no `pytorch-pr` input (PR builds are not nightly results);
-- `pytorch-ref` left at `nightly`, so the SHA came from the resolver above;
-- the event is `schedule` or `workflow_dispatch`;
-- `report-to-hud` is ticked.
-
-**`report-to-hud` is off by default**, so a manual RTX run left at its defaults
-publishes nothing even though `pytorch-ref` defaults to `nightly`. That is the
-intended asymmetry: manual runs are usually matrix or runner experiments, and
-the row for an upstream commit should be written by the schedule rather than
-overwritten by a hand-started run. Tick it only when deliberately re-filing a
-nightly row — and prefer **Re-run all jobs** on the original run for that, since
-a re-run re-resolves the same SHA (see below) while a fresh manual run resolves
-whatever nightly is current.
+Every scheduled run therefore reports, and there is nothing to opt out of. The
+only other caller is `upstream-pull.yml`, whose PR runs fail both conditions:
+they pass an explicit head SHA, and a called workflow sees its caller's event,
+`repository_dispatch`. To re-file a nightly row, use **Re-run all jobs** on the
+original run: a re-run keeps the `schedule` event and re-resolves the same SHA
+(see below).
 
 ## Job shape
 

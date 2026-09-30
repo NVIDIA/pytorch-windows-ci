@@ -28,8 +28,9 @@ Note [Every unclear answer means "stay quiet"]
     payload never carried, and a name that simply is not listed - all read as not
     allowlisted, so nothing is raised. The costs are asymmetric, just not in the
     direction the old two-tier design had them: a false negative costs an
-    allowlisted contributor one manual `workflow_dispatch` from a maintainer,
-    while a false positive turns a malformed or spoofed payload into an approval
+    allowlisted contributor a delay - once the list is fixed, their PR's next
+    push raises the request - while a false positive turns a malformed or
+    spoofed payload into an approval
     request, and approval requests are exactly the thing that must not become
     noise. A prompt nobody reads carefully is worse than no prompt.
 
@@ -173,8 +174,9 @@ def render_summary(decision: Decision) -> str:
     if not decision.allowed:
         lines += [
             "",
-            "Nothing further runs for this dispatch. A maintainer can still "
-            "start a pipeline by hand from the Actions tab; see "
+            "Nothing further runs for this dispatch. If this author should be "
+            "covered, add them to `UPSTREAM_PR_ALLOWLIST`; the PR's next push "
+            "then raises an approval request. See "
             "`docs/per-pr-ci-triggering.md`.",
         ]
     return "\n".join(lines) + "\n"

@@ -117,7 +117,7 @@ on:
         required: false
         default: "https://download.pytorch.org/whl/nightly/torch/"
 
-      # ---- workflow_dispatch matrix filters ---------------------------
+      # ---- matrix subset filters -------------------------------------
       # The caller cannot reference `matrix.*` in its own job-level
       # `if:` (GitHub Actions restricts that context for reusable-
       # workflow-calling jobs), so the per-cell filter is evaluated

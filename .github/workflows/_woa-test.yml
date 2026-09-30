@@ -71,7 +71,7 @@ on:
         type: string
         required: true
 
-      # ---- workflow_dispatch matrix filter -----------------------------------
+      # ---- matrix subset filter ----------------------------------------------
       python-versions:
         description: "Comma-separated allowlist of python versions; empty = no filter."
         type: string

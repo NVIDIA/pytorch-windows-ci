@@ -184,6 +184,9 @@ jobs:
       VS_VERSION: "17.4.1"
       VC_VERSION: ""
       PYTORCH_TEST_WITH_SLOW: "0"
+      # Only instantiate CUDA variants for PyTorch device-generic tests.
+      # This prevents generated CPU cases from running in the RTX test jobs.
+      PYTORCH_TESTING_DEVICE_ONLY_FOR: "cuda"
       CI: "1"
       # `CI` above is what switches on run_test.py's S3 telemetry upload:
       # --upload-artifacts-while-running defaults to IS_CI and has no negating

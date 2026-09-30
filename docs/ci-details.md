@@ -362,7 +362,7 @@ no `get-workflow-job-id`):
 | Scope | Variable | Source |
 | --- | --- | --- |
 | job  | `BUILD_ENVIRONMENT`, `PYTHON_VERSION`, `CUDA_VERSION`, `TORCH_CUDA_ARCH_LIST` | matrix cell |
-| job  | `USE_CUDA=1`, `INSTALL_WINDOWS_SDK=0`, `CONTINUE_THROUGH_ERROR=1`, `PYTORCH_TEST_WITH_SLOW=0`, `CI=1` | static |
+| job  | `USE_CUDA=1`, `INSTALL_WINDOWS_SDK=0`, `CONTINUE_THROUGH_ERROR=1`, `PYTORCH_TEST_WITH_SLOW=0`, `PYTORCH_TESTING_DEVICE_ONLY_FOR=cuda`, `CI=1` | static |
 | job  | `VC_PRODUCT=BuildTools`, `VC_YEAR=2022`, `VS_VERSION=17.4.1`, `VC_VERSION=""` | MSVC tooling info |
 | job  | `PIP_RETRIES=8`, `PIP_DEFAULT_TIMEOUT=60` | pip resilience for the test-harness install |
 | job  | `PER_TEST_TIMEOUT_SEC=900`, `PER_PROCESS_TIMEOUT_SEC=2700`, `RUN_TEST_TIMEOUT_SEC=9900` | the bounds that hold a hung shard - see [Timeout bounds](#timeout-bounds) |

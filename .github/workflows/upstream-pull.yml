@@ -452,8 +452,8 @@ jobs:
   #
   # Neither call opts out of HUD reporting, because neither can reach it: an
   # explicit non-nightly `pytorch-ref` leaves `crcr-delivery-id` empty in both
-  # `prep` jobs, and both also clear it for any event that is not `schedule` or
-  # `workflow_dispatch`. A PR run cannot file a row against an upstream commit.
+  # `prep` jobs, and both also clear it for any event that is not `schedule`.
+  # A PR run cannot file a row against an upstream commit.
   #
   # Both are named in `PIPELINES` above, which the audit record reports and a
   # contract test keeps in step with these jobs.

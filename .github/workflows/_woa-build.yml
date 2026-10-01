@@ -85,7 +85,7 @@ on:
         required: false
         default: ""
 
-      # ---- workflow_dispatch matrix filter (see _rtx-build.yml rationale) ----
+      # ---- matrix subset filter (see _rtx-build.yml rationale) ---------------
       python-versions:
         description: "Comma-separated allowlist of python versions; empty = no filter."
         type: string

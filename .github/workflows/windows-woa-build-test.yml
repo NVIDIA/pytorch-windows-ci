@@ -223,11 +223,12 @@ jobs:
           vision_sha="$(resolve_ref "https://github.com/pytorch/vision" "${VISION_REF}")"; require_sha torchvision "${vision_sha}" "${VISION_REF}"
           echo "Resolved pytorch '${REF}' -> ${sha}, torchaudio '${AUDIO_REF}' -> ${audio_sha}, torchvision '${VISION_REF}' -> ${vision_sha}"
 
-          # Belt-and-braces on top of the path selection above: only these
-          # self-triggered event types may publish, so wiring up a relay or
-          # schedule trigger later cannot start writing nightly rows unnoticed.
+          # Belt-and-braces on top of the path selection above: only a
+          # scheduled run may publish. A PR run arrives via `workflow_call`
+          # carrying its caller's event, `repository_dispatch`, so it is kept
+          # off the HUD here as well as by its explicit ref.
           case "${GITHUB_EVENT_NAME}" in
-            schedule|workflow_dispatch) ;;
+            schedule) ;;
             *) delivery_id="" ;;
           esac
           {

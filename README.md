@@ -117,14 +117,19 @@ Local build prerequisites are listed in each architecture-specific build guide.
 
 # Usage
 
-Two of the three top-level workflows run automatically on a nightly `schedule`:
+Two of the three top-level workflows run automatically on a nightly `schedule`,
+and none of them can be started by hand:
 
 - **`windows-rtx-build-test.yml`** — full RTX source build + test, nightly.
-  Also accepts `workflow_dispatch`, where subset inputs can narrow the matrix.
 - **`windows-woa-build-test.yml`** — WoA (arm64) source build + test, nightly.
-  Scheduled only; a manual trigger is deliberately not offered.
-- **`windows-rtx-wheel-test.yml`** — published-wheel test. Its nightly cron is
-  currently commented out, so it runs on `workflow_dispatch` only.
+- **`windows-rtx-wheel-test.yml`** — published-wheel test. Parked: its nightly
+  cron is commented out and it has no other trigger.
+
+Both build + test workflows can also be called by `upstream-pull.yml` to
+validate an approved upstream PR; see
+[per-PR CI](docs/per-pr-ci-triggering.md). There is deliberately no
+`workflow_dispatch` anywhere: external-CI security guidelines do not allow a
+hand-started run to point the self-hosted pools at an arbitrary upstream commit.
 
 The reusable workflows (`_rtx-build.yml`, `_rtx-test.yml`, `_woa-build.yml`,
 `_woa-test.yml`) are called by the orchestrators and are not run directly.
@@ -139,18 +144,20 @@ test environment variables, and runner diagnostics — is documented in
 This repository implements the downstream side of
 [RFC-0050](https://github.com/pytorch/rfcs/blob/master/RFC-0050-Cross-Repository-CI-Relay-for-PyTorch-Out-of-Tree-Backends.md):
 
-1. PyTorch sends a `repository_dispatch` event named `pytorch-pr-trigger` with
-   the upstream PR metadata.
-2. `windows-rtx-build-test.yml` resolves the upstream PR head, builds PyTorch on
-   NVIDIA's Windows RTX infrastructure, and runs the configured test matrix.
-3. Runs use PR-based concurrency so a newer update supersedes stale work for the
-   same upstream PR.
-4. The dispatch path is currently parked behind a `dispatch-gate` guard: the
-   event is acknowledged and its payload logged, but the build and test fanout
-   stays dormant until the upstream relay actions are published.
+1. The upstream relay sends a `repository_dispatch` event for each
+   `pytorch/pytorch` PR event, carrying the PR metadata.
+2. `upstream-pull.yml` verifies that metadata against the upstream API and
+   checks the PR author against a maintainer-controlled allowlist. An
+   allowlisted author's PR waits for a maintainer's approval; anyone else's is
+   dropped without a request.
+3. Once approved, it calls both build + test workflows pinned to the approved
+   head SHA. A newer push to the same PR cancels the older run.
+4. PR runs never report to the HUD. The nightly runs publish their results at
+   trust level L2.
 
-The exact event-to-workflow mapping and current relay status are documented in
-the [CRCR section of the CI reference](docs/ci-details.md#rfc-0050-mapping).
+The approval flow is documented in [per-PR CI](docs/per-pr-ci-triggering.md),
+and the event-to-workflow mapping in the
+[CRCR section of the CI reference](docs/ci-details.md#rfc-0050-mapping).
 
 # Performance
 

@@ -1,0 +1,353 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: MIT
+
+name: _woa-publish
+
+# Publish every signed + validated cell as one GitHub Release, then release it to
+# pypi.nvidia.com through Kitmaker.
+#
+#   github-release    refuse any signed file the signing job of this run did not attest,
+#                     attach the wheels and their evidence to an immutable release, then
+#                     read every asset back and compare name, size and SHA-256
+#   kitmaker-dry-run  one upload=false request per package, fetched by Kitmaker straight
+#                     from the release URLs - validates everything, publishes nothing
+#   kitmaker-release  the exact dry-run payload with only `upload` flipped, then polls
+#                     pypi.nvidia.com until every filename is listed at the right SHA-256
+#
+# NO PRIVATE-NETWORK EGRESS FROM OUR RUNNERS. Everything here runs on GitHub-hosted
+# ubuntu-latest. Kitmaker is reached through Charon Ferry: a Teleport application
+# tunnel plus a per-request GitHub OIDC token, authorized per repository and ref by
+# this repository's Charon tenant grant.
+#
+# CHANNELS. `rehearsal` builds a draft release and stops: nothing is published and no
+# tag is created, so it can run from anywhere. `nightly` and `release` publish, and
+# `release` is additionally restricted to the default branch with a justification.
+# Each channel runs under its own `woa-publish-<channel>` environment; the protection
+# on those environments (required reviewers, deployment branches) is what actually
+# controls who can publish - nothing in this file can.
+
+on:
+  workflow_call:
+    inputs:
+      channel:
+        description: "rehearsal | nightly | release"
+        type: string
+        required: true
+      build-run-id:
+        description: "The windows-woa-build-test run that built the wheels. Every manifest must name it."
+        type: string
+        required: true
+      release-justification:
+        description: "Required for channel=release. Recorded in the release notes."
+        type: string
+        required: false
+        default: ""
+      run-kitmaker-dry-run:
+        description: "Submit the upload=false Kitmaker requests against the published release."
+        type: boolean
+        required: false
+        default: false
+      run-kitmaker-release:
+        description: "Submit the upload=true production release. THIS PUBLISHES. Requires run-kitmaker-dry-run."
+        type: boolean
+        required: false
+        default: false
+      kitmaker-probe:
+        description: "Reach Kitmaker through Charon without submitting anything (tunnel + tenant grant + token check)."
+        type: boolean
+        required: false
+        default: false
+    secrets:
+      KITMAKER_API_TOKEN:
+        description: "Kitmaker Portal API token. Store it as an environment secret on woa-publish-<channel>."
+        required: false
+    outputs:
+      release-tag:
+        description: "Tag of the verified GitHub Release."
+        value: ${{ jobs.github-release.outputs.tag }}
+      kitmaker-released:
+        description: "'true' once the production release is listed on pypi.nvidia.com."
+        value: ${{ jobs.kitmaker-release.outputs.released }}
+
+permissions:
+  contents: read
+
+env:
+  CHARON_TELEPORT_PROXY: ${{ vars.CHARON_TELEPORT_PROXY || 'ext-nv-prd-apps.teleport.sh:443' }}
+
+jobs:
+  gate:
+    name: validate request
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Validate the publication request
+        shell: bash
+        env:
+          CHANNEL: ${{ inputs.channel }}
+          JUSTIFICATION: ${{ inputs.release-justification }}
+          DRY_RUN: ${{ inputs.run-kitmaker-dry-run }}
+          RELEASE: ${{ inputs.run-kitmaker-release }}
+          EVENT: ${{ github.event_name }}
+          REF: ${{ github.ref }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          KITMAKER_PIC: ${{ vars.KITMAKER_PIC }}
+        run: |
+          set -euo pipefail
+          fail() { echo "::error title=publication request::$1" >&2; exit 1; }
+          case "$CHANNEL" in rehearsal|nightly|release) ;; *) fail "unknown channel '$CHANNEL'" ;; esac
+          # Publication is never PR-triggered. `schedule` is the nightly publishing
+          # its own build; `workflow_dispatch` is a manual run, where a repository allows one.
+          case "$EVENT" in schedule|workflow_dispatch) ;; *) fail "publication cannot run for a '$EVENT' event" ;; esac
+          if [[ "$RELEASE" == true && "$DRY_RUN" != true ]]; then
+            fail "run-kitmaker-release requires run-kitmaker-dry-run: production replays the dry-run payload"
+          fi
+          if [[ "$CHANNEL" == rehearsal && ( "$DRY_RUN" == true || "$RELEASE" == true ) ]]; then
+            fail "a rehearsal is a draft release with no public URLs, so Kitmaker has nothing to fetch; use kitmaker-probe"
+          fi
+          # Checked here, before the immutable release exists, not first in the dry run.
+          if [[ "$DRY_RUN" == true && -z "${KITMAKER_PIC//[[:space:]]/}" ]]; then
+            fail "Missing repository variable: KITMAKER_PIC (Kitmaker's point of contact). See docs/woa-wheel-publishing.md."
+          fi
+          if [[ "$CHANNEL" == release ]]; then
+            [[ -n "${JUSTIFICATION//[[:space:]]/}" ]] || fail "channel=release needs a release-justification"
+            [[ "$REF" == "refs/heads/$DEFAULT_BRANCH" ]] || fail "channel=release must run from $DEFAULT_BRANCH, not $REF"
+          fi
+          echo "channel=$CHANNEL dry-run=$DRY_RUN release=$RELEASE event=$EVENT ref=$REF"
+
+  github-release:
+    name: github release
+    needs: gate
+    runs-on: ubuntu-latest
+    environment: woa-publish-${{ inputs.channel }}
+    permissions:
+      contents: write
+      attestations: read
+    timeout-minutes: 60
+    outputs:
+      tag: ${{ steps.publish.outputs.tag }}
+    steps:
+      - name: Checkout OOT tooling repo
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          path: oot
+          show-progress: false
+          persist-credentials: false
+
+      # Signed wheels + manifest + signature report, and the WoA validation report, for
+      # every cell that got this far. github_release.py refuses any wheel not covered by
+      # all three, so a cell that failed validation cannot slip in. Not merged: every GIL
+      # cell carries its own copy of the same-named abi3 torchaudio wheel, and merging
+      # would let one silently overwrite another.
+      - name: Download signed wheels
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: woa-*-cu134-signed-${{ github.run_id }}
+          merge-multiple: false
+          path: assets
+
+      - name: Download validation reports
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: woa-*-cu134-validation-${{ github.run_id }}
+          merge-multiple: true
+          path: assets
+
+      - name: Check every signed file was attested by this run's signing job
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python3 oot/scripts/publish/attestations.py \
+            --asset-dir assets --repository "$GITHUB_REPOSITORY" --run-id "$GITHUB_RUN_ID"
+
+      - name: Publish and verify the GitHub Release
+        id: publish
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CHANNEL: ${{ inputs.channel }}
+          BUILD_RUN_ID: ${{ inputs.build-run-id }}
+          JUSTIFICATION: ${{ inputs.release-justification }}
+        run: |
+          set -euo pipefail
+          python3 oot/scripts/publish/github_release.py \
+            --asset-dir assets --channel "$CHANNEL" \
+            --repository "$GITHUB_REPOSITORY" --target-sha "$GITHUB_SHA" --run-id "$GITHUB_RUN_ID" \
+            --build-run-id "$BUILD_RUN_ID" \
+            --justification "$JUSTIFICATION" --report report/release-report.json
+          echo "tag=$(jq -r .tag report/release-report.json)" >> "$GITHUB_OUTPUT"
+
+      - name: Upload release report
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: woa-release-report-${{ github.run_id }}
+          path: report
+          if-no-files-found: error
+          retention-days: 90
+          overwrite: true
+
+  kitmaker-probe:
+    name: kitmaker probe
+    needs: gate
+    if: inputs.kitmaker-probe
+    runs-on: ubuntu-latest
+    environment: woa-publish-${{ inputs.channel }}
+    permissions:
+      contents: read
+      id-token: write
+    timeout-minutes: 15
+    steps:
+      - name: Checkout OOT tooling repo
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          path: oot
+          show-progress: false
+          persist-credentials: false
+
+      - name: Install Teleport
+        uses: teleport-actions/setup@b638ff596557cc3959eb6b5287d5e58e0c8ac6a6 # v1.1.1
+        with:
+          version: auto
+          proxy: ${{ env.CHARON_TELEPORT_PROXY }}
+
+      - name: Open the Charon tunnel
+        uses: teleport-actions/application-tunnel@bb7a8fbfb67b85d26013554f10d71dd032c1c764 # v1.0.1
+        with:
+          proxy: ${{ env.CHARON_TELEPORT_PROXY }}
+          token: charon-gha-runners
+          app: charon
+          listen: tcp://127.0.0.1:8888
+
+      - name: Reach Kitmaker through Charon
+        env:
+          KITMAKER_API_TOKEN: ${{ secrets.KITMAKER_API_TOKEN }}
+        run: python3 oot/scripts/publish/kitmaker.py probe
+
+  kitmaker-dry-run:
+    name: kitmaker dry run
+    needs: github-release
+    if: inputs.run-kitmaker-dry-run && inputs.channel != 'rehearsal'
+    runs-on: ubuntu-latest
+    environment: woa-publish-${{ inputs.channel }}
+    permissions:
+      contents: read
+      id-token: write
+    timeout-minutes: 120
+    steps:
+      - name: Checkout OOT tooling repo
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          path: oot
+          show-progress: false
+          persist-credentials: false
+
+      - name: Download release report
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: woa-release-report-${{ github.run_id }}
+          path: report
+
+      - name: Install Teleport
+        uses: teleport-actions/setup@b638ff596557cc3959eb6b5287d5e58e0c8ac6a6 # v1.1.1
+        with:
+          version: auto
+          proxy: ${{ env.CHARON_TELEPORT_PROXY }}
+
+      - name: Open the Charon tunnel
+        uses: teleport-actions/application-tunnel@bb7a8fbfb67b85d26013554f10d71dd032c1c764 # v1.0.1
+        with:
+          proxy: ${{ env.CHARON_TELEPORT_PROXY }}
+          token: charon-gha-runners
+          app: charon
+          listen: tcp://127.0.0.1:8888
+
+      - name: Kitmaker dry run (upload=false)
+        env:
+          KITMAKER_API_TOKEN: ${{ secrets.KITMAKER_API_TOKEN }}
+          KITMAKER_PIC: ${{ vars.KITMAKER_PIC }}
+          CHANNEL: ${{ inputs.channel }}
+        run: |
+          python3 oot/scripts/publish/kitmaker.py dry-run \
+            --release-report report/release-report.json --channel "$CHANNEL" \
+            --report report/kitmaker-dry-run.json
+
+      - name: Upload dry-run report
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: woa-kitmaker-dry-run-${{ github.run_id }}
+          path: report/kitmaker-dry-run.json
+          if-no-files-found: warn
+          retention-days: 90
+          overwrite: true
+
+  # The point of no return: everything above is reversible or publishes nothing.
+  kitmaker-release:
+    name: kitmaker release
+    needs: kitmaker-dry-run
+    if: inputs.run-kitmaker-release
+    runs-on: ubuntu-latest
+    environment: woa-publish-${{ inputs.channel }}
+    permissions:
+      contents: read
+      id-token: write
+    timeout-minutes: 120
+    outputs:
+      released: ${{ steps.release.outputs.released }}
+    steps:
+      - name: Checkout OOT tooling repo
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          path: oot
+          show-progress: false
+          persist-credentials: false
+
+      - name: Download release report
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: woa-release-report-${{ github.run_id }}
+          path: report
+
+      - name: Download dry-run report
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: woa-kitmaker-dry-run-${{ github.run_id }}
+          path: report
+
+      - name: Install Teleport
+        uses: teleport-actions/setup@b638ff596557cc3959eb6b5287d5e58e0c8ac6a6 # v1.1.1
+        with:
+          version: auto
+          proxy: ${{ env.CHARON_TELEPORT_PROXY }}
+
+      - name: Open the Charon tunnel
+        uses: teleport-actions/application-tunnel@bb7a8fbfb67b85d26013554f10d71dd032c1c764 # v1.0.1
+        with:
+          proxy: ${{ env.CHARON_TELEPORT_PROXY }}
+          token: charon-gha-runners
+          app: charon
+          listen: tcp://127.0.0.1:8888
+
+      - name: Kitmaker production release (upload=true)
+        id: release
+        env:
+          KITMAKER_API_TOKEN: ${{ secrets.KITMAKER_API_TOKEN }}
+          KITMAKER_PIC: ${{ vars.KITMAKER_PIC }}
+          CHANNEL: ${{ inputs.channel }}
+        run: |
+          python3 oot/scripts/publish/kitmaker.py release \
+            --release-report report/release-report.json \
+            --dry-run-report report/kitmaker-dry-run.json \
+            --channel "$CHANNEL" --report report/kitmaker-production.json
+          echo "released=true" >> "$GITHUB_OUTPUT"
+
+      - name: Upload production report
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: woa-kitmaker-production-${{ github.run_id }}
+          path: report/kitmaker-production.json
+          if-no-files-found: warn
+          retention-days: 90
+          overwrite: true

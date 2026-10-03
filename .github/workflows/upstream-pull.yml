@@ -12,7 +12,7 @@ name: upstream-pull
 #
 #   gate ---- author on allowlist ----> approval ----> authorize --+--> windows-rtx-build-test
 #      \                              (a maintainer)   (records    |
-#       `-- anyone else -> nothing                       who)      `--> windows-woa-build-test
+#       `-- anyone else -> nothing                       who)      `--> _woa-pr-build-test
 #                          at all
 #
 # The pipelines are *called*, not dispatched, so a PR validation shows up as
@@ -128,7 +128,7 @@ env:
   # `scripts/pr-gate/tests/test_workflow_contract.py` asserts that it does, so
   # adding a pipeline without updating this is caught in lint rather than by a
   # misleading audit record.
-  PIPELINES: windows-rtx-build-test.yml windows-woa-build-test.yml
+  PIPELINES: windows-rtx-build-test.yml _woa-pr-build-test.yml
 
 jobs:
   # ===========================================================================
@@ -450,16 +450,19 @@ jobs:
   # Pinning the SHA tests exactly what was approved, rather than re-resolving
   # the PR head and possibly building a commit that landed afterwards.
   #
-  # Neither call opts out of HUD reporting, because neither can reach it: an
-  # explicit non-nightly `pytorch-ref` leaves `crcr-delivery-id` empty in both
-  # `prep` jobs, and both also clear it for any event that is not `schedule`.
-  # A PR run cannot file a row against an upstream commit.
+  # Neither call opts out of HUD reporting, because neither can reach it. The
+  # RTX `prep` leaves `crcr-delivery-id` empty for an explicit non-nightly
+  # `pytorch-ref`, and also clears it for any event that is not `schedule`.
+  # The WoA PR pipeline, `_woa-pr-build-test.yml`, has no reporting jobs at
+  # all - nor the nightly's publication job, whose `contents: write` this path
+  # would otherwise have to grant. A PR run cannot file a row against an
+  # upstream commit, or publish a wheel.
   #
   # Both are named in `PIPELINES` above, which the audit record reports and a
   # contract test keeps in step with these jobs.
   #
-  # Note [Why these grant id-token: write when nothing here mints a token]
-  #     Each pipeline's two CRCR reporting jobs declare `id-token: write` for
+  # Note [Why rtx grants id-token: write when nothing here mints a token]
+  #     The RTX pipeline's two CRCR reporting jobs declare `id-token: write` for
   #     the OIDC handshake, and GitHub validates a called workflow's permission
   #     requests against the caller *at parse time, for every nested job,
   #     before any `if:` is evaluated*. So a caller that grants less is rejected
@@ -488,14 +491,14 @@ jobs:
     with:
       pytorch-ref: ${{ needs.gate.outputs.head-sha }}
 
+  # Named for the nightly it mirrors, so its jobs read the same as the nightly's.
   woa:
     name: windows-woa-build-test
     needs: [gate, authorize]
     permissions:
       contents: read
       actions: read
-      id-token: write
-    uses: ./.github/workflows/windows-woa-build-test.yml
+    uses: ./.github/workflows/_woa-pr-build-test.yml
     with:
       pytorch-ref: ${{ needs.gate.outputs.head-sha }}
 

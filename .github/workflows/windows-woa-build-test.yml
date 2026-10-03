@@ -151,12 +151,17 @@ jobs:
           # Resolve a branch/tag to its commit SHA over HTTPS (a full SHA passes
           # through unchanged). Prefer a peeled annotated-tag commit
           # (refs/tags/<x>^{}) when present, else the first matching ref.
+          # `ls-remote` patterns match any ref that merely ENDS in the name -
+          # `main` also matches pytorch/vision's stale `refs/heads/<user>/main`,
+          # which sorts first - so only an exact ref name counts.
           resolve_ref() {
             local repo_url="$1" ref="$2" lines sha
             if [[ "${ref}" =~ ^[0-9a-f]{40}$ ]]; then printf '%s' "${ref}"; return 0; fi
             lines="$(git ls-remote "${repo_url}" "${ref}" "refs/heads/${ref}" "refs/tags/${ref}" 2>/dev/null || true)"
-            sha="$(printf '%s\n' "${lines}" | awk '/\^\{\}$/ {print $1; exit}')"
-            if [ -z "${sha}" ]; then sha="$(printf '%s\n' "${lines}" | awk 'NF {print $1; exit}')"; fi
+            sha="$(printf '%s\n' "${lines}" | awk -v r="${ref}" '$2 == r "^{}" || $2 == "refs/tags/" r "^{}" {print $1; exit}')"
+            if [ -z "${sha}" ]; then
+              sha="$(printf '%s\n' "${lines}" | awk -v r="${ref}" '$2 == r || $2 == "refs/heads/" r || $2 == "refs/tags/" r {print $1; exit}')"
+            fi
             printf '%s' "${sha}"
           }
           require_sha() {

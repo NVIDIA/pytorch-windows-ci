@@ -1,0 +1,281 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: MIT
+
+name: _woa-sign
+
+# Sign one python cell's WoA wheel set with Azure Artifact Signing, then prove the
+# signed wheels still install and run on WoA hardware.
+#
+# TWO JOBS ON TWO MACHINES, ON PURPOSE.
+#   sign      GitHub-hosted `windows-2025`. The signing identity is a GitHub OIDC token
+#             federated to Entra, scoped to the `woa-signing` environment, so no signing
+#             credential ever exists on the persistent self-hosted WoA runners - the
+#             risk this design accepts for everything else. x64 signtool signs ARM64
+#             PE files fine; what it cannot do is run them.
+#   validate  The WoA runner pool, because only WoA hardware with a GPU can import the
+#             signed win_arm64 wheels and run CUDA. It holds no credentials at all.
+#
+# Keeping build, signing and publication in separate jobs means the build job never
+# gains signing authority, and neither of these gains publication authority.
+# Publication lives in `_woa-publish.yml`, and it only accepts wheels this workflow
+# validated.
+
+on:
+  workflow_call:
+    inputs:
+      runner-base:
+        description: "Runner label for the WoA validation job (the WoA runner pool). Signing always runs on GitHub-hosted windows-2025."
+        type: string
+        required: false
+        default: "woa-arm64"
+      python-version:
+        description: "Dotted Python version of the cell (3.11 | 3.12 | 3.13 | 3.14 | 3.14t)."
+        type: string
+        required: true
+      python-label:
+        description: "Python label of the cell (py311 | ... | py314t)."
+        type: string
+        required: true
+      build-run-id:
+        description: "The windows-woa-build-test run that built the wheels (vetted by scripts/publish/build_run.py)."
+        type: string
+        required: true
+      unsigned-artifact:
+        description: "The build cell's wheel artifact in that run. Must match `_woa-build.yml`'s `wheel-artifact`."
+        type: string
+        required: true
+      signed-artifact:
+        description: "Artifact name for the signed wheels, manifest and signature report."
+        type: string
+        required: true
+      validation-artifact:
+        description: "Artifact name for the WoA validation report."
+        type: string
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  sign:
+    name: sign
+    runs-on: windows-2025
+    # The Entra federated credential is bound to this environment name, so it is part
+    # of the signing identity: renaming it means a new federated credential.
+    environment: woa-signing
+    permissions:
+      contents: read
+      id-token: write
+      # The unsigned wheels live in the build run, not this one.
+      actions: read
+      # Provenance for what this job signed; see scripts/publish/attestations.py.
+      attestations: write
+    timeout-minutes: 90
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - name: Checkout OOT tooling repo
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          path: oot
+          show-progress: false
+          persist-credentials: false
+
+      # Fail in seconds, with a pointer to the fix, until the Artifact Signing account,
+      # certificate profile and federated credential are provisioned.
+      - name: Require Azure Artifact Signing configuration
+        env:
+          AZURE_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
+          AZURE_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
+          AZURE_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+          AZURE_ARTIFACT_SIGNING_ENDPOINT: ${{ vars.AZURE_ARTIFACT_SIGNING_ENDPOINT }}
+          AZURE_ARTIFACT_SIGNING_ACCOUNT: ${{ vars.AZURE_ARTIFACT_SIGNING_ACCOUNT }}
+          AZURE_ARTIFACT_SIGNING_PROFILE: ${{ vars.AZURE_ARTIFACT_SIGNING_PROFILE }}
+        run: |
+          $names = 'AZURE_CLIENT_ID', 'AZURE_TENANT_ID', 'AZURE_SUBSCRIPTION_ID',
+            'AZURE_ARTIFACT_SIGNING_ENDPOINT', 'AZURE_ARTIFACT_SIGNING_ACCOUNT', 'AZURE_ARTIFACT_SIGNING_PROFILE'
+          $missing = @($names | Where-Object { [string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable($_)) })
+          if ($missing.Count -gt 0) {
+            Write-Host "::error title=Azure Artifact Signing is not configured::Missing repository variables: $($missing -join ', '). See docs/woa-wheel-publishing.md."
+            exit 1
+          }
+
+      - name: Download unsigned wheels from the build run
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: ${{ inputs.unsigned-artifact }}
+          run-id: ${{ inputs.build-run-id }}
+          github-token: ${{ github.token }}
+          path: incoming
+
+      - name: Unpack wheels for signing
+        run: python oot/scripts/publish/wheel_repack.py unpack --wheel-dir incoming --work-dir "$env:RUNNER_TEMP\sign"
+
+      - name: Authenticate to Azure with GitHub OIDC
+        uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3.1.0
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      # .pyd and .node are PE DLLs under another name and carry most of the file count;
+      # the example filter (exe,dll,msix) would leave them unsigned, which repack refuses.
+      # timeout bounds each signtool batch, not the step: a torch batch is about 150 files
+      # at roughly 2.3 s each, so the 300 s default kills it partway through.
+      - name: Sign native binaries with Azure Artifact Signing
+        uses: azure/artifact-signing-action@c7ab2a863ab5f9a846ddb8265964877ef296ee82 # v2
+        with:
+          endpoint: ${{ vars.AZURE_ARTIFACT_SIGNING_ENDPOINT }}
+          signing-account-name: ${{ vars.AZURE_ARTIFACT_SIGNING_ACCOUNT }}
+          certificate-profile-name: ${{ vars.AZURE_ARTIFACT_SIGNING_PROFILE }}
+          files-folder: ${{ runner.temp }}\sign\unpacked
+          files-folder-filter: dll,pyd,exe,node
+          files-folder-recurse: true
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
+          timeout: 1800
+
+      - name: Repack signed wheels
+        run: |
+          python oot/scripts/publish/wheel_repack.py repack `
+            --work-dir "$env:RUNNER_TEMP\sign" --out-dir signed `
+            --manifest "signed/release-manifest-${{ inputs.python-label }}.json" `
+            --cell "${{ inputs.python-label }}" --pytorch-sha-file incoming/built_pytorch_sha.txt `
+            --build-run-id "${{ inputs.build-run-id }}"
+
+      - name: Verify signatures in the repacked wheels
+        env:
+          EXPECTED_SUBJECT: ${{ vars.WOA_EXPECTED_SIGNER_SUBJECT }}
+        run: |
+          ./oot/tools/woa-build/verify-wheel-signatures.ps1 -WheelDir signed `
+            -ReportPath "signed/signature-report-${{ inputs.python-label }}.json" `
+            -ExpectedSubject "$env:EXPECTED_SUBJECT"
+
+      - name: Check package metadata
+        run: |
+          python -m pip install --disable-pip-version-check --quiet twine==7.0.0
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $wheels = @(Get-ChildItem signed -Filter '*.whl' | ForEach-Object FullName)
+          python -m twine check @wheels
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      # The release job accepts only files carrying this job's attestation: other jobs
+      # in the run, including the self-hosted ones, can replace the artifact uploaded below.
+      - name: Attest the signed wheels and their evidence
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-path: |
+            signed/*.whl
+            signed/release-manifest-${{ inputs.python-label }}.json
+            signed/signature-report-${{ inputs.python-label }}.json
+
+      - name: Upload signed wheels + evidence
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ${{ inputs.signed-artifact }}
+          path: signed
+          if-no-files-found: error
+          retention-days: 14
+          overwrite: true
+
+      - name: Upload signing diagnostics
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: woa-${{ inputs.python-label }}-sign-diagnostics-${{ github.run_id }}-${{ github.run_attempt }}
+          path: signed/*.json
+          if-no-files-found: ignore
+          retention-days: 14
+
+  validate:
+    name: validate
+    needs: sign
+    runs-on:
+      - ${{ inputs.runner-base }}
+    timeout-minutes: 90
+    defaults:
+      run:
+        shell: pwsh
+    env:
+      WOA_CUDA_PATH: 'C:\Program Files\NVIDIA\CUDA\v13.4'
+      WOA_CUDNN_ROOT: 'C:\Program Files\NVIDIA\CUDNN\v9.26'
+      PT_ROOT: 'C:\pt'
+      WOA_SCRATCH: 'C:\ci\woa\scratch'
+      WOA_VENV_DIR: 'C:\ci\woa\scratch\venv'
+      PIP_CACHE_DIR: 'C:\ci\woa\scratch\pipcache'
+    steps:
+      - name: Checkout OOT tooling repo
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          path: oot
+          show-progress: false
+          persist-credentials: false
+
+      # The workspace root survives between jobs on these persistent runners, and the
+      # validator checks every wheel under signed/, so a previous run's must be gone.
+      - name: Strict clean (pre)
+        uses: ./oot/.github/actions/woa-strict-clean
+        with:
+          phase: pre
+          pt-root: ${{ env.PT_ROOT }}
+          scratch-root: ${{ env.WOA_SCRATCH }}
+          extra-paths: |
+            ${{ github.workspace }}/signed
+            ${{ github.workspace }}/validation
+
+      - name: Preflight test toolchain + GPU
+        uses: ./oot/.github/actions/woa-preflight-test
+        with:
+          python-version: ${{ inputs.python-version }}
+          python-label: ${{ inputs.python-label }}
+          cuda-path: ${{ env.WOA_CUDA_PATH }}
+          cudnn-root: ${{ env.WOA_CUDNN_ROOT }}
+
+      - name: Create job venv
+        id: venv
+        uses: ./oot/.github/actions/woa-create-venv
+        with:
+          role: test
+          python-version: ${{ inputs.python-version }}
+          python-label: ${{ inputs.python-label }}
+          venv-path: ${{ env.WOA_VENV_DIR }}\validate-${{ inputs.python-label }}
+
+      - name: Download signed wheels
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: ${{ inputs.signed-artifact }}
+          path: signed
+
+      - name: Validate signed wheels on WoA hardware
+        env:
+          EXPECTED_SUBJECT: ${{ vars.WOA_EXPECTED_SIGNER_SUBJECT }}
+        run: |
+          ./oot/tools/woa-build/validate-signed-wheels.ps1 -WheelDir signed `
+            -VenvActivate "${{ steps.venv.outputs.venv-activate }}" `
+            -ReportPath "validation/validation-${{ inputs.python-label }}.json" `
+            -ExpectedSubject "$env:EXPECTED_SUBJECT"
+
+      # Uploaded on failure too: the publish job reads `status`, so a failed report can
+      # never be mistaken for a pass, and it is the record of why the cell was held back.
+      - name: Upload validation report
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ${{ inputs.validation-artifact }}
+          path: validation
+          if-no-files-found: error
+          retention-days: 14
+          overwrite: true
+
+      - name: Strict clean (post)
+        if: always()
+        uses: ./oot/.github/actions/woa-strict-clean
+        with:
+          phase: post
+          pt-root: ${{ env.PT_ROOT }}
+          scratch-root: ${{ env.WOA_SCRATCH }}
+          extra-paths: |
+            ${{ github.workspace }}/signed
+            ${{ github.workspace }}/validation

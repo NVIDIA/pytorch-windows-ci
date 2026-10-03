@@ -1,0 +1,174 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: MIT
+
+name: _woa-sign-publish
+
+# Sign, validate and publish the WoA wheels built by a `windows-woa-build-test` run:
+#
+#   resolve   vet the build run and list the cells that built (scripts/publish/build_run.py)
+#   sign      Azure Artifact Signing on hosted windows-2025, then a WoA validation job
+#   publish   immutable GitHub Release, then Kitmaker dry run and production via Charon
+#   verify    install the released wheels back from pypi.nvidia.com on WoA hardware
+#
+# See docs/woa-wheel-publishing.md.
+#
+# CALLERS. windows-woa-build-test.yml calls this on its own run once the builds finish,
+# alongside the tests. A repository that allows manual runs can also carry
+# windows-woa-publish.yml, which calls it on an earlier run by id. The PR
+# path, upstream-pull.yml -> _woa-pr-build-test.yml, does not: GitHub makes a caller grant
+# every permission any nested job requests - `if:` or not - and this file needs
+# `contents: write`, so nothing a pull request can reach ever holds publication scope.
+# Callers grant `contents: write`, `id-token: write`, `actions: read` and
+# `attestations: write`.
+#
+# Callers also hold the `windows-woa-publish-<build-run-id>` concurrency group, so a build
+# run is never being published twice at once.
+
+on:
+  workflow_call:
+    inputs:
+      build-run-id:
+        description: "Run id of the windows-woa-build-test run whose wheels to sign and publish."
+        type: string
+        required: true
+      channel:
+        description: "rehearsal | nightly | release - see _woa-publish.yml."
+        type: string
+        required: true
+      python-versions:
+        description: "Subset of the build's cells, e.g. `3.13`. Empty = every cell that built. A requested cell that cannot be published is an error."
+        type: string
+        required: false
+        default: ""
+      release-justification:
+        type: string
+        required: false
+        default: ""
+      run-kitmaker-dry-run:
+        type: boolean
+        required: false
+        default: false
+      run-kitmaker-release:
+        type: boolean
+        required: false
+        default: false
+      kitmaker-probe:
+        type: boolean
+        required: false
+        default: false
+      runner-base:
+        description: "Runner label for the WoA validation and verification jobs."
+        type: string
+        required: false
+        default: "woa-arm64"
+    secrets:
+      KITMAKER_API_TOKEN:
+        required: false
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  resolve:
+    name: resolve build run
+    # The run's conclusion is deliberately not checked: it includes the test shards,
+    # which routinely fail - and on a nightly are still running. build_run.py judges
+    # each cell on its own build job.
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      build-run-id: ${{ steps.resolve.outputs.run-id }}
+      cells: ${{ steps.resolve.outputs.cells }}
+    steps:
+      - name: Checkout OOT tooling repo
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          path: oot
+          show-progress: false
+          persist-credentials: false
+
+      - name: Vet the build run and list its cells
+        id: resolve
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BUILD_RUN_ID: ${{ inputs.build-run-id }}
+          CHANNEL: ${{ inputs.channel }}
+          PYTHON_VERSIONS: ${{ inputs.python-versions }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          python3 oot/scripts/publish/build_run.py \
+            --run-id "$BUILD_RUN_ID" --repository "$GITHUB_REPOSITORY" --channel "$CHANNEL" \
+            --default-branch "$DEFAULT_BRANCH" --python-versions "$PYTHON_VERSIONS" \
+            --github-output "$GITHUB_OUTPUT"
+
+  sign:
+    name: woa-${{ matrix.config.label }}-cu134-sign
+    needs: resolve
+    # A called workflow can only narrow the caller's token, so everything the signing
+    # job needs is granted here: OIDC for Azure and the attestations, actions: read for
+    # the build run's artifacts, and attestations: write to record what it signed.
+    permissions:
+      contents: read
+      id-token: write
+      actions: read
+      attestations: write
+    strategy:
+      fail-fast: false
+      matrix:
+        config: ${{ fromJSON(needs.resolve.outputs.cells) }}
+    uses: ./.github/workflows/_woa-sign.yml
+    with:
+      runner-base: ${{ inputs.runner-base }}
+      python-version: ${{ matrix.config.version }}
+      python-label: ${{ matrix.config.label }}
+      build-run-id: ${{ needs.resolve.outputs.build-run-id }}
+      # The name `_woa-build.yml` uploads under, in the build run.
+      unsigned-artifact: woa-${{ matrix.config.label }}-cu134-${{ needs.resolve.outputs.build-run-id }}
+      # `_woa-publish.yml` downloads these by pattern from this run; keep the shapes in step.
+      # A nightly's build run IS this run, so `-signed-` and `-validation-` are what keep
+      # those patterns off the unsigned build artifacts.
+      signed-artifact: woa-${{ matrix.config.label }}-cu134-signed-${{ github.run_id }}
+      validation-artifact: woa-${{ matrix.config.label }}-cu134-validation-${{ github.run_id }}
+
+  publish:
+    name: woa-cu134-publish
+    needs: [resolve, sign]
+    # Every cell must have signed AND validated: a failed cell holds back the whole
+    # release rather than publishing a partial set.
+    if: ${{ !cancelled() && needs.sign.result == 'success' }}
+    # contents: write for the release, id-token: write for the Charon OIDC tokens,
+    # attestations: read to check the signing job's. Each job inside
+    # `_woa-publish.yml` narrows this to what it alone needs.
+    permissions:
+      contents: write
+      id-token: write
+      attestations: read
+    uses: ./.github/workflows/_woa-publish.yml
+    with:
+      channel: ${{ inputs.channel }}
+      build-run-id: ${{ needs.resolve.outputs.build-run-id }}
+      release-justification: ${{ inputs.release-justification }}
+      run-kitmaker-dry-run: ${{ inputs.run-kitmaker-dry-run }}
+      run-kitmaker-release: ${{ inputs.run-kitmaker-release }}
+      kitmaker-probe: ${{ inputs.kitmaker-probe }}
+    secrets:
+      # An environment secret on woa-publish-<channel> takes precedence over this.
+      KITMAKER_API_TOKEN: ${{ secrets.KITMAKER_API_TOKEN }}
+
+  verify:
+    name: woa-${{ matrix.config.label }}-cu134-verify
+    needs: [resolve, publish]
+    if: ${{ !cancelled() && needs.publish.outputs.kitmaker-released == 'true' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        config: ${{ fromJSON(needs.resolve.outputs.cells) }}
+    uses: ./.github/workflows/_woa-verify.yml
+    with:
+      runner-base: ${{ inputs.runner-base }}
+      python-version: ${{ matrix.config.version }}
+      python-label: ${{ matrix.config.label }}
+      channel: ${{ inputs.channel }}
+      signed-artifact: woa-${{ matrix.config.label }}-cu134-signed-${{ github.run_id }}

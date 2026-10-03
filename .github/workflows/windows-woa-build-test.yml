@@ -10,13 +10,18 @@ name: windows-woa-build-test
 # failures (`test-summary`).
 #
 # Scheduled (nightly) only - there is intentionally NO manual/workflow_dispatch
-# trigger; build-test is the sole WoA workflow this repo carries.
+# trigger. Relayed upstream PRs run `_woa-pr-build-test.yml` instead: the same
+# build and test jobs, with no HUD reporting and no publication.
 #
-# A run left at the default `pytorch-ref: nightly` additionally publishes its
-# per-cell results to the upstream PyTorch HUD over the Cross-Repo CI Relay
-# (trust level L2), keyed by the `main` commit the nightly was cut from. See
-# `docs/crcr-hud-reporting.md`; the mechanism is identical to the one in
-# `windows-rtx-build-test.yml`, only the matrix differs.
+# Each run additionally publishes its per-cell results to the upstream PyTorch
+# HUD over the Cross-Repo CI Relay (trust level L2), keyed by the `main` commit
+# the nightly was cut from. See `docs/crcr-hud-reporting.md`; the mechanism is
+# identical to the one in `windows-rtx-build-test.yml`, only the matrix differs.
+#
+# A run can also sign and publish its own wheels: `publication` calls
+# `_woa-sign-publish.yml` once the builds finish, alongside the tests, but only
+# when `vars.WOA_NIGHTLY_PUBLISH` is `dry-run` or `release` - unset, or anything
+# else, publishes nothing. See `docs/woa-wheel-publishing.md`.
 #
 # Shape:
 #
@@ -28,6 +33,8 @@ name: windows-woa-build-test
 #       |
 #       +-> test  matrix( same python cells, CTK 13.4 )   [needs: build]
 #       |         each cell fans out 4 shards internally
+#       |
+#       +-> publication  sign -> GitHub Release -> Kitmaker   [needs: build, opt-in only]
 #       |
 #       +-> report-build-crcr / report-test-crcr   [terminal, nightly only]
 #                 exactly two HUD rows for the whole matrix: every Python
@@ -41,30 +48,15 @@ name: windows-woa-build-test
 # nightly run serializes on the pool.
 
 on:
-  # Called by `upstream-pull.yml` to validate an approved upstream PR, pinned
-  # to the commit a maintainer approved.
-  #
-  # `workflow_call` rather than `workflow_dispatch` is the whole point: this
-  # workflow still offers no way to start it by hand, so the only two callers
-  # are the nightly schedule below and the relay path behind an approval. A PR
-  # run is never HUD-eligible, and that does not rely on an opt-out input -
-  # `prep` clears `crcr-delivery-id` both because the ref is not `nightly` and
-  # because the event is not `schedule` (see the guards there).
-  workflow_call:
-    inputs:
-      pytorch-ref:
-        description: "Full 40-hex commit SHA to build. For a PR, its approved head."
-        type: string
-        required: true
-
+  # No `workflow_call`: the PR path calls `_woa-pr-build-test.yml` instead, so
+  # that it never has to grant the publication job's `contents: write`.
   schedule:
     # Nightly build + test of the full WoA matrix against pytorch `nightly`.
     # Manual/workflow_dispatch is intentionally NOT offered for this repo.
     #
-    # So every *scheduled* run is a genuine nightly of upstream `main`, which
-    # is what makes it eligible to publish to the PyTorch HUD, and why there is
-    # no opt-out input: the only other caller is the PR path above, which is
-    # excluded by `prep`'s guards rather than by a flag.
+    # So every run is a genuine nightly of upstream `main`, which is what makes
+    # it eligible to publish to the PyTorch HUD, and why there is no opt-out
+    # input.
     #
     # Timed to land after pytorch/pytorch cuts the day's `nightly` commit
     # (07:35-08:47 UTC on 55 of the 57 days to 2026-09-09); see the longer note
@@ -130,7 +122,7 @@ jobs:
       crcr-delivery-id: ${{ steps.ref.outputs.crcr-delivery-id }}
       num-shards: ${{ steps.ref.outputs.num-shards }}
     steps:
-      - name: Checkout repository (for CRCR scripts)
+      - name: Checkout repository (for prep scripts)
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
         with:
           fetch-depth: 1
@@ -148,32 +140,11 @@ jobs:
           NUM_SHARDS: "4"
         run: |
           set -euo pipefail
-          # Resolve a branch/tag to its commit SHA over HTTPS (a full SHA passes
-          # through unchanged). Prefer a peeled annotated-tag commit
-          # (refs/tags/<x>^{}) when present, else the first matching ref.
-          # `ls-remote` patterns match any ref that merely ENDS in the name -
-          # `main` also matches pytorch/vision's stale `refs/heads/<user>/main`,
-          # which sorts first - so only an exact ref name counts.
-          resolve_ref() {
-            local repo_url="$1" ref="$2" lines sha
-            if [[ "${ref}" =~ ^[0-9a-f]{40}$ ]]; then printf '%s' "${ref}"; return 0; fi
-            lines="$(git ls-remote "${repo_url}" "${ref}" "refs/heads/${ref}" "refs/tags/${ref}" 2>/dev/null || true)"
-            sha="$(printf '%s\n' "${lines}" | awk -v r="${ref}" '$2 == r "^{}" || $2 == "refs/tags/" r "^{}" {print $1; exit}')"
-            if [ -z "${sha}" ]; then
-              sha="$(printf '%s\n' "${lines}" | awk -v r="${ref}" '$2 == r || $2 == "refs/heads/" r || $2 == "refs/tags/" r {print $1; exit}')"
-            fi
-            printf '%s' "${sha}"
-          }
-          require_sha() {
-            if ! [[ "$2" =~ ^[0-9a-f]{40}$ ]]; then
-              echo "::error::Could not resolve $1 ref '$3' to a 40-hex commit SHA (got '${2:-<empty>}')." >&2
-              exit 1
-            fi
-          }
-          # Two paths for pytorch. The scheduled nightly takes the first; a PR
-          # validation run called via `workflow_call` passes an explicit SHA and
-          # takes the second. `resolve_ref` stays in use for audio/vision either
-          # way.
+          source scripts/source-refs/resolve_ref.sh
+          # Two paths for pytorch. Every scheduled run takes the first. The
+          # second serves an explicit `pytorch-ref`, which nothing passes today:
+          # PR validation has its own pipeline, `_woa-pr-build-test.yml`.
+          # `resolve_ref` stays in use for audio/vision either way.
           delivery_id=""
           if [ "${REF}" = "nightly" ]; then
             # Resolve the upstream `main` commit the nightly was cut from and
@@ -213,7 +184,7 @@ jobs:
             nightly_date="$(sed -n 's/^nightly-date=//p' resolved.env)"
             delivery_id="${sha}"
           else
-            # A PR head is not a nightly of upstream main, so it is never
+            # An explicit ref is not a nightly of upstream main, so it is never
             # HUD-eligible and has no nightly release to take a date from - fall
             # back to today's clock for the wheel version. `delivery_id` stays
             # empty, which is what switches both reporting jobs off.
@@ -229,9 +200,8 @@ jobs:
           echo "Resolved pytorch '${REF}' -> ${sha}, torchaudio '${AUDIO_REF}' -> ${audio_sha}, torchvision '${VISION_REF}' -> ${vision_sha}"
 
           # Belt-and-braces on top of the path selection above: only a
-          # scheduled run may publish. A PR run arrives via `workflow_call`
-          # carrying its caller's event, `repository_dispatch`, so it is kept
-          # off the HUD here as well as by its explicit ref.
+          # scheduled run may publish, so wiring up another trigger later
+          # cannot start writing nightly rows unnoticed.
           case "${GITHUB_EVENT_NAME}" in
             schedule) ;;
             *) delivery_id="" ;;
@@ -363,6 +333,47 @@ jobs:
       # Stable across attempts (no run_attempt) so a test-only re-run still downloads the
       # wheel the build produced on the original attempt.
       wheel-artifact: woa-${{ matrix.config.label }}-cu134-${{ github.run_id }}
+
+  # ===========================================================================
+  # Sign and publish this run's wheels (`_woa-sign-publish.yml`). It needs only
+  # the builds, so it runs alongside the tests rather than after them: the test
+  # shards routinely fail, and publication judges each cell on its own build
+  # job (`scripts/publish/build_run.py`). `!cancelled()` for the same reason as
+  # `test`: the cells that built still publish when another cell's build failed.
+  #
+  # Opt-in through `vars.WOA_NIGHTLY_PUBLISH`, so the nightly publishes nothing
+  # until Artifact Signing and the Charon tenant are in place:
+  #   dry-run   nightly GitHub Release + Kitmaker upload=false requests
+  #   release   the same, then the upload=true release to pypi.nvidia.com
+  #
+  # Holds `contents: write`, which is why the PR path calls
+  # `_woa-pr-build-test.yml` rather than this file.
+  # ===========================================================================
+  publication:
+    name: sign and publish
+    needs: build
+    if: >-
+      ${{ !cancelled() && needs.build.result != 'skipped'
+          && github.event_name == 'schedule'
+          && (vars.WOA_NIGHTLY_PUBLISH == 'dry-run' || vars.WOA_NIGHTLY_PUBLISH == 'release') }}
+    # The group every caller of `_woa-sign-publish.yml` holds; see its header.
+    concurrency:
+      group: windows-woa-publish-${{ github.run_id }}
+      cancel-in-progress: false
+    permissions:
+      contents: write
+      id-token: write
+      actions: read
+      attestations: write
+    uses: ./.github/workflows/_woa-sign-publish.yml
+    with:
+      build-run-id: ${{ github.run_id }}
+      channel: nightly
+      run-kitmaker-dry-run: true
+      run-kitmaker-release: ${{ vars.WOA_NIGHTLY_PUBLISH == 'release' }}
+      runner-base: ${{ inputs.runner-base || 'woa-arm64' }}
+    secrets:
+      KITMAKER_API_TOKEN: ${{ secrets.KITMAKER_API_TOKEN }}
 
   # ===========================================================================
   # Post-test rollup. Renders which test jobs failed (with log links) plus the

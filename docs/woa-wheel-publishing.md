@@ -15,7 +15,9 @@ build (WoA) ─┬─▶ test (WoA)
              │
              └─▶ publication: resolve ─▶ sign (hosted windows-2025) ─▶ validate (WoA)
                                                                           │
-         verify (WoA) ◀── Kitmaker production ◀── Kitmaker dry run ◀── GitHub Release (hosted)
+                              Kitmaker production ◀── Kitmaker dry run ◀── GitHub Release (hosted)
+                                      │
+                                      └─▶ index check (hosted) ─▶ verify (WoA)
 ```
 
 A nightly signs and publishes its own wheels. Its `publication` job calls `_woa-sign-publish.yml`
@@ -34,18 +36,26 @@ nightly's.
 | Job | Workflow | Runner | Holds | What it proves |
 | --- | --- | --- | --- | --- |
 | build | `_woa-build.yml` | self-hosted WoA | nothing | unsigned wheels, uploaded as an artifact |
-| resolve | `_woa-sign-publish.yml` | GitHub-hosted ubuntu | `actions: read` | the build run is ours, from a trusted trigger; lists the cells whose build succeeded, each with the id of the wheel artifact its build job uploaded |
-| sign | `_woa-sign.yml` | GitHub-hosted `windows-2025` | Azure OIDC (`woa-signing`), attestation signing | every native file signed + timestamped by the pinned signer, RECORD regenerated; each output file attested |
-| validate | `_woa-sign.yml` | self-hosted WoA | nothing | signatures re-verified; `twine check`; signed wheels install in a clean venv and run CUDA |
+| resolve | `_woa-sign-publish.yml` | GitHub-hosted ubuntu | `actions: read` | the build run is ours, from a trusted trigger; lists the cells whose build succeeded, each with the id of the wheel artifact its build job uploaded; each artifact matches the SHA-256 GitHub recorded at upload, and every file in it is hashed |
+| sign | `_woa-sign.yml` | GitHub-hosted `windows-2025` | Azure OIDC (`woa-signing`), attestation signing | the files to sign are exactly the ones resolve hashed, checked before Azure login; every native file signed + timestamped by the pinned signer, RECORD regenerated; each output file attested and hashed |
+| validate | `_woa-sign.yml` | self-hosted WoA | nothing | the files are exactly the ones sign hashed; signatures re-verified; `twine check`; signed wheels install in a clean venv and run CUDA |
 | github-release | `_woa-publish.yml` | GitHub-hosted ubuntu | `contents: write` (`woa-publish-<channel>`) | every signed file carries this run's signing attestation; immutable release; every asset read back by name, size and SHA-256 |
 | kitmaker-dry-run | `_woa-publish.yml` | GitHub-hosted ubuntu | Kitmaker token + Charon OIDC | Kitmaker fetched and validated every wheel URL; nothing published |
 | kitmaker-release | `_woa-publish.yml` | GitHub-hosted ubuntu | Kitmaker token + Charon OIDC | same payload with `upload=true`; index lists every file at the right SHA-256 |
-| verify | `_woa-verify.yml` | self-hosted WoA | nothing | released wheels download, checksum, install and run CUDA |
+| index-check | `_woa-publish.yml` | GitHub-hosted ubuntu | `attestations: read` | every wheel downloaded back from the index is byte for byte a release asset, with the signing job's attestation and GitHub's release attestation |
+| verify | `_woa-verify.yml` | self-hosted WoA | nothing | released wheels download, match the hashes index-check verified, install and run CUDA |
 
 Why the split: no signing or publication credential ever reaches the persistent self-hosted WoA
 runners, and those runners need **no private-network endpoints at all**. The only egress they need
 beyond the build is `pypi.nvidia.com` (public) for the final `verify` job. Nor does any job that
 holds a credential install anything from PyPI: `twine check` runs in validate, which holds none.
+
+How wheels move between jobs: any job in a run can replace that run's artifacts, the self-hosted
+ones included, but only a job can set its own outputs. So an artifact is only ever the transport.
+Each job that hands wheels on publishes the SHA-256 of every file as a job output. The job that
+receives them downloads by artifact id, with GitHub's digest check on, and refuses anything that
+is not exactly those files with those hashes (`digests.py`). The release report and the Kitmaker
+dry run's approval reach the jobs after them as job outputs too.
 
 Only the native binaries are signed (`.dll`, `.pyd`, `.exe`, `.node`) — Authenticode cannot sign
 a zip. Wheel integrity comes from the regenerated `RECORD`, the SHA-256s in the release manifest,
@@ -74,6 +84,10 @@ Checked in this order; each one fails closed:
    artifact id, and `build_run.py` hands out only the id of an artifact created while that cell's
    build job ran. A test shard, or a later re-run, that replaces the artifact gives it a new id and
    a creation time outside that window, so the replacement is refused rather than signed.
+   The resolve job then downloads each artifact and refuses it unless it hashes to the SHA-256
+   GitHub recorded when the build job uploaded it, and hashes every file inside. Before it
+   authenticates to Azure, the sign job refuses a download that differs from those hashes in any
+   file, so what gets signed is byte for byte what the build job produced.
 3. **Signing.** The sign job refuses to start without `WOA_EXPECTED_SIGNER_SUBJECT`.
    `wheel_repack.py` refuses the set if any native file comes back byte-identical, and
    `verify-wheel-signatures.ps1` requires every native file to be `Valid`, timestamped, and signed
@@ -83,7 +97,10 @@ Checked in this order; each one fails closed:
    in a run can replace that run's artifacts, including the WoA validation job and, on a nightly,
    the WoA test shards, so an artifact's name proves nothing. The self-hosted jobs hold no
    `id-token`, so they cannot attest anything themselves.
-5. **Validation.** `github_release.py` refuses any wheel that lacks a matching manifest, a passing
+5. **Validation.** The validate job takes the signed artifact by id and refuses it unless every
+   file matches the hashes the sign job published. No release is created until every cell has
+   signed *and* validated: `needs.sign.result` covers the whole of `_woa-sign.yml`, validate job
+   included. `github_release.py` then refuses any wheel that lacks a matching manifest, a passing
    signature report *and* a passing WoA validation report, all agreeing on the signed SHA-256, and
    refuses the set unless every manifest names the same build run.
 6. **Release.** Nightly/release must come out `immutable: true`, and every asset must match
@@ -91,6 +108,11 @@ Checked in this order; each one fails closed:
 7. **Kitmaker.** The dry run refuses to proceed if the index already lists a filename with a
    different SHA-256. Production replays the dry-run payload with only `upload` changed, and does
    not report success until the index lists every file at the expected hash.
+8. **Index.** The index serves bare `#sha256=` fragments and no signed metadata, so a fragment
+   only shows the index agrees with itself. `index_check.py` downloads every wheel back from it on
+   a GitHub-hosted runner and refuses any that is not byte for byte the release asset, or that
+   lacks either the signing job's attestation or GitHub's release attestation. Both are verified
+   against Sigstore's trusted root. `verify` installs only files matching the hashes it verified.
 
 ## Provisioning checklist
 
@@ -160,7 +182,7 @@ Checked in this order; each one fails closed:
    | --- | --- |
    | unset, or any other value | publishes nothing |
    | `dry-run` | signs, creates the immutable nightly GitHub Release, and runs the Kitmaker dry run; nothing reaches `pypi.nvidia.com` |
-   | `release` | the same, then the Kitmaker production release and `verify` |
+   | `release` | the same, then the Kitmaker production release, the index check and `verify` |
 
 ## Running it
 
@@ -188,6 +210,7 @@ Retained as release assets (the durable copy) and as workflow artifacts:
 | `kitmaker-dry-run.json` / `kitmaker-production.json` | exact request bodies, release UUIDs, final statuses, index state before and after |
 | `pypi-verification-<cell>.json` | what was downloaded back from the index, and its checksums |
 | artifact attestations (repository *Attestations*, by digest) | SLSA provenance for every signed wheel, manifest and signature report; `gh attestation verify <wheel> --repo <owner>/<repo>` checks a downloaded wheel |
+| release attestation (generated by GitHub on publish) | the immutable release's tag, commit and every asset's digest; `gh release verify-asset <tag> <wheel> --repo <owner>/<repo>` checks a downloaded wheel |
 
 ## Known gaps
 
@@ -199,6 +222,19 @@ Retained as release assets (the durable copy) and as workflow artifacts:
   Until this flow reaches `release`, `nvtorch_oot_nightly` gets no new WoA wheels.
 - **Release retention.** Every publication, dry run included, adds an immutable prerelease of
   about 1.75 GiB per Python version. Nothing prunes old nightly releases yet.
+- **Release write access.** Once a release is published, immutability stops anyone from
+  changing or deleting its assets, this repository's own tokens included. GitHub has no
+  create-only scope, though: the `contents: write` token the release job holds for those few
+  minutes could still delete a whole release (its tag can never be reused), and assets are only
+  locked once the draft they are uploaded to is published. A substituted asset cannot pass
+  `gh release verify-asset`, because GitHub's release attestation would not list it. That is what
+  index-check runs, and anyone can run it on a downloaded wheel. A deletion shows in the
+  repository's audit log.
+- **Index-side integrity metadata.** `pypi.nvidia.com` serves no signed metadata (no PEP 740
+  attestations, no TUF), so a user who installs with plain `pip` relies on the index's own
+  `#sha256=` fragments. index-check and `verify` close that gap for this pipeline. For users,
+  `gh attestation verify` and `gh release verify-asset` check a downloaded wheel by hand. Having
+  the index serve attestations needs its owners.
 - **Dateless release versions.** `_woa-build.yml` always produces `.dev<date>` wheels, and
   `github_release.py` refuses a `release` publication of one. The build needs a release mode
   before anything can publish to the `release` channel; `nightly` is unaffected.

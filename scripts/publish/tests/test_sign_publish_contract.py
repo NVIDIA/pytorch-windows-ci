@@ -21,6 +21,12 @@ These tests pin the properties that must survive any future edit:
     self-hosted WoA runners
   * the artifact and job names one piece writes are the ones the next one reads,
     including when the build run and the publication run are the same run
+  * no job trusts an artifact for being under the right name: wheels are taken by
+    id and checked against hashes the job before published as job outputs, and
+    reports travel as job outputs - see Note [Hashes travel as job outputs, files
+    as artifacts] in digests.py
+  * nothing is released before every cell signed and validated, and nothing is
+    installed from the index before its bytes are checked against attestations
   * production cannot run without its dry run
 """
 
@@ -405,6 +411,8 @@ def test_publication_jobs_narrow_their_permissions(publish: dict) -> None:
     for name in ("kitmaker-probe", "kitmaker-dry-run", "kitmaker-release"):
         assert jobs[name]["permissions"] == {"contents": "read", "id-token": "write"}, name
         assert jobs[name]["environment"] == "woa-publish-${{ inputs.channel }}"
+    assert jobs["index-check"]["permissions"] == {"contents": "read", "attestations": "read"}
+    assert "environment" not in jobs["index-check"] and "secrets." not in yaml.safe_dump(jobs["index-check"])
 
 
 def test_verification_on_woa_runners_holds_no_credentials(verify: dict) -> None:
@@ -455,12 +463,58 @@ def test_signing_covers_every_native_extension_and_timestamps(sign: dict) -> Non
 
 def test_signed_wheels_are_verified_and_attested_before_they_are_uploaded(sign: dict) -> None:
     names = [s.get("name") for s in steps(sign, "sign")]
-    order = ["Download unsigned wheels from the build run", "Unpack wheels for signing",
+    order = ["Download unsigned wheels from the build run", "Check the unsigned files against the resolve job's hashes",
+             "Unpack wheels for signing", "Authenticate to Azure with GitHub OIDC",
              "Sign native binaries with Azure Artifact Signing", "Repack signed wheels",
-             "Verify signatures in the repacked wheels",
-             "Attest the signed wheels and their evidence", "Upload signed wheels + evidence"]
+             "Verify signatures in the repacked wheels", "Attest the signed wheels and their evidence",
+             "Record the signed files' SHA-256", "Upload signed wheels + evidence"]
     positions = [names.index(n) for n in order]
     assert positions == sorted(positions), names
+
+
+def test_nothing_is_signed_but_the_files_the_resolve_job_hashed(flow: dict, sign: dict) -> None:
+    """See Note [The unsigned files are hashed before signing, on a hosted runner] in build_run.py:
+    the check runs before the Azure login, so a swapped wheel never meets a signing token."""
+    assert flow["jobs"]["resolve"]["runs-on"] == "ubuntu-latest"
+    assert "oot/scripts/publish/build_run.py" in flow["jobs"]["resolve"]["steps"][-1]["run"]
+    assert flow["jobs"]["sign"]["with"]["unsigned-files"] == "${{ toJSON(matrix.config.files) }}"
+    download = step_named(sign, "sign", "Download unsigned wheels from the build run")["with"]
+    check = step_named(sign, "sign", "Check the unsigned files against the resolve job's hashes")
+    assert check["env"] == {"UNSIGNED_FILES": "${{ inputs.unsigned-files }}"}
+    assert squash(check["run"]) == (f"python oot/scripts/publish/digests.py check --dir {download['path']} "
+                                    "--expected-env UNSIGNED_FILES")
+
+
+def test_validation_takes_the_signed_files_by_id_and_hash(sign: dict) -> None:
+    job = sign["jobs"]["sign"]
+    upload = step_named(sign, "sign", "Upload signed wheels + evidence")
+    record = step_named(sign, "sign", "Record the signed files' SHA-256")
+    assert job["outputs"] == {"signed-artifact-id": f"${{{{ steps.{upload['id']}.outputs.artifact-id }}}}",
+                              "signed-files": f"${{{{ steps.{record['id']}.outputs.files }}}}"}
+    assert f"--dir {upload['with']['path']} " in record["run"]
+
+    assert sign["jobs"]["validate"]["needs"] == "sign"
+    download = step_named(sign, "validate", "Download signed wheels")["with"]
+    assert download["artifact-ids"] == "${{ needs.sign.outputs.signed-artifact-id }}" and "name" not in download
+    check = step_named(sign, "validate", "Check the signed files against the sign job's hashes")
+    assert check["env"] == {"SIGNED_FILES": "${{ needs.sign.outputs.signed-files }}"}
+    assert f"digests.py check --dir {download['path']} --expected-env SIGNED_FILES" in check["run"]
+
+
+@pytest.mark.parametrize("name", [SIGN, PUBLISH, VERIFY])
+def test_no_job_trusts_an_artifact_for_its_name(name: str) -> None:
+    """Any job in the run can upload under any name. Wheels are fetched by id with GitHub's
+    digest check on; only the release job fetches by pattern, and it refuses anything the
+    signing job did not attest."""
+    workflow = load(name)
+    for job in workflow["jobs"]:
+        for step in uses(workflow, job, "actions/download-artifact@"):
+            given = step["with"]
+            assert "name" not in given, f"{name}:{job}:{step['name']}"
+            if "pattern" in given:
+                assert (name, job) == (PUBLISH, "github-release"), f"{name}:{job}:{step['name']}"
+            else:
+                assert given["digest-mismatch"] == "error", f"{name}:{job}:{step['name']}"
 
 
 @pytest.mark.parametrize("name", [SIGN, PUBLISH])
@@ -477,8 +531,8 @@ def test_no_job_holding_a_credential_installs_from_pypi(name: str) -> None:
 
 def test_package_metadata_is_checked_before_validation(sign: dict) -> None:
     names = [s.get("name") for s in steps(sign, "validate")]
-    assert names.index("Download signed wheels") < names.index("Check package metadata") \
-        < names.index("Validate signed wheels on WoA hardware")
+    assert names.index("Download signed wheels") < names.index("Check the signed files against the sign job's hashes") \
+        < names.index("Check package metadata") < names.index("Validate signed wheels on WoA hardware")
     assert "twine check" in step_named(sign, "validate", "Check package metadata")["run"]
 
 
@@ -574,9 +628,27 @@ def test_publish_downloads_exactly_what_signing_uploads(flow: dict, publish: dic
     assert not any(fnmatch.fnmatchcase(unsigned, p) for p in patterns)
 
 
-def test_verify_reads_the_signed_manifest(flow: dict) -> None:
+def test_verify_installs_only_what_the_index_check_verified(flow: dict, publish: dict, verify: dict) -> None:
+    """See Note [The index is checked against attestations, not against itself] in index_check.py."""
     jobs = flow["jobs"]
-    assert jobs["verify"]["with"]["signed-artifact"] == jobs["sign"]["with"]["signed-artifact"]
+    assert jobs["verify"]["with"]["cell-files"] == "${{ toJSON(matrix.config.files) }}"
+    assert jobs["verify"]["with"]["published-wheels"] == "${{ needs.publish.outputs.published-wheels }}"
+    assert squash(jobs["verify"]["if"]) == "${{ !cancelled() && needs.publish.outputs.published-wheels != '' }}"
+    assert on(publish)["workflow_call"]["outputs"]["published-wheels"]["value"] == "${{ jobs.index-check.outputs.wheels }}"
+
+    check = publish["jobs"]["index-check"]
+    assert check["needs"] == ["github-release", "kitmaker-release"]
+    assert squash(check["if"]) == "needs.kitmaker-release.outputs.released == 'true'"
+    assert check["outputs"] == {"wheels": "${{ steps.check.outputs.wheels }}"}
+    step = step_named(publish, "index-check", "Check the index's wheels against the release's attestations")
+    assert step["env"]["REPORT"] == "${{ needs.github-release.outputs.report }}"
+    assert "oot/scripts/publish/index_check.py" in step["run"] and '--run-id "$GITHUB_RUN_ID"' in step["run"]
+
+    install = step_named(verify, "verify", "Install the released wheels from pypi.nvidia.com")
+    assert install["env"]["CELL_FILES"] == "${{ inputs.cell-files }}"
+    assert install["env"]["PUBLISHED_WHEELS"] == "${{ inputs.published-wheels }}"
+    assert "-ExpectedHashesJson" in install["run"]
+    assert not uses(verify, "verify", "actions/download-artifact@")
 
 
 def test_every_stage_uses_the_resolved_cells_and_build_run(flow: dict) -> None:
@@ -598,17 +670,24 @@ def test_callers_pass_every_publication_input_by_name(caller: str) -> None:
     assert set(job["secrets"]) == {"KITMAKER_API_TOKEN"}
 
 
-def test_release_report_name_is_shared_between_publication_jobs(publish: dict) -> None:
-    uploaded = step_named(publish, "github-release", "Upload release report")["with"]["name"]
-    for job in ("kitmaker-dry-run", "kitmaker-release"):
-        names = [s["with"].get("name") for s in uses(publish, job, "actions/download-artifact@")]
-        assert uploaded in names, job
+def test_the_kitmaker_jobs_take_their_reports_as_job_outputs(publish: dict) -> None:
+    """Not as artifacts, which a self-hosted job in the run could replace."""
+    jobs = publish["jobs"]
+    assert jobs["github-release"]["outputs"]["report"] == "${{ steps.publish.outputs.report }}"
+    assert 'echo "report=$(jq -c . report/release-report.json)"' in step_named(
+        publish, "github-release", "Publish and verify the GitHub Release")["run"]
+    assert jobs["kitmaker-dry-run"]["outputs"] == {"approved": "${{ steps.dry-run.outputs.approved }}"}
+    assert '--github-output "$GITHUB_OUTPUT"' in step_named(publish, "kitmaker-dry-run", "Kitmaker dry run (upload=false)")["run"]
 
-
-def test_the_approved_dry_run_is_what_production_downloads(publish: dict) -> None:
-    uploaded = step_named(publish, "kitmaker-dry-run", "Upload dry-run report")["with"]["name"]
-    names = [s["with"].get("name") for s in uses(publish, "kitmaker-release", "actions/download-artifact@")]
-    assert uploaded in names
+    dry_run = step_named(publish, "kitmaker-dry-run", "Write the release job's report")
+    assert dry_run["env"] == {"REPORT": "${{ needs.github-release.outputs.report }}"}
+    assert "report/release-report.json" in dry_run["run"]
+    release = step_named(publish, "kitmaker-release", "Write the release report and the dry run's approval")
+    assert release["env"] == {"REPORT": "${{ needs.github-release.outputs.report }}",
+                              "APPROVED": "${{ needs.kitmaker-dry-run.outputs.approved }}"}
+    assert '"$APPROVED" > report/kitmaker-dry-run.json' in release["run"]
+    for job in ("kitmaker-dry-run", "kitmaker-release", "index-check"):
+        assert not uses(publish, job, "actions/download-artifact@"), job
 
 
 # --------------------------------------------------------------------------
@@ -616,9 +695,24 @@ def test_the_approved_dry_run_is_what_production_downloads(publish: dict) -> Non
 # --------------------------------------------------------------------------
 
 
+@pytest.mark.parametrize("result, released", [("success", True), ("failure", False), ("skipped", False),
+                                              ("cancelled", False)])
+def test_nothing_is_released_until_every_cell_signed_and_validated(flow: dict, sign: dict, result: str,
+                                                                   released: bool) -> None:
+    """`needs.sign.result` is the result of every matrix leg of `_woa-sign.yml`, validate
+    included - as long as validate runs whenever signing succeeds."""
+    job = flow["jobs"]["publish"]
+    assert "sign" in job["needs"]
+    assert evaluate(job["if"], {"needs.sign.result": result}) is released
+    validate = sign["jobs"]["validate"]
+    assert validate["needs"] == "sign" and "if" not in validate and "continue-on-error" not in validate
+    assert not any("continue-on-error" in s for s in steps(sign, "validate"))
+    assert "github-release" in [j for j, spec in load(PUBLISH)["jobs"].items() if spec.get("needs") == "gate"]
+
+
 def test_production_requires_its_dry_run(publish: dict) -> None:
     jobs = publish["jobs"]
-    assert jobs["kitmaker-release"]["needs"] == "kitmaker-dry-run"
+    assert jobs["kitmaker-release"]["needs"] == ["github-release", "kitmaker-dry-run"]
     assert squash(jobs["kitmaker-release"]["if"]) == "inputs.run-kitmaker-release"
     gate = step_named(publish, "gate", "Validate the publication request")["run"]
     assert '"$RELEASE" == true && "$DRY_RUN" != true' in gate

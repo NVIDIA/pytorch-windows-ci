@@ -46,23 +46,38 @@ Note [Sign the build job's own upload, by id]
     gives it a new id, so a wheel swapped in after the build job finished fails
     that download instead of being signed - however long afterwards a
     "Re-run failed jobs" restarts signing.
+
+Note [The unsigned files are hashed before signing, on a hosted runner]
+    GitHub records an artifact's SHA-256 when its job uploads it. This script
+    runs in the resolve job, on a GitHub-hosted runner with no signing identity:
+    it downloads each cell's artifact, refuses it unless it hashes to that
+    recorded digest, and records the SHA-256 of every file inside. The sign job
+    receives those hashes as a job output, which no other job can alter, and
+    refuses to ask for a signing token unless its own download matches them. So
+    what Azure signs is byte for byte what the build job uploaded.
 """
 
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
+import os
 import re
 import subprocess
 import sys
+import tempfile
+import zipfile
 from datetime import datetime
-from typing import Callable
+from pathlib import Path
+from typing import IO, Callable
 
 BUILD_WORKFLOW = ".github/workflows/windows-woa-build-test.yml"
 TRUSTED_EVENTS = ("schedule", "workflow_dispatch")
 _LABEL = re.compile(r"^py3(\d+)(t?)$")
 _ARTIFACT = re.compile(r"^woa-(py3\d+t?)-cu134-(\d+)$")
 _BUILD_JOB = re.compile(r"^woa-(py3\d+t?)-cu134-build / build$")
+_DIGEST = re.compile(r"^sha256:([0-9a-f]{64})$")
 
 Runner = Callable[..., subprocess.CompletedProcess]
 
@@ -93,6 +108,41 @@ def _build_jobs_upload(label: str, job: dict, artifact: dict) -> int:
             f"build job ({job.get('started_at')} to {job.get('completed_at')}); refusing to sign a replaced artifact"
         )
     return int(artifact["id"])
+
+
+def _recorded_digest(label: str, artifact: dict) -> str:
+    match = _DIGEST.match(str(artifact.get("digest") or ""))
+    if match is None:
+        raise BuildRunError(f"{label}: wheel artifact {artifact.get('id')} has no SHA-256 recorded by GitHub")
+    return match.group(1)
+
+
+def _sha256(stream: IO[bytes]) -> str:
+    digest = hashlib.sha256()
+    for chunk in iter(lambda: stream.read(1 << 20), b""):
+        digest.update(chunk)
+    return digest.hexdigest()
+
+
+def upload_files(cell: dict, archive: Path) -> dict[str, str]:
+    """SHA-256 of every file in a cell's artifact archive, which must hash to GitHub's recorded digest.
+
+    See Note [The unsigned files are hashed before signing, on a hosted runner].
+    """
+    with archive.open("rb") as handle:
+        actual = _sha256(handle)
+    if actual != cell["artifact_digest"]:
+        raise BuildRunError(f"{cell['label']}: artifact {cell['artifact_id']} downloaded as sha256:{actual}, "
+                            f"but GitHub recorded sha256:{cell['artifact_digest']} when the build job uploaded it")
+    files = {}
+    with zipfile.ZipFile(archive) as zf:
+        for info in zf.infolist():
+            if not info.is_dir():
+                with zf.open(info) as member:
+                    files[info.filename] = _sha256(member)
+    if not any(name.endswith(".whl") for name in files):
+        raise BuildRunError(f"{cell['label']}: artifact {cell['artifact_id']} holds no wheels")
+    return files
 
 
 def resolve(
@@ -158,10 +208,23 @@ def resolve(
         "html_url": run.get("html_url", ""),
         "cells": [
             {"version": label_to_version(label), "label": label,
-             "artifact_id": _build_jobs_upload(label, build_jobs[label], uploads[label])}
+             "artifact_id": _build_jobs_upload(label, build_jobs[label], uploads[label]),
+             "artifact_digest": _recorded_digest(label, uploads[label])}
             for label in eligible
         ],
     }
+
+
+def hash_uploads(api: "GitHubApi", cells: list[dict], work_dir: Path) -> None:
+    """Add each cell's `files`, one archive on disk at a time."""
+    work_dir.mkdir(parents=True, exist_ok=True)
+    for cell in cells:
+        archive = work_dir / f"{cell['artifact_id']}.zip"
+        try:
+            api.download(cell["artifact_id"], archive)
+            cell["files"] = upload_files(cell, archive)
+        finally:
+            archive.unlink(missing_ok=True)
 
 
 class GitHubApi:
@@ -193,6 +256,14 @@ class GitHubApi:
     def artifacts(self, run_id: str) -> list[dict]:
         return self._paged(f"repos/{self.repository}/actions/runs/{run_id}/artifacts", "artifacts")
 
+    def download(self, artifact_id: int, dest: Path) -> None:
+        with dest.open("wb") as handle:
+            proc = self._run(["gh", "api", f"repos/{self.repository}/actions/artifacts/{artifact_id}/zip"],
+                             stdout=handle, stderr=subprocess.PIPE)
+        if proc.returncode != 0:
+            detail = proc.stderr.decode(errors="replace").strip() if proc.stderr else f"exit {proc.returncode}"
+            raise BuildRunError(f"downloading artifact {artifact_id} failed: {detail}")
+
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
@@ -201,6 +272,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--channel", required=True, choices=("rehearsal", "nightly", "release"))
     parser.add_argument("--default-branch", required=True)
     parser.add_argument("--python-versions", default="")
+    parser.add_argument("--work-dir", type=Path, default=Path(os.environ.get("RUNNER_TEMP") or tempfile.gettempdir()),
+                        help="where each artifact archive is held while it is hashed")
     parser.add_argument("--github-output", help="append step outputs to this file")
     args = parser.parse_args(argv)
     try:
@@ -212,7 +285,8 @@ def main(argv: list[str] | None = None) -> int:
             repository=args.repository, channel=args.channel,
             default_branch=args.default_branch, python_versions=args.python_versions,
         )
-    except (BuildRunError, json.JSONDecodeError) as err:
+        hash_uploads(api, result["cells"], args.work_dir / "uploads")
+    except (BuildRunError, json.JSONDecodeError, OSError, zipfile.BadZipFile) as err:
         print(f"::error title=build run::{err}", file=sys.stderr)
         return 1
     labels = ", ".join(c["label"] for c in result["cells"])

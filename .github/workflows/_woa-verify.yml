@@ -5,11 +5,14 @@ name: _woa-verify
 
 # After Kitmaker publishes, install one cell's wheels back from pypi.nvidia.com on WoA
 # hardware: download exactly the released filenames, check them against the SHA-256
-# the release report recorded, install them into a clean venv, and run a CUDA smoke
+# that index-check verified, install them into a clean venv, and run a CUDA smoke
 # test. This is what a user does, on the hardware a user has.
 #
-# `kitmaker-release` has already confirmed the index lists every filename at the right
-# hash; this adds the install and the GPU, which only the WoA runner pool can provide.
+# index-check has already proven, on a GitHub-hosted runner, that the index's copy of
+# every wheel is what the release's attestations vouch for. Nothing installs unless its
+# bytes match those hashes, which arrive as job outputs rather than artifacts any job in
+# the run could replace. This adds the install and the GPU, which only the WoA runner
+# pool can provide.
 #
 # Runner egress needed: pypi.nvidia.com (public) and pypi.org for dependencies.
 
@@ -33,8 +36,12 @@ on:
         description: "nightly | release - selects the index the wheels were published to."
         type: string
         required: true
-      signed-artifact:
-        description: "The cell's signed artifact; its manifest names the files to expect."
+      cell-files:
+        description: "JSON {path: sha256} of the cell's build artifact, from the resolve job; its wheels are the filenames to expect."
+        type: string
+        required: true
+      published-wheels:
+        description: "JSON {filename: sha256} of every published wheel, as index-check verified it."
         type: string
         required: true
 
@@ -73,8 +80,6 @@ jobs:
           pt-root: ${{ env.PT_ROOT }}
           scratch-root: ${{ env.WOA_SCRATCH }}
           extra-paths: |
-            ${{ github.workspace }}/signed
-            ${{ github.workspace }}/report
             ${{ github.workspace }}/verify
 
       - name: Preflight test toolchain + GPU
@@ -94,36 +99,24 @@ jobs:
           python-label: ${{ inputs.python-label }}
           venv-path: ${{ env.WOA_VENV_DIR }}\verify-${{ inputs.python-label }}
 
-      - name: Download signed manifest
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        with:
-          name: ${{ inputs.signed-artifact }}
-          path: signed
-
-      # The hashes come from what was released, not from this cell's manifest: a shared
-      # abi3 wheel is published from one cell only, so the others' own copies differ.
-      - name: Download release report
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        with:
-          name: woa-release-report-${{ github.run_id }}
-          path: report
-
+      # The hashes come from what was published, not from this cell's build: a shared abi3
+      # wheel is published from one cell only, so the others' own copies differ.
       - name: Install the released wheels from pypi.nvidia.com
         env:
           INDEX_URL: ${{ inputs.channel == 'release' && 'https://pypi.nvidia.com/nvtorch_oot' || 'https://pypi.nvidia.com/nvtorch_oot_nightly' }}
           VENV_ACTIVATE: ${{ steps.venv.outputs.venv-activate }}
           CELL: ${{ inputs.python-label }}
+          CELL_FILES: ${{ inputs.cell-files }}
+          PUBLISHED_WHEELS: ${{ inputs.published-wheels }}
         run: |
-          $manifest = Get-Content "signed/release-manifest-$env:CELL.json" -Raw | ConvertFrom-Json
-          $released = @{}
-          foreach ($asset in (Get-Content 'report/release-report.json' -Raw | ConvertFrom-Json).assets) {
-            $released[$asset.name] = $asset.sha256
-          }
-          $names = @($manifest.wheels | ForEach-Object filename)
+          $published = @{}
+          ($env:PUBLISHED_WHEELS | ConvertFrom-Json).PSObject.Properties | ForEach-Object { $published[$_.Name] = $_.Value }
+          $names = @(($env:CELL_FILES | ConvertFrom-Json).PSObject.Properties.Name | Where-Object { $_ -like '*.whl' } | Sort-Object)
+          if ($names.Count -eq 0) { throw "the $env:CELL build handed on no wheels" }
           $hashes = [ordered]@{}
           foreach ($name in $names) {
-            if (-not $released.ContainsKey($name)) { throw "$name is in the $env:CELL manifest but not in the release" }
-            $hashes[$name] = $released[$name]
+            if (-not $published.ContainsKey($name)) { throw "$name was built for $env:CELL but index-check did not verify it" }
+            $hashes[$name] = $published[$name]
           }
           $python = Join-Path (Split-Path -Parent $env:VENV_ACTIVATE) 'python.exe'
           ./oot/tools/woa-build/shared/publish/Test-PyPiWheelRelease.ps1 `
@@ -149,6 +142,4 @@ jobs:
           pt-root: ${{ env.PT_ROOT }}
           scratch-root: ${{ env.WOA_SCRATCH }}
           extra-paths: |
-            ${{ github.workspace }}/signed
-            ${{ github.workspace }}/report
             ${{ github.workspace }}/verify

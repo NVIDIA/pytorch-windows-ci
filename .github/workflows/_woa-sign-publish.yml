@@ -5,10 +5,16 @@ name: _woa-sign-publish
 
 # Sign, validate and publish the WoA wheels built by a `windows-woa-build-test` run:
 #
-#   resolve   vet the build run and list the cells that built (scripts/publish/build_run.py)
+#   resolve   vet the build run, list the cells that built, and hash each cell's files after
+#             checking its artifact against GitHub's upload digest (scripts/publish/build_run.py)
 #   sign      Azure Artifact Signing on hosted windows-2025, then a WoA validation job
-#   publish   immutable GitHub Release, then Kitmaker dry run and production via Charon
+#   publish   immutable GitHub Release, Kitmaker dry run and production via Charon, then a
+#             check of the index's copies against the release's attestations
 #   verify    install the released wheels back from pypi.nvidia.com on WoA hardware
+#
+# Wheels move between jobs as artifacts, but every job that receives them first checks them
+# against SHA-256s the sending job published as job outputs. See Note [Hashes travel as job
+# outputs, files as artifacts] in scripts/publish/digests.py.
 #
 # See docs/woa-wheel-publishing.md.
 #
@@ -76,7 +82,8 @@ jobs:
     # which routinely fail - and on a nightly are still running. build_run.py judges
     # each cell on its own build job.
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    # Downloads and hashes each cell's ~1.9 GB artifact, one at a time.
+    timeout-minutes: 30
     outputs:
       build-run-id: ${{ steps.resolve.outputs.run-id }}
       cells: ${{ steps.resolve.outputs.cells }}
@@ -88,7 +95,7 @@ jobs:
           show-progress: false
           persist-credentials: false
 
-      - name: Vet the build run and list its cells
+      - name: Vet the build run, list its cells and hash their wheels
         id: resolve
         shell: bash
         env:
@@ -125,6 +132,7 @@ jobs:
       python-label: ${{ matrix.config.label }}
       build-run-id: ${{ needs.resolve.outputs.build-run-id }}
       unsigned-artifact-id: ${{ matrix.config.artifact_id }}
+      unsigned-files: ${{ toJSON(matrix.config.files) }}
       # `_woa-publish.yml` downloads these by pattern from this run; keep the shapes in step.
       # A nightly's build run IS this run, so `-signed-` and `-validation-` are what keep
       # those patterns off the unsigned build artifacts.
@@ -134,8 +142,9 @@ jobs:
   publish:
     name: woa-cu134-publish
     needs: [resolve, sign]
-    # Every cell must have signed AND validated: a failed cell holds back the whole
-    # release rather than publishing a partial set.
+    # Every cell must have signed AND validated on WoA hardware: `sign` is the whole of
+    # `_woa-sign.yml`, validate job included, so a failed or skipped validation anywhere
+    # holds back the whole release rather than publishing a partial set.
     if: ${{ !cancelled() && needs.sign.result == 'success' }}
     # contents: write for the release, id-token: write for the Charon OIDC tokens,
     # attestations: read to check the signing job's. Each job inside
@@ -159,7 +168,7 @@ jobs:
   verify:
     name: woa-${{ matrix.config.label }}-cu134-verify
     needs: [resolve, publish]
-    if: ${{ !cancelled() && needs.publish.outputs.kitmaker-released == 'true' }}
+    if: ${{ !cancelled() && needs.publish.outputs.published-wheels != '' }}
     strategy:
       fail-fast: false
       matrix:
@@ -170,4 +179,5 @@ jobs:
       python-version: ${{ matrix.config.version }}
       python-label: ${{ matrix.config.label }}
       channel: ${{ inputs.channel }}
-      signed-artifact: woa-${{ matrix.config.label }}-cu134-signed-${{ github.run_id }}
+      cell-files: ${{ toJSON(matrix.config.files) }}
+      published-wheels: ${{ needs.publish.outputs.published-wheels }}

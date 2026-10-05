@@ -457,10 +457,37 @@ def test_signed_wheels_are_verified_and_attested_before_they_are_uploaded(sign: 
     names = [s.get("name") for s in steps(sign, "sign")]
     order = ["Download unsigned wheels from the build run", "Unpack wheels for signing",
              "Sign native binaries with Azure Artifact Signing", "Repack signed wheels",
-             "Verify signatures in the repacked wheels", "Check package metadata",
+             "Verify signatures in the repacked wheels",
              "Attest the signed wheels and their evidence", "Upload signed wheels + evidence"]
     positions = [names.index(n) for n in order]
     assert positions == sorted(positions), names
+
+
+@pytest.mark.parametrize("name", [SIGN, PUBLISH])
+def test_no_job_holding_a_credential_installs_from_pypi(name: str) -> None:
+    """A dependency installed beside the signing session, or the release and Kitmaker
+    tokens, could rewrite the files before they are attested or released."""
+    workflow = load(name)
+    for job, spec in workflow["jobs"].items():
+        if "inputs.runner-base" in str(spec.get("runs-on")):
+            continue
+        for step in steps(workflow, job):
+            assert "pip install" not in str(step.get("run", "")), f"{name}:{job}:{step.get('name')}"
+
+
+def test_package_metadata_is_checked_before_validation(sign: dict) -> None:
+    names = [s.get("name") for s in steps(sign, "validate")]
+    assert names.index("Download signed wheels") < names.index("Check package metadata") \
+        < names.index("Validate signed wheels on WoA hardware")
+    assert "twine check" in step_named(sign, "validate", "Check package metadata")["run"]
+
+
+def test_signing_refuses_to_start_without_a_pinned_signer_subject(sign: dict) -> None:
+    """Without it, both signature checks accept any valid signer, so a wrong
+    certificate profile would go unnoticed."""
+    gate = step_named(sign, "sign", "Require Azure Artifact Signing configuration")
+    assert gate["env"]["WOA_EXPECTED_SIGNER_SUBJECT"] == "${{ vars.WOA_EXPECTED_SIGNER_SUBJECT }}"
+    assert "'WOA_EXPECTED_SIGNER_SUBJECT'" in gate["run"]
 
 
 def test_signing_attests_every_file_the_release_job_checks(sign: dict) -> None:
@@ -495,6 +522,9 @@ def test_the_release_job_checks_attestations_before_releasing(publish: dict) -> 
 def test_signing_downloads_from_the_vetted_build_run(sign: dict) -> None:
     download = step_named(sign, "sign", "Download unsigned wheels from the build run")["with"]
     assert download["run-id"] == "${{ inputs.build-run-id }}"
+    # By id: a replaced artifact has a new one, so the swap fails here instead of being signed.
+    assert download["artifact-ids"] == "${{ inputs.unsigned-artifact-id }}"
+    assert "name" not in download and str(download["merge-multiple"]).lower() == "true"
     repack = step_named(sign, "sign", "Repack signed wheels")["run"]
     assert '--build-run-id "${{ inputs.build-run-id }}"' in repack
 
@@ -508,10 +538,9 @@ def test_validation_reports_upload_even_on_failure(sign: dict) -> None:
 # --------------------------------------------------------------------------
 
 
-def test_signing_reads_the_artifact_the_build_uploads(flow: dict, nightly: dict) -> None:
-    # The build's `github.run_id` is the build run.
-    uploaded = resolve(nightly["jobs"]["build"]["with"]["wheel-artifact"], run_id=BUILD_RUN_ID)
-    assert resolve(flow["jobs"]["sign"]["with"]["unsigned-artifact"]) == uploaded
+def test_signing_reads_the_artifact_the_resolver_vetted(flow: dict) -> None:
+    """build_run.py records the id of the artifact each cell's build job uploaded."""
+    assert flow["jobs"]["sign"]["with"]["unsigned-artifact-id"] == "${{ matrix.config.artifact_id }}"
 
 
 def test_the_resolver_recognises_the_build_artifacts_and_jobs(nightly: dict) -> None:
@@ -531,7 +560,7 @@ def test_the_resolver_knows_every_cell_the_build_matrix_has(nightly: dict) -> No
 
 
 @pytest.mark.parametrize("build_run_id, run_id", RUN_PAIRS)
-def test_publish_downloads_exactly_what_signing_uploads(flow: dict, publish: dict, build_run_id: str,
+def test_publish_downloads_exactly_what_signing_uploads(flow: dict, publish: dict, nightly: dict, build_run_id: str,
                                                         run_id: str) -> None:
     """Including on a nightly, where the unsigned build artifacts sit in the same run."""
     sign_with = flow["jobs"]["sign"]["with"]
@@ -540,7 +569,8 @@ def test_publish_downloads_exactly_what_signing_uploads(flow: dict, publish: dic
     for key in ("signed-artifact", "validation-artifact"):
         name = resolve(sign_with[key], build_run_id=build_run_id, run_id=run_id)
         assert sum(fnmatch.fnmatchcase(name, p) for p in patterns) == 1, (key, name, patterns)
-    unsigned = resolve(sign_with["unsigned-artifact"], build_run_id=build_run_id, run_id=run_id)
+    # The build's `github.run_id` is the build run.
+    unsigned = resolve(nightly["jobs"]["build"]["with"]["wheel-artifact"], run_id=build_run_id)
     assert not any(fnmatch.fnmatchcase(unsigned, p) for p in patterns)
 
 

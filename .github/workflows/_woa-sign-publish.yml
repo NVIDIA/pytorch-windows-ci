@@ -124,8 +124,7 @@ jobs:
       python-version: ${{ matrix.config.version }}
       python-label: ${{ matrix.config.label }}
       build-run-id: ${{ needs.resolve.outputs.build-run-id }}
-      # The name `_woa-build.yml` uploads under, in the build run.
-      unsigned-artifact: woa-${{ matrix.config.label }}-cu134-${{ needs.resolve.outputs.build-run-id }}
+      unsigned-artifact-id: ${{ matrix.config.artifact_id }}
       # `_woa-publish.yml` downloads these by pattern from this run; keep the shapes in step.
       # A nightly's build run IS this run, so `-signed-` and `-validation-` are what keep
       # those patterns off the unsigned build artifacts.

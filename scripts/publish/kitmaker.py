@@ -65,7 +65,7 @@ DEFAULT_PORTAL = "http://127.0.0.1:8888/kitmaker-portal/api/v0"
 CHARON_AUDIENCE = "charon.nvidia.com"
 JOB_TYPE = "wheel-release-job"
 TOKEN_MAX_AGE_SECONDS = 240
-REFUSED_EVENTS = {"pull_request", "pull_request_target", "repository_dispatch"}
+TRUSTED_EVENTS = {"schedule", "workflow_dispatch"}
 FAILED_STATUSES = {"failed", "error", "cancelled", "canceled", "rejected"}
 NIL_UUID = "00000000-0000-0000-0000-000000000000"
 
@@ -80,8 +80,8 @@ class KitmakerError(RuntimeError):
 
 def refuse_untrusted_event(env: dict[str, str]) -> None:
     event = env.get("GITHUB_EVENT_NAME", "")
-    if event in REFUSED_EVENTS:
-        raise KitmakerError(f"refusing to run for a {event!r} event; publication is never PR-triggered")
+    if event not in TRUSTED_EVENTS:
+        raise KitmakerError(f"refusing to run for a {event!r} event; only {sorted(TRUSTED_EVENTS)} runs publish")
 
 
 # ---------------------------------------------------------------------------

@@ -22,6 +22,11 @@ import build_run as br  # noqa: E402
 
 REPO = "NVIDIA/pytorch-windows-ci"
 RUN = 900
+BUILD_STARTED, UPLOADED, BUILD_COMPLETED = "2026-10-04T18:16:38Z", "2026-10-04T20:28:42Z", "2026-10-04T20:30:33Z"
+
+
+def artifact_id(label: str) -> int:
+    return 11_000 + int(label[3:].rstrip("t")) * 10 + label.endswith("t")
 
 
 def run(**overrides) -> dict:
@@ -39,17 +44,21 @@ def run(**overrides) -> dict:
 
 
 def jobs(*labels: str, failed: tuple[str, ...] = ()) -> list[dict]:
+    window = {"started_at": BUILD_STARTED, "completed_at": BUILD_COMPLETED}
     out = [{"name": "resolve pytorch ref", "conclusion": "success"}]
-    out += [{"name": f"woa-{label}-cu134-build / build", "conclusion": "success"} for label in labels]
-    out += [{"name": f"woa-{label}-cu134-build / build", "conclusion": "failure"} for label in failed]
+    out += [{"name": f"woa-{label}-cu134-build / build", "conclusion": "success", **window} for label in labels]
+    out += [{"name": f"woa-{label}-cu134-build / build", "conclusion": "failure", **window} for label in failed]
     out += [{"name": f"woa-{label}-cu134-arm64-test / test (shard 1/4)", "conclusion": "failure"} for label in labels]
     return out
 
 
-def artifacts(*labels: str, expired: tuple[str, ...] = (), run_id: int = RUN) -> list[dict]:
-    out = [{"name": f"woa-{label}-cu134-{run_id}", "expired": False} for label in labels]
-    out += [{"name": f"woa-{label}-cu134-{run_id}", "expired": True} for label in expired]
-    out.append({"name": f"build-logs-woa-py313-{run_id}-1", "expired": False})
+def artifacts(*labels: str, expired: tuple[str, ...] = (), run_id: int = RUN, created: str = UPLOADED) -> list[dict]:
+    def entry(label: str, is_expired: bool) -> dict:
+        return {"id": artifact_id(label), "name": f"woa-{label}-cu134-{run_id}", "expired": is_expired,
+                "created_at": created}
+
+    out = [entry(label, False) for label in labels] + [entry(label, True) for label in expired]
+    out.append({"id": 1, "name": f"build-logs-woa-py313-{run_id}-1", "expired": False, "created_at": created})
     return out
 
 
@@ -70,7 +79,7 @@ def test_every_cell_that_built_is_eligible_in_version_order() -> None:
     labels = ("py314t", "py311", "py314", "py313", "py312")
     result = resolve(job_data=jobs(*labels), artifact_data=artifacts(*labels))
     assert [c["label"] for c in result["cells"]] == ["py311", "py312", "py313", "py314", "py314t"]
-    assert result["cells"][-1] == {"version": "3.14t", "label": "py314t"}
+    assert result["cells"][-1] == {"version": "3.14t", "label": "py314t", "artifact_id": artifact_id("py314t")}
     assert (result["run_id"], result["head_sha"], result["event"]) == (str(RUN), "a" * 40, "schedule")
 
 
@@ -115,7 +124,20 @@ def test_cells_without_a_build_or_an_artifact_are_left_out() -> None:
 
 def test_python_versions_selects_a_subset() -> None:
     result = resolve(job_data=jobs("py313", "py312"), artifact_data=artifacts("py313", "py312"), python_versions="3.13")
-    assert result["cells"] == [{"version": "3.13", "label": "py313"}]
+    assert result["cells"] == [{"version": "3.13", "label": "py313", "artifact_id": artifact_id("py313")}]
+
+
+@pytest.mark.parametrize("created", ["2026-10-04T20:31:00Z", "2026-10-04T18:16:00Z", None])
+def test_an_artifact_its_build_job_did_not_create_is_refused(created: str | None) -> None:
+    """See Note [Sign the build job's own upload, by id]: a wheel artifact replaced after the
+    build finished - by a test shard, say - must stop publication, not get signed."""
+    with pytest.raises(br.BuildRunError, match="py313: wheel artifact 11130 .* refusing to sign a replaced artifact"):
+        resolve(artifact_data=artifacts("py313", created=created))
+
+
+def test_the_window_includes_its_edges() -> None:
+    for created in (BUILD_STARTED, BUILD_COMPLETED):
+        assert resolve(artifact_data=artifacts("py313", created=created))["cells"][0]["artifact_id"] == 11130
 
 
 @pytest.mark.parametrize(
@@ -154,7 +176,10 @@ def test_main_writes_the_matrix_for_the_workflow(tmp_path: Path, monkeypatch) ->
     assert br.main(["--run-id", str(RUN), "--repository", REPO, "--channel", "nightly",
                     "--default-branch", "main", "--github-output", str(output)]) == 0
     lines = dict(line.split("=", 1) for line in output.read_text().splitlines())
-    assert json.loads(lines["cells"]) == [{"version": "3.13", "label": "py313"}, {"version": "3.14t", "label": "py314t"}]
+    assert json.loads(lines["cells"]) == [
+        {"version": "3.13", "label": "py313", "artifact_id": artifact_id("py313")},
+        {"version": "3.14t", "label": "py314t", "artifact_id": artifact_id("py314t")},
+    ]
     assert lines["run-id"] == str(RUN)
 
 

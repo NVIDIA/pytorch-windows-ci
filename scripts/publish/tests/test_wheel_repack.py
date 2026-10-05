@@ -285,6 +285,24 @@ def test_cli_round_trip_writes_the_manifest(tmp_path: Path, monkeypatch) -> None
     assert provenance["build_run_id"] == "900"
 
 
+@pytest.mark.parametrize("content", [None, "", "main\n"])
+def test_repack_refuses_a_missing_or_unreadable_pytorch_sha(content: str | None, tmp_path: Path, capsys) -> None:
+    """The manifest's pytorch_sha is release evidence; it is never left empty."""
+    make_set(tmp_path / "in")
+    sha_file = tmp_path / "in" / "built_pytorch_sha.txt"
+    if content is not None:
+        sha_file.write_text(content)
+    assert wr.main(["unpack", "--wheel-dir", str(tmp_path / "in"), "--work-dir", str(tmp_path / "work")]) == 0
+    sign_tree(tmp_path / "work")
+    manifest_path = tmp_path / "out" / "release-manifest-py313.json"
+    assert wr.main([
+        "repack", "--work-dir", str(tmp_path / "work"), "--out-dir", str(tmp_path / "out"),
+        "--manifest", str(manifest_path), "--cell", "py313", "--pytorch-sha-file", str(sha_file),
+    ]) == 1
+    assert "::error title=wheel repack::" in capsys.readouterr().err
+    assert not manifest_path.exists()
+
+
 def test_cli_reports_errors_as_annotations(tmp_path: Path, capsys) -> None:
     (tmp_path / "in").mkdir()
     assert wr.main(["unpack", "--wheel-dir", str(tmp_path / "in"), "--work-dir", str(tmp_path / "work")]) == 1

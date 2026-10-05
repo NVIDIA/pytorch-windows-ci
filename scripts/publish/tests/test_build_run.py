@@ -9,9 +9,12 @@ and the requests that would quietly publish less than was asked for. See Note
 """
 from __future__ import annotations
 
+import hashlib
+import io
 import json
 import subprocess
 import sys
+import zipfile
 from pathlib import Path
 
 import pytest
@@ -23,10 +26,31 @@ import build_run as br  # noqa: E402
 REPO = "NVIDIA/pytorch-windows-ci"
 RUN = 900
 BUILD_STARTED, UPLOADED, BUILD_COMPLETED = "2026-10-04T18:16:38Z", "2026-10-04T20:28:42Z", "2026-10-04T20:30:33Z"
+WHEEL = "torch-2.14.0.dev20261005+cu134-cp313-cp313-win_arm64.whl"
 
 
 def artifact_id(label: str) -> int:
     return 11_000 + int(label[3:].rstrip("t")) * 10 + label.endswith("t")
+
+
+def archive(files: dict[str, bytes]) -> bytes:
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as zf:
+        for name, data in files.items():
+            zf.writestr(name, data)
+    return buffer.getvalue()
+
+
+UPLOAD = archive({WHEEL: b"wheel", "built_pytorch_sha.txt": b"a" * 40})
+
+
+def sha(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()
+
+
+def cell(label: str) -> dict:
+    return {"version": br.label_to_version(label), "label": label,
+            "artifact_id": artifact_id(label), "artifact_digest": sha(UPLOAD)}
 
 
 def run(**overrides) -> dict:
@@ -52,10 +76,11 @@ def jobs(*labels: str, failed: tuple[str, ...] = ()) -> list[dict]:
     return out
 
 
-def artifacts(*labels: str, expired: tuple[str, ...] = (), run_id: int = RUN, created: str = UPLOADED) -> list[dict]:
+def artifacts(*labels: str, expired: tuple[str, ...] = (), run_id: int = RUN, created: str = UPLOADED,
+              digest: str | None = f"sha256:{sha(UPLOAD)}") -> list[dict]:
     def entry(label: str, is_expired: bool) -> dict:
         return {"id": artifact_id(label), "name": f"woa-{label}-cu134-{run_id}", "expired": is_expired,
-                "created_at": created}
+                "created_at": created, "digest": digest}
 
     out = [entry(label, False) for label in labels] + [entry(label, True) for label in expired]
     out.append({"id": 1, "name": f"build-logs-woa-py313-{run_id}-1", "expired": False, "created_at": created})
@@ -79,7 +104,7 @@ def test_every_cell_that_built_is_eligible_in_version_order() -> None:
     labels = ("py314t", "py311", "py314", "py313", "py312")
     result = resolve(job_data=jobs(*labels), artifact_data=artifacts(*labels))
     assert [c["label"] for c in result["cells"]] == ["py311", "py312", "py313", "py314", "py314t"]
-    assert result["cells"][-1] == {"version": "3.14t", "label": "py314t", "artifact_id": artifact_id("py314t")}
+    assert result["cells"][-1] == cell("py314t")
     assert (result["run_id"], result["head_sha"], result["event"]) == (str(RUN), "a" * 40, "schedule")
 
 
@@ -124,7 +149,7 @@ def test_cells_without_a_build_or_an_artifact_are_left_out() -> None:
 
 def test_python_versions_selects_a_subset() -> None:
     result = resolve(job_data=jobs("py313", "py312"), artifact_data=artifacts("py313", "py312"), python_versions="3.13")
-    assert result["cells"] == [{"version": "3.13", "label": "py313", "artifact_id": artifact_id("py313")}]
+    assert result["cells"] == [cell("py313")]
 
 
 @pytest.mark.parametrize("created", ["2026-10-04T20:31:00Z", "2026-10-04T18:16:00Z", None])
@@ -138,6 +163,59 @@ def test_an_artifact_its_build_job_did_not_create_is_refused(created: str | None
 def test_the_window_includes_its_edges() -> None:
     for created in (BUILD_STARTED, BUILD_COMPLETED):
         assert resolve(artifact_data=artifacts("py313", created=created))["cells"][0]["artifact_id"] == 11130
+
+
+@pytest.mark.parametrize("digest", [None, "", "sha1:" + "0" * 40, "sha256:" + "0" * 63])
+def test_an_artifact_without_a_recorded_sha256_is_refused(digest: str | None) -> None:
+    with pytest.raises(br.BuildRunError, match="py313: wheel artifact 11130 has no SHA-256 recorded by GitHub"):
+        resolve(artifact_data=artifacts("py313", digest=digest))
+
+
+def test_upload_files_hashes_every_file_of_a_matching_archive(tmp_path: Path) -> None:
+    """See Note [The unsigned files are hashed before signing, on a hosted runner]."""
+    path = tmp_path / "a.zip"
+    path.write_bytes(UPLOAD)
+    assert br.upload_files(cell("py313"), path) == {WHEEL: sha(b"wheel"), "built_pytorch_sha.txt": sha(b"a" * 40)}
+
+
+def test_an_archive_that_is_not_the_recorded_upload_is_refused(tmp_path: Path) -> None:
+    path = tmp_path / "a.zip"
+    path.write_bytes(archive({WHEEL: b"swapped", "built_pytorch_sha.txt": b"a" * 40}))
+    with pytest.raises(br.BuildRunError, match="py313: artifact 11130 downloaded as sha256:.* but GitHub recorded"):
+        br.upload_files(cell("py313"), path)
+
+
+def test_an_archive_without_wheels_is_refused(tmp_path: Path) -> None:
+    path = tmp_path / "a.zip"
+    path.write_bytes(archive({"built_pytorch_sha.txt": b"a" * 40}))
+    with pytest.raises(br.BuildRunError, match="holds no wheels"):
+        br.upload_files({**cell("py313"), "artifact_digest": sha(path.read_bytes())}, path)
+
+
+def test_hash_uploads_downloads_each_artifact_and_removes_it(tmp_path: Path) -> None:
+    requested = []
+
+    def runner(command, stdout, **_):
+        requested.append(command)
+        stdout.write(UPLOAD)
+        return subprocess.CompletedProcess(command, 0, None, b"")
+
+    cells = [cell("py313"), cell("py314t")]
+    br.hash_uploads(br.GitHubApi(REPO, runner=runner), cells, tmp_path / "uploads")
+    assert requested == [["gh", "api", f"repos/{REPO}/actions/artifacts/{artifact_id(label)}/zip"]
+                         for label in ("py313", "py314t")]
+    assert all(c["files"][WHEEL] == sha(b"wheel") for c in cells)
+    assert list((tmp_path / "uploads").iterdir()) == []
+
+
+def test_a_failed_download_is_an_error_and_leaves_nothing_behind(tmp_path: Path) -> None:
+    def runner(command, stdout, **_):
+        stdout.write(b"partial")
+        return subprocess.CompletedProcess(command, 1, None, b"HTTP 410: artifact expired")
+
+    with pytest.raises(br.BuildRunError, match="downloading artifact 11130 failed: HTTP 410"):
+        br.hash_uploads(br.GitHubApi(REPO, runner=runner), [cell("py313")], tmp_path)
+    assert list(tmp_path.iterdir()) == []
 
 
 @pytest.mark.parametrize(
@@ -172,15 +250,26 @@ def test_main_writes_the_matrix_for_the_workflow(tmp_path: Path, monkeypatch) ->
     monkeypatch.setattr(br.GitHubApi, "run", lambda self, _id: run())
     monkeypatch.setattr(br.GitHubApi, "jobs", lambda self, _id: jobs("py313", "py314t"))
     monkeypatch.setattr(br.GitHubApi, "artifacts", lambda self, _id: artifacts("py313", "py314t"))
+    monkeypatch.setattr(br.GitHubApi, "download", lambda self, _id, dest: dest.write_bytes(UPLOAD))
     output = tmp_path / "out"
-    assert br.main(["--run-id", str(RUN), "--repository", REPO, "--channel", "nightly",
-                    "--default-branch", "main", "--github-output", str(output)]) == 0
+    assert br.main(["--run-id", str(RUN), "--repository", REPO, "--channel", "nightly", "--default-branch", "main",
+                    "--work-dir", str(tmp_path), "--github-output", str(output)]) == 0
     lines = dict(line.split("=", 1) for line in output.read_text().splitlines())
-    assert json.loads(lines["cells"]) == [
-        {"version": "3.13", "label": "py313", "artifact_id": artifact_id("py313")},
-        {"version": "3.14t", "label": "py314t", "artifact_id": artifact_id("py314t")},
-    ]
+    files = {WHEEL: sha(b"wheel"), "built_pytorch_sha.txt": sha(b"a" * 40)}
+    assert json.loads(lines["cells"]) == [{**cell("py313"), "files": files}, {**cell("py314t"), "files": files}]
     assert lines["run-id"] == str(RUN)
+
+
+def test_main_publishes_nothing_when_a_download_does_not_match(tmp_path: Path, monkeypatch, capsys) -> None:
+    monkeypatch.setattr(br.GitHubApi, "run", lambda self, _id: run())
+    monkeypatch.setattr(br.GitHubApi, "jobs", lambda self, _id: jobs("py313"))
+    monkeypatch.setattr(br.GitHubApi, "artifacts", lambda self, _id: artifacts("py313"))
+    monkeypatch.setattr(br.GitHubApi, "download", lambda self, _id, dest: dest.write_bytes(b"not the upload"))
+    output = tmp_path / "out"
+    assert br.main(["--run-id", str(RUN), "--repository", REPO, "--channel", "nightly", "--default-branch", "main",
+                    "--work-dir", str(tmp_path), "--github-output", str(output)]) == 1
+    assert "but GitHub recorded" in capsys.readouterr().err
+    assert not output.exists()
 
 
 def test_main_rejects_a_non_numeric_run_id(capsys) -> None:

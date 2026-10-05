@@ -13,6 +13,12 @@ name: _woa-publish
 #                     from the release URLs - validates everything, publishes nothing
 #   kitmaker-release  the exact dry-run payload with only `upload` flipped, then polls
 #                     pypi.nvidia.com until every filename is listed at the right SHA-256
+#   index-check       download every wheel back from pypi.nvidia.com and refuse any whose
+#                     bytes the release's attestations do not vouch for
+#
+# The release report and the dry run's approval reach the jobs after them as job outputs.
+# The same reports are also uploaded as artifacts, for the record only: any job in the run,
+# self-hosted ones included, can replace an artifact, but only a job can set its own outputs.
 #
 # NO PRIVATE-NETWORK EGRESS FROM OUR RUNNERS. Everything here runs on GitHub-hosted
 # ubuntu-latest. Kitmaker is reached through Charon Ferry: a Teleport application
@@ -68,6 +74,9 @@ on:
       kitmaker-released:
         description: "'true' once the production release is listed on pypi.nvidia.com."
         value: ${{ jobs.kitmaker-release.outputs.released }}
+      published-wheels:
+        description: "JSON {filename: sha256} of every wheel whose pypi.nvidia.com copy index-check verified. Empty unless it passed."
+        value: ${{ jobs.index-check.outputs.wheels }}
 
 permissions:
   contents: read
@@ -126,6 +135,7 @@ jobs:
     timeout-minutes: 60
     outputs:
       tag: ${{ steps.publish.outputs.tag }}
+      report: ${{ steps.publish.outputs.report }}
     steps:
       - name: Checkout OOT tooling repo
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
@@ -177,6 +187,7 @@ jobs:
             --build-run-id "$BUILD_RUN_ID" \
             --justification "$JUSTIFICATION" --report report/release-report.json
           echo "tag=$(jq -r .tag report/release-report.json)" >> "$GITHUB_OUTPUT"
+          echo "report=$(jq -c . report/release-report.json)" >> "$GITHUB_OUTPUT"
 
       - name: Upload release report
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -234,6 +245,8 @@ jobs:
       contents: read
       id-token: write
     timeout-minutes: 120
+    outputs:
+      approved: ${{ steps.dry-run.outputs.approved }}
     steps:
       - name: Checkout OOT tooling repo
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
@@ -242,11 +255,11 @@ jobs:
           show-progress: false
           persist-credentials: false
 
-      - name: Download release report
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        with:
-          name: woa-release-report-${{ github.run_id }}
-          path: report
+      - name: Write the release job's report
+        shell: bash
+        env:
+          REPORT: ${{ needs.github-release.outputs.report }}
+        run: mkdir -p report && printf '%s' "$REPORT" > report/release-report.json
 
       - name: Install Teleport
         uses: teleport-actions/setup@b638ff596557cc3959eb6b5287d5e58e0c8ac6a6 # v1.1.1
@@ -263,6 +276,7 @@ jobs:
           listen: tcp://127.0.0.1:8888
 
       - name: Kitmaker dry run (upload=false)
+        id: dry-run
         env:
           KITMAKER_API_TOKEN: ${{ secrets.KITMAKER_API_TOKEN }}
           KITMAKER_PIC: ${{ vars.KITMAKER_PIC }}
@@ -270,7 +284,7 @@ jobs:
         run: |
           python3 oot/scripts/publish/kitmaker.py dry-run \
             --release-report report/release-report.json --channel "$CHANNEL" \
-            --report report/kitmaker-dry-run.json
+            --report report/kitmaker-dry-run.json --github-output "$GITHUB_OUTPUT"
 
       - name: Upload dry-run report
         if: ${{ !cancelled() }}
@@ -285,7 +299,7 @@ jobs:
   # The point of no return: everything above is reversible or publishes nothing.
   kitmaker-release:
     name: kitmaker release
-    needs: kitmaker-dry-run
+    needs: [github-release, kitmaker-dry-run]
     if: inputs.run-kitmaker-release
     runs-on: ubuntu-latest
     environment: woa-publish-${{ inputs.channel }}
@@ -303,17 +317,15 @@ jobs:
           show-progress: false
           persist-credentials: false
 
-      - name: Download release report
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        with:
-          name: woa-release-report-${{ github.run_id }}
-          path: report
-
-      - name: Download dry-run report
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        with:
-          name: woa-kitmaker-dry-run-${{ github.run_id }}
-          path: report
+      - name: Write the release report and the dry run's approval
+        shell: bash
+        env:
+          REPORT: ${{ needs.github-release.outputs.report }}
+          APPROVED: ${{ needs.kitmaker-dry-run.outputs.approved }}
+        run: |
+          mkdir -p report
+          printf '%s' "$REPORT" > report/release-report.json
+          printf '%s' "$APPROVED" > report/kitmaker-dry-run.json
 
       - name: Install Teleport
         uses: teleport-actions/setup@b638ff596557cc3959eb6b5287d5e58e0c8ac6a6 # v1.1.1
@@ -351,3 +363,40 @@ jobs:
           if-no-files-found: warn
           retention-days: 90
           overwrite: true
+
+  # The index serves bare SHA-256 fragments and no signed metadata, so its copies are
+  # checked against the release's attestations before the verify job installs them. See
+  # Note [The index is checked against attestations, not against itself] in index_check.py.
+  index-check:
+    name: check the index
+    needs: [github-release, kitmaker-release]
+    if: needs.kitmaker-release.outputs.released == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      attestations: read
+    timeout-minutes: 60
+    outputs:
+      wheels: ${{ steps.check.outputs.wheels }}
+    steps:
+      - name: Checkout OOT tooling repo
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          path: oot
+          show-progress: false
+          persist-credentials: false
+
+      - name: Check the index's wheels against the release's attestations
+        id: check
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPORT: ${{ needs.github-release.outputs.report }}
+          CHANNEL: ${{ inputs.channel }}
+        run: |
+          set -euo pipefail
+          mkdir -p report && printf '%s' "$REPORT" > report/release-report.json
+          python3 oot/scripts/publish/index_check.py \
+            --release-report report/release-report.json --channel "$CHANNEL" \
+            --repository "$GITHUB_REPOSITORY" --run-id "$GITHUB_RUN_ID" \
+            --download-dir "$RUNNER_TEMP/index" --github-output "$GITHUB_OUTPUT"

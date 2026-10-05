@@ -367,6 +367,19 @@ def dry_run(report: dict, *, channel: str, pic: str, portal: Portal, poll: float
     }
 
 
+def approval(dry_run_result: dict) -> dict:
+    """The part of a dry-run result `release` checks, small enough to hand on as a job output."""
+    keys = ("schema_version", "mode", "channel", "repository", "tag", "run_id")
+    return {
+        **{key: dry_run_result[key] for key in keys},
+        "requests": [
+            {"package": r["package"], "project_id": r["project_id"], "body": r["body"],
+             "release_uuid": r["release_uuid"], "final_status": {"status": r["final_status"].get("status")}}
+            for r in dry_run_result["requests"]
+        ],
+    }
+
+
 def release(
     report: dict,
     approved: dict,
@@ -478,6 +491,8 @@ def main(argv: list[str] | None = None) -> int:
         p.add_argument("--pic", default=os.environ.get("KITMAKER_PIC", ""))
         p.add_argument("--poll-seconds", type=float, default=30)
         p.add_argument("--timeout-seconds", type=float, default=1800)
+        if name == "dry-run":
+            p.add_argument("--github-output", type=Path, help="append the approval for the release job as `approved`")
         if name == "release":
             p.add_argument("--dry-run-report", type=Path, required=True)
             p.add_argument("--index-poll-seconds", type=float, default=30)
@@ -521,6 +536,9 @@ def main(argv: list[str] | None = None) -> int:
 
     args.report.parent.mkdir(parents=True, exist_ok=True)
     args.report.write_text(json.dumps(result, indent=2), encoding="utf-8")
+    if args.command == "dry-run" and args.github_output:
+        with args.github_output.open("a", encoding="utf-8") as handle:
+            handle.write(f"approved={json.dumps(approval(result), separators=(',', ':'))}\n")
     print(f"kitmaker {result['mode']} completed for {result['tag']}")
     return 0
 

@@ -337,6 +337,17 @@ def test_release_replays_the_dry_run_and_waits_for_the_index() -> None:
     assert set(result["index_state_after"].values()) == {"present"}
 
 
+def test_the_approval_job_output_is_enough_to_release() -> None:
+    """The release job gets the dry run's approval as a job output, not the report artifact."""
+    report = release_report()
+    approved = km.approval(approved_dry_run(report))
+    assert "\n" not in json.dumps(approved, separators=(",", ":"))
+    assert set(approved) == {"schema_version", "mode", "channel", "repository", "tag", "run_id", "requests"}
+    fake = FakeKitmaker(index_after=all_published(report))
+    run_release(report, json.loads(json.dumps(approved)), fake)
+    assert [s["payload"][0]["upload"] for s in fake.submitted] == [True, True, True]
+
+
 def test_release_refuses_a_payload_the_dry_run_did_not_see() -> None:
     report = release_report()
     approved = approved_dry_run(report)

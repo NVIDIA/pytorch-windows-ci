@@ -395,10 +395,12 @@ def test_release_fails_if_the_index_never_catches_up() -> None:
                    index_poll=30, index_timeout=90, opener=fake, sleep=sleep, clock=lambda: now[0])
 
 
-@pytest.mark.parametrize("event", sorted(km.REFUSED_EVENTS))
-def test_pr_events_are_refused(event: str) -> None:
-    with pytest.raises(km.KitmakerError, match="never PR-triggered"):
-        km.refuse_untrusted_event({"GITHUB_EVENT_NAME": event})
+@pytest.mark.parametrize("event", ["pull_request", "pull_request_target", "repository_dispatch", "workflow_run",
+                                   "issue_comment", "pull_request_review", "merge_group", "push", ""])
+def test_every_other_event_is_refused(event: str) -> None:
+    """An allow-list: this is the backstop if the workflow-level gate is ever lost."""
+    with pytest.raises(km.KitmakerError, match="refusing to run"):
+        km.refuse_untrusted_event({"GITHUB_EVENT_NAME": event} if event else {})
 
 
 def test_trusted_events_pass() -> None:

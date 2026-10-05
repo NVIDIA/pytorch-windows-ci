@@ -37,6 +37,15 @@ Note [Asking for a cell that cannot be published is an error]
     With `--python-versions`, every requested version must be publishable. A
     request for 3.12 when the 3.12 build failed stops here, rather than quietly
     publishing the other cells and leaving someone to notice the gap later.
+
+Note [Sign the build job's own upload, by id]
+    Any job in a run can replace that run's artifacts, the WoA test shards
+    included, and the attestation check only covers files after signing. So a
+    cell's wheel artifact must have been created while its build job ran, and
+    the sign job downloads it by the id recorded here. Replacing an artifact
+    gives it a new id, so a wheel swapped in after the build job finished fails
+    that download instead of being signed - however long afterwards a
+    "Re-run failed jobs" restarts signing.
 """
 
 from __future__ import annotations
@@ -46,6 +55,7 @@ import json
 import re
 import subprocess
 import sys
+from datetime import datetime
 from typing import Callable
 
 BUILD_WORKFLOW = ".github/workflows/windows-woa-build-test.yml"
@@ -67,6 +77,22 @@ def label_to_version(label: str) -> str:
     if match is None:
         raise BuildRunError(f"not a python label: {label!r}")
     return f"3.{match.group(1)}{match.group(2)}"
+
+
+def _timestamp(value: str | None) -> datetime | None:
+    return datetime.fromisoformat(value.replace("Z", "+00:00")) if value else None
+
+
+def _build_jobs_upload(label: str, job: dict, artifact: dict) -> int:
+    """The artifact's id, if its build job created it. See Note [Sign the build job's own upload, by id]."""
+    started, completed = _timestamp(job.get("started_at")), _timestamp(job.get("completed_at"))
+    created = _timestamp(artifact.get("created_at"))
+    if not (started and completed and created and started <= created <= completed):
+        raise BuildRunError(
+            f"{label}: wheel artifact {artifact.get('id')} was created {artifact.get('created_at')}, outside its "
+            f"build job ({job.get('started_at')} to {job.get('completed_at')}); refusing to sign a replaced artifact"
+        )
+    return int(artifact["id"])
 
 
 def resolve(
@@ -94,12 +120,15 @@ def resolve(
     if problems:
         raise BuildRunError("; ".join(problems))
 
-    built = {m.group(1) for j in jobs if (m := _BUILD_JOB.match(j.get("name", ""))) and j.get("conclusion") == "success"}
-    available = {
-        m.group(1)
+    build_jobs = {m.group(1): j for j in jobs
+                  if (m := _BUILD_JOB.match(j.get("name", ""))) and j.get("conclusion") == "success"}
+    built = set(build_jobs)
+    uploads = {
+        m.group(1): a
         for a in artifacts
         if (m := _ARTIFACT.match(a.get("name", ""))) and m.group(2) == run_id and not a.get("expired")
     }
+    available = set(uploads)
     eligible = sorted(built & available, key=lambda label: (label_to_version(label).rstrip("t"), label))
 
     if python_versions.strip():
@@ -127,7 +156,11 @@ def resolve(
         "head_branch": run.get("head_branch", ""),
         "event": run.get("event", ""),
         "html_url": run.get("html_url", ""),
-        "cells": [{"version": label_to_version(label), "label": label} for label in eligible],
+        "cells": [
+            {"version": label_to_version(label), "label": label,
+             "artifact_id": _build_jobs_upload(label, build_jobs[label], uploads[label])}
+            for label in eligible
+        ],
     }
 
 

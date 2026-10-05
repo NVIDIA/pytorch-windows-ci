@@ -23,9 +23,6 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
-# IST timestamps for the records written below; IstClock.ps1 is dependency-free.
-. (Join-Path $PSScriptRoot '..' 'env' 'IstClock.ps1')
-
 function Get-WheelRequirement {
     param([Parameter(Mandatory)][string] $FileName)
     if ($FileName -notmatch '^(torch|torchaudio|torchvision)-([^-]+)-.+-win_arm64\.whl$') {
@@ -116,7 +113,7 @@ print("pypi-release-smoke-ok", torch.__version__, torchaudio.__version__, torchv
 
     $report = [pscustomobject][ordered]@{
         index_url = $IndexUrl
-        verified_at_ist = Get-CiIstTimestamp
+        verified_at = [DateTimeOffset]::UtcNow.ToString('o')
         wheels = @($downloaded | ForEach-Object {
             [pscustomobject]@{
                 filename = $_.Name

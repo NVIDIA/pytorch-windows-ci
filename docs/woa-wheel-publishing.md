@@ -34,9 +34,9 @@ nightly's.
 | Job | Workflow | Runner | Holds | What it proves |
 | --- | --- | --- | --- | --- |
 | build | `_woa-build.yml` | self-hosted WoA | nothing | unsigned wheels, uploaded as an artifact |
-| resolve | `_woa-sign-publish.yml` | GitHub-hosted ubuntu | `actions: read` | the build run is ours, from a trusted trigger; lists the cells whose build succeeded |
-| sign | `_woa-sign.yml` | GitHub-hosted `windows-2025` | Azure OIDC (`woa-signing`), attestation signing | every native file signed + timestamped, RECORD regenerated, `twine check`; each output file attested |
-| validate | `_woa-sign.yml` | self-hosted WoA | nothing | signatures re-verified; signed wheels install in a clean venv and run CUDA |
+| resolve | `_woa-sign-publish.yml` | GitHub-hosted ubuntu | `actions: read` | the build run is ours, from a trusted trigger; lists the cells whose build succeeded, each with the id of the wheel artifact its build job uploaded |
+| sign | `_woa-sign.yml` | GitHub-hosted `windows-2025` | Azure OIDC (`woa-signing`), attestation signing | every native file signed + timestamped by the pinned signer, RECORD regenerated; each output file attested |
+| validate | `_woa-sign.yml` | self-hosted WoA | nothing | signatures re-verified; `twine check`; signed wheels install in a clean venv and run CUDA |
 | github-release | `_woa-publish.yml` | GitHub-hosted ubuntu | `contents: write` (`woa-publish-<channel>`) | every signed file carries this run's signing attestation; immutable release; every asset read back by name, size and SHA-256 |
 | kitmaker-dry-run | `_woa-publish.yml` | GitHub-hosted ubuntu | Kitmaker token + Charon OIDC | Kitmaker fetched and validated every wheel URL; nothing published |
 | kitmaker-release | `_woa-publish.yml` | GitHub-hosted ubuntu | Kitmaker token + Charon OIDC | same payload with `upload=true`; index lists every file at the right SHA-256 |
@@ -44,7 +44,8 @@ nightly's.
 
 Why the split: no signing or publication credential ever reaches the persistent self-hosted WoA
 runners, and those runners need **no private-network endpoints at all**. The only egress they need
-beyond the build is `pypi.nvidia.com` (public) for the final `verify` job.
+beyond the build is `pypi.nvidia.com` (public) for the final `verify` job. Nor does any job that
+holds a credential install anything from PyPI: `twine check` runs in validate, which holds none.
 
 Only the native binaries are signed (`.dll`, `.pyd`, `.exe`, `.node`) — Authenticode cannot sign
 a zip. Wheel integrity comes from the regenerated `RECORD`, the SHA-256s in the release manifest,
@@ -69,9 +70,14 @@ Checked in this order; each one fails closed:
    build (`repository_dispatch`) or a fork's build is never signable. Each cell is judged on its own
    build job, not the run's conclusion, so a flaky test shard does not block publication.
    Only default-branch builds are signable, in every channel: the environments' branch policies
-   check the publication run's ref, not the build's.
-3. **Signing.** `wheel_repack.py` refuses the set if any native file comes back byte-identical,
-   and `verify-wheel-signatures.ps1` requires every native file to be `Valid` and timestamped.
+   check the publication run's ref, not the build's. Signing downloads each cell's wheels by
+   artifact id, and `build_run.py` hands out only the id of an artifact created while that cell's
+   build job ran. A test shard, or a later re-run, that replaces the artifact gives it a new id and
+   a creation time outside that window, so the replacement is refused rather than signed.
+3. **Signing.** The sign job refuses to start without `WOA_EXPECTED_SIGNER_SUBJECT`.
+   `wheel_repack.py` refuses the set if any native file comes back byte-identical, and
+   `verify-wheel-signatures.ps1` requires every native file to be `Valid`, timestamped, and signed
+   by exactly that subject.
 4. **Provenance.** `attestations.py` refuses any signed wheel, manifest or signature report
    without an attestation that `_woa-sign.yml` made on a GitHub-hosted runner in this run. Any job
    in a run can replace that run's artifacts, including the WoA validation job and, on a nightly,
@@ -107,8 +113,10 @@ Checked in this order; each one fails closed:
 
    Provisioning yields six non-secret values; add them as repository variables:
    `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, `AZURE_SUBSCRIPTION_ID`, `AZURE_ARTIFACT_SIGNING_ENDPOINT`,
-   `AZURE_ARTIFACT_SIGNING_ACCOUNT`, `AZURE_ARTIFACT_SIGNING_PROFILE`. Until they exist, the sign job
-   fails at its first step with a pointer here.
+   `AZURE_ARTIFACT_SIGNING_ACCOUNT`, `AZURE_ARTIFACT_SIGNING_PROFILE`. Add a seventh,
+   `WOA_EXPECTED_SIGNER_SUBJECT`: the profile's exact signer-certificate subject (the certificate
+   rotates; the subject does not), so a signature from any other certificate is refused. Until all
+   seven exist, the sign job fails at its first step with a pointer here.
 2. **Charon tenant**: one tenant file per repository — grants go to the calling repository, not
    the one hosting a reusable workflow — named in lowercase
    `gha-tenants/nvidia-pytorch-windows-ci.yaml`:
@@ -143,9 +151,8 @@ Checked in this order; each one fails closed:
    it, before the GitHub Release is created.
 5. **Settings**: enable *immutable releases* on the repository. Nightly publications fail without
    it. Artifact attestations need no setup; this repository's go to the public Sigstore log.
-6. **Optional variables**: `WOA_EXPECTED_SIGNER_SUBJECT` pins the exact signer-certificate
-   subject (the certificate rotates; the subject does not). `CHARON_TELEPORT_PROXY` overrides the
-   default `ext-nv-prd-apps.teleport.sh:443`.
+6. **Optional variable**: `CHARON_TELEPORT_PROXY` overrides the default
+   `ext-nv-prd-apps.teleport.sh:443`.
 7. **Last, once everything above works**: the repository variable `WOA_NIGHTLY_PUBLISH`, which
    sets what each scheduled nightly publishes. Start at `dry-run`.
 
@@ -164,7 +171,9 @@ build failed is left out, and the others still publish.
 
 The first publication should be a scheduled nightly with `WOA_NIGHTLY_PUBLISH=dry-run`: Kitmaker
 fetches and validates every wheel from the release, and nothing reaches `pypi.nvidia.com`. Move to
-`release` once a dry run has passed end to end.
+`release` once a dry run has passed end to end. A dry run is only dry for Kitmaker: its GitHub
+Release is the same public, immutable prerelease of signed wheels that `release` creates, so the
+known gaps below about what gets signed and shipped apply from the first dry run.
 
 ## Evidence
 
@@ -186,7 +195,10 @@ Retained as release assets (the durable copy) and as workflow artifacts:
   wheels to `nvtorch_oot_nightly`, under the same filenames this flow produces (and with
   per-version torchaudio wheels, which pip prefers over `abi3`). An index holds one file per
   filename and the Kitmaker dry run refuses one the index already lists at a different SHA-256,
-  so that pipeline has to stop publishing WoA wheels before this one starts.
+  so that pipeline has to stop publishing WoA wheels before this one starts, dry run included.
+  Until this flow reaches `release`, `nvtorch_oot_nightly` gets no new WoA wheels.
+- **Release retention.** Every publication, dry run included, adds an immutable prerelease of
+  about 1.75 GiB per Python version. Nothing prunes old nightly releases yet.
 - **Dateless release versions.** `_woa-build.yml` always produces `.dev<date>` wheels, and
   `github_release.py` refuses a `release` publication of one. The build needs a release mode
   before anything can publish to the `release` channel; `nightly` is unaffected.

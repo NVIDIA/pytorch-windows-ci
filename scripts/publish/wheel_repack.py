@@ -369,7 +369,7 @@ def main(argv: list[str] | None = None) -> int:
     p_repack.add_argument("--out-dir", type=Path, required=True)
     p_repack.add_argument("--manifest", type=Path, required=True)
     p_repack.add_argument("--cell", required=True, help="python label, e.g. py313")
-    p_repack.add_argument("--pytorch-sha-file", type=Path, help="built_pytorch_sha.txt from the build")
+    p_repack.add_argument("--pytorch-sha-file", type=Path, required=True, help="built_pytorch_sha.txt from the build")
     p_repack.add_argument("--build-run-id", default="", help="the windows-woa-build-test run that built the wheels")
 
     args = parser.parse_args(argv)
@@ -379,9 +379,9 @@ def main(argv: list[str] | None = None) -> int:
             native = sum(len(w["native"]) for w in plan["wheels"])
             print(f"unpacked {len(plan['wheels'])} wheel(s), {native} native file(s) to sign")
             return 0
-        pytorch_sha = ""
-        if args.pytorch_sha_file and args.pytorch_sha_file.is_file():
-            pytorch_sha = args.pytorch_sha_file.read_text(encoding="utf-8").strip()
+        pytorch_sha = args.pytorch_sha_file.read_text(encoding="utf-8").strip()
+        if not re.fullmatch(r"[0-9a-f]{40}", pytorch_sha):
+            raise ValueError(f"{args.pytorch_sha_file} does not hold the built PyTorch commit SHA: {pytorch_sha!r}")
         manifest = repack(
             args.work_dir,
             args.out_dir,

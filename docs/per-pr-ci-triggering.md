@@ -14,7 +14,7 @@ which of those are worth a maintainer's attention, asks for approval, and then
 runs both Windows pipelines against the commit that was approved.
 
 It builds nothing itself. It *calls* `windows-rtx-build-test.yml` and
-`_woa-pr-build-test.yml` as reusable workflows, so a PR validation is one
+`windows-woa-build-test.yml` as reusable workflows, so a PR validation is one
 run with the build and test jobs nested inside it — the approval, the audit
 record and every job it authorised share a single page.
 
@@ -23,7 +23,7 @@ record and every job it authorised share a single page.
 ```
 gate ---- author on allowlist ----> approval ----> authorize --+--> windows-rtx-build-test
    \                              (a maintainer)   (records    |
-    `-- anyone else -> nothing                       who)       `--> _woa-pr-build-test
+    `-- anyone else -> nothing                       who)       `--> windows-woa-build-test
                        at all
 ```
 
@@ -195,11 +195,11 @@ after setup, confirm that a PR actually parks before relying on it.
 
 Both pipelines, every time. The list is the `PIPELINES` variable at the top of
 `upstream-pull.yml`, which the audit record reports and
-`scripts/pr-gate/tests/test_upstream_pull_contract.py` keeps in step with the
-jobs that call them:
+`scripts/pr-gate/tests/test_workflow_contract.py` keeps in step with the jobs
+that call them:
 
 ```
-PIPELINES: windows-rtx-build-test.yml _woa-pr-build-test.yml
+PIPELINES: windows-rtx-build-test.yml windows-woa-build-test.yml
 ```
 
 Each is called with `pytorch-ref` set to **the head SHA the gate validated and
@@ -210,20 +210,13 @@ SHA means the run tests exactly what you approved, rather than re-resolving the
 PR head and possibly building a commit that landed afterwards.
 
 **A PR run cannot publish to the upstream HUD**, and this does not depend on an
-opt-out flag. The RTX `prep` job leaves `crcr-delivery-id` empty for a
-non-nightly `pytorch-ref`, and also clears it for any event that is not
-`schedule` — so a relay-driven run is excluded twice over. The WoA PR pipeline
-has no reporting jobs at all. See [HUD reporting](crcr-hud-reporting.md).
+opt-out flag. Both `prep` jobs leave `crcr-delivery-id` empty for a non-nightly
+`pytorch-ref`, and both also clear it for any event that is not `schedule` — so
+a relay-driven run is excluded twice over. See
+[HUD reporting](crcr-hud-reporting.md).
 
-**Nor can it sign or publish a wheel.** The WoA pipeline it calls is
-`_woa-pr-build-test.yml`, not the nightly `windows-woa-build-test.yml`: the
-nightly's build and test jobs, with neither the HUD reporting jobs nor the
-publication job, whose `contents: write` the caller would otherwise have to
-grant. See [WoA wheel signing and publication](woa-wheel-publishing.md).
-
-Neither pipeline offers a **manual trigger**. `windows-rtx-build-test.yml`
-carries a `workflow_call` arm for this path only, and `_woa-pr-build-test.yml`
-has no other trigger, so the only ways in are the nightly schedule and an
+Neither pipeline offers a **manual trigger**. Each carries a `workflow_call` arm
+for this path only, so their only callers are the nightly schedule and an
 approved PR.
 
 ## What gets recorded

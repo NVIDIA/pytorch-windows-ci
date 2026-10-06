@@ -47,9 +47,7 @@ nightly `schedule`; the third is parked:
 - **`windows-rtx-build-test.yml`** — full source build + test, nightly at
   `20 9 * * *` (14:50 IST).
 - **`windows-woa-build-test.yml`** — WoA (arm64) source build + test, nightly
-  at `50 9 * * *` (15:20 IST). It can also sign and publish the wheels it
-  built, opt-in through `vars.WOA_NIGHTLY_PUBLISH`; see
-  [WoA wheel signing and publication](woa-wheel-publishing.md).
+  at `50 9 * * *` (15:20 IST).
 - **`windows-rtx-wheel-test.yml`** — published-wheel test. Its nightly cron
   (`0 17 * * *` / 22:30 IST) is commented out and its only other trigger is a
   `workflow_call` that nothing calls, so it cannot currently start. Uncomment
@@ -62,21 +60,18 @@ run's start — a cron that fires earlier does not wait for the day's commit, it
 builds, tests and reports the previous day's again.
 
 The reusable workflows (`_rtx-build.yml`, `_rtx-test.yml`, `_woa-build.yml`,
-`_woa-test.yml`, `_woa-pr-build-test.yml`, `_woa-sign-publish.yml` and the
-`_woa-sign.yml` / `_woa-publish.yml` / `_woa-verify.yml` stages it calls) are
-called by the orchestrators and are not run directly.
+`_woa-test.yml`) are called by the orchestrators and are not run directly.
 
 Separate from those three, **`upstream-pull.yml`** is driven by the upstream
 relay rather than by anyone here: it validates a `pytorch/pytorch` pull request
 whenever the relay dispatches one. Whether a given PR runs is decided by a
 maintainer-controlled allowlist plus an explicit approval, after which it calls
-a build/test pipeline per platform as a reusable workflow, pinned to the
-approved commit — see
+both build/test orchestrators as reusable workflows, pinned to the approved
+commit — see
 [per-PR CI: the allowlist and maintainer approval](per-pr-ci-triggering.md).
-For RTX that is `windows-rtx-build-test.yml` itself, which is why it carries a
-`workflow_call` trigger; it adds no way to start it by hand. For WoA it is
-`_woa-pr-build-test.yml`, the nightly's build and test jobs without the
-nightly's wheel publication, which a PR must never be able to reach.
+This is also why `windows-rtx-build-test.yml` and `windows-woa-build-test.yml`
+each carry a `workflow_call` trigger; it adds no way to start either of them by
+hand.
 
 ## License and notices
 
@@ -90,7 +85,7 @@ third-party OSS notices.
 | --- | --- | --- | --- |
 | `windows-rtx-wheel-test.yml`           | Each test cell checks out `pytorch/pytorch` at `pytorch-ref` (default `nightly`) via `actions/checkout@v7` (which resolves the branch to a concrete commit), records the actual HEAD SHA + commit date into the cell's job summary, then greps `download.pytorch.org/whl/nightly/torch/` for the wheel whose filename carries that exact `devYYYYMMDD` tag together with the matrix `cu<label>` / `cp<pyshort>` tags and `pip install`s the resolved absolute URL before running `.ci/pytorch/win-test.sh`. Fails fast if no matching wheel exists, so the wheel under test always shares its commit date with the pytorch source on disk. No preflight job, no artifact transit. | Parked: `workflow_call` only (nothing calls it); the nightly cron is commented out | `_rtx-test.yml` (sm89 + sm120 in one matrix) |
 | `windows-rtx-build-test.yml`            | Full source build (multi-arch wheel) + test. A PR run, called by `upstream-pull.yml`, is pinned to the approved head SHA and may narrow the matrix via subset filters. | `schedule` (`20 9 * * *` = 14:50 IST), `workflow_call` (from `upstream-pull.yml`); no manual trigger | `prep` -> `_rtx-build.yml` -> `_rtx-test.yml` (sm89 + sm120 in one matrix); `report-*-crcr` |
-| `windows-woa-build-test.yml` | Builds and tests the WoA wheel matrix from source on the shared arm64 pool, and can sign and publish the wheels it built (opt-in; see [WoA wheel signing and publication](woa-wheel-publishing.md)). PR runs use `_woa-pr-build-test.yml`, the same build and test jobs without publication or HUD reporting. | `schedule` (`50 9 * * *` = 15:20 IST); no manual trigger | `prep` -> `_woa-build.yml` -> `_woa-test.yml` -> `test-summary`; `publication` -> `_woa-sign-publish.yml`; `report-*-crcr` |
+| `windows-woa-build-test.yml` | Builds and tests the WoA wheel matrix from source on the shared arm64 pool. | `schedule` (`50 9 * * *` = 15:20 IST), `workflow_call` (from `upstream-pull.yml`); no manual trigger | `prep` -> `_woa-build.yml` -> `_woa-test.yml` -> `test-summary`; `report-*-crcr` |
 
 Both build/test orchestrators end in two terminal `report-*-crcr` jobs that
 publish the nightly's results to the upstream PyTorch HUD. They hang off the
@@ -276,11 +271,9 @@ test-stats scripts, and the vendored WoA build/test library under
     windows-rtx-wheel-test.yml       # published-wheel test (parked; cron commented out)
     _rtx-build.yml                   # reusable: build source (.ci/pytorch/win-build.sh), uploads wheel artifact
     _rtx-test.yml                    # reusable: test a wheel (artifact OR pip-index install path)
-    windows-woa-build-test.yml       # WoA arm64 source build + test, opt-in publication (nightly)
+    windows-woa-build-test.yml       # WoA arm64 source build + test (nightly; workflow_call for PR runs)
     _woa-build.yml                   # reusable WoA source build
     _woa-test.yml                    # reusable WoA wheel tests
-    _woa-pr-build-test.yml           # reusable: WoA build + test for an approved PR (no publication)
-    _woa-sign-publish.yml            # reusable: resolve -> _woa-sign / _woa-publish / _woa-verify
     lint.yml                         # PR-time YAML and PowerShell lint
     upstream-pull.yml                # relay-driven per-PR validation (allowlist + approval)
   actions/
@@ -569,7 +562,7 @@ remain responsible for the workflow result.
 
 | RFC concept | This repo |
 | --- | --- |
-| Downstream CI on real PR-time events | `upstream-pull.yml` subscribes to `repository_dispatch` (`pull_request`, plus the legacy `pytorch-pr-trigger`). An allowlisted author's PR waits for a maintainer's approval, then `windows-rtx-build-test.yml` and `_woa-pr-build-test.yml` are called pinned to the approved head SHA; see [per-PR CI](per-pr-ci-triggering.md). |
+| Downstream CI on real PR-time events | `upstream-pull.yml` subscribes to `repository_dispatch` (`pull_request`, plus the legacy `pytorch-pr-trigger`). An allowlisted author's PR waits for a maintainer's approval, then both build/test orchestrators are called pinned to the approved head SHA; see [per-PR CI](per-pr-ci-triggering.md). |
 | `concurrency: upstream-pr-<pr_number>` | `upstream-pull.yml` keys `concurrency.group` on the PR number with `cancel-in-progress`, so a newer push to a PR cancels its older run |
 | `pytorch/actions/checkout-pr@v1` (RFC Action #1) | Not used. `_rtx-build.yml` checks out `pytorch/pytorch` at the resolved SHA with `actions/checkout@v7` alone; a fork PR's head is fetchable by SHA from `pytorch/pytorch` |
 | `pytorch/actions/report-ci-result@v1` (RFC Action #2) | Not yet wired — result acknowledgement is pending publication of the upstream action |

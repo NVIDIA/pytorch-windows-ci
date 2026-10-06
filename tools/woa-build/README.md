@@ -33,6 +33,8 @@ contract, runs the vendored flow in-process, and collects wheels into a flat
 | `torchaudio/build-pipeline.ps1` | Build torchaudio against the `cuda_embed` torch wheel. |
 | `torchvision/build-pipeline.ps1` | Build torchvision (vcpkg/codecs + delvewheel repair) against `cuda_embed` torch. |
 | `pytorch-windows-test-shard.ps1` | Run one `run_test.py` shard under a wall-clock watchdog; leave JUnit under `test\test-reports`. |
+| `verify-wheel-signatures.ps1` | Check every native binary in a wheel set is Authenticode-signed and timestamped. |
+| `validate-signed-wheels.ps1` | On WoA hardware: re-verify signatures, then install the signed set in a clean venv and run CUDA. |
 
 Common parameters: `-PytorchRoot`, `-OutputDir`, `-VenvActivate` (build);
 `-PytorchRoot`, `-ShardNumber`, `-NumShards`, `-TestConfig`, `-VenvActivate`
@@ -46,6 +48,8 @@ pytorch-windows-build-flow.ps1    # vendored flow (env-driven; called by the ent
 pytorch-windows-test-shard.ps1    # GitHub test entrypoint (no UNC install / no publish)
 torch/                            # WheelPipeline, CompilerAndBuildEnv, Common
 torchaudio/  torchvision/         # build-pipeline.ps1 (entrypoint) + build-flow.ps1 (vendored) + Build.ps1
+verify-wheel-signatures.ps1       # Authenticode + timestamp check over a wheel set's native files
+validate-signed-wheels.ps1        # WoA gate before publication: re-verify + clean-venv CUDA smoke
 shared/
   env/      # Resolve-CiEnv / Set-CiEnv / Get-CiDefault + defaults/*.psd1 (site config)
   log/      # Write-CiPhase structured phase logging
@@ -53,7 +57,19 @@ shared/
   build/    # ImportVcvars, CudaDelveAddPath, ResolveTorchWheel, extension pipeline
   test/     # run_test.py shard runner, watchdog + synthetic-failure JUnit
   io/       # long-path-safe delete
+  publish/  # Test-PyPiWheelRelease: download released wheels, checksum, install, CUDA smoke
 ```
+
+## Signing and publication
+
+See [`docs/woa-wheel-publishing.md`](../../docs/woa-wheel-publishing.md) for the whole flow,
+what each service needs, and how to turn it on.
+
+Only the steps that need Windows live here: Authenticode verification, and the WoA install +
+CUDA smoke test. The rest is Python under `scripts/publish/` so it is unit-tested on the
+Linux lint runner: `wheel_repack.py` (unpack for signing, repack with a regenerated RECORD),
+`github_release.py` (immutable release + per-asset digest check) and `kitmaker.py` (Charon
+Ferry client). Signing itself is `azure/artifact-signing-action` in `_woa-sign.yml`.
 
 ## Env contract
 

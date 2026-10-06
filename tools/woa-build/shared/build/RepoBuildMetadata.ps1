@@ -7,8 +7,8 @@
   Capture git branch / ref + commit for CI wheel provenance (sidecar JSON under logs/).
 
 .DESCRIPTION
-  Used by pytorch-windows-build-flow (PyTorch checkout), torchaudio/torchvision Build.ps1, and
-  publish/Publish-WheelsToShare.ps1 (which merges the sidecars into build-metadata.json on the share).
+  Used by pytorch-windows-build-flow (PyTorch checkout) and torchaudio/torchvision Build.ps1.
+  Nothing merges the sidecars; they are read straight out of the job's logs/ artifact.
 
   Git remote URLs are written without embedded credentials (userinfo stripped from http/https).
 

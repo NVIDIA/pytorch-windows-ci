@@ -95,11 +95,15 @@ def test_called_pipelines_accept_workflow_call(workflow: dict) -> None:
 
 
 def requested_permissions(workflow: dict) -> dict[str, str]:
-    """Every permission the workflow or any of its jobs asks for, strongest wins."""
+    """Every permission the workflow, its jobs, or any workflow they call asks for, strongest wins."""
     rank = {"none": 0, "read": 1, "write": 2}
     wanted: dict[str, str] = {}
     blocks = [workflow.get("permissions") or {}]
     blocks += [j.get("permissions") or {} for j in workflow["jobs"].values()]
+    blocks += [
+        requested_permissions(load(WORKFLOWS / name))
+        for name in reusable_jobs(workflow).values()
+    ]
     for block in blocks:
         if not isinstance(block, dict):
             continue

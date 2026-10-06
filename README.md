@@ -121,22 +121,18 @@ Two of the three top-level workflows run automatically on a nightly `schedule`,
 and none of them can be started by hand:
 
 - **`windows-rtx-build-test.yml`** — full RTX source build + test, nightly.
-- **`windows-woa-build-test.yml`** — WoA (arm64) source build + test, nightly,
-  with opt-in signing and publication of its wheels; see
-  [WoA wheel signing and publication](docs/woa-wheel-publishing.md).
+- **`windows-woa-build-test.yml`** — WoA (arm64) source build + test, nightly.
 - **`windows-rtx-wheel-test.yml`** — published-wheel test. Parked: its nightly
   cron is commented out and it has no other trigger.
 
-`upstream-pull.yml` validates an approved upstream PR by calling
-`windows-rtx-build-test.yml` and `_woa-pr-build-test.yml` (the WoA build and
-test jobs, without publication); see
+Both build + test workflows can also be called by `upstream-pull.yml` to
+validate an approved upstream PR; see
 [per-PR CI](docs/per-pr-ci-triggering.md). There is deliberately no
 `workflow_dispatch` anywhere: external-CI security guidelines do not allow a
 hand-started run to point the self-hosted pools at an arbitrary upstream commit.
 
 The reusable workflows (`_rtx-build.yml`, `_rtx-test.yml`, `_woa-build.yml`,
-`_woa-test.yml`, `_woa-pr-build-test.yml`, `_woa-sign-publish.yml` and its
-stages) are called by the orchestrators and are not run directly.
+`_woa-test.yml`) are called by the orchestrators and are not run directly.
 
 Detailed reference — workflow table, job naming, install paths, default matrix,
 test environment variables, and runner diagnostics — is documented in

@@ -180,11 +180,10 @@ conditions:
 - `pytorch-ref` is empty or `nightly`, so the SHA came from the resolver above;
 - the event is `schedule`.
 
-Every scheduled run therefore reports, and there is nothing to opt out of. PR
-runs never do. `upstream-pull.yml` calls the RTX orchestrator with an explicit
-head SHA, and a called workflow sees its caller's event, `repository_dispatch`,
-so it fails both conditions. For WoA it calls `_woa-pr-build-test.yml` instead,
-which has no reporting jobs at all. To re-file a nightly row, use **Re-run all jobs** on the
+Every scheduled run therefore reports, and there is nothing to opt out of. The
+only other caller is `upstream-pull.yml`, whose PR runs fail both conditions:
+they pass an explicit head SHA, and a called workflow sees its caller's event,
+`repository_dispatch`. To re-file a nightly row, use **Re-run all jobs** on the
 original run: a re-run keeps the `schedule` event and re-resolves the same SHA
 (see below).
 

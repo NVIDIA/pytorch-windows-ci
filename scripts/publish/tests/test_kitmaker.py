@@ -123,6 +123,14 @@ def test_one_request_per_package_with_every_cell() -> None:
         assert entry["url"].startswith(PREFIX)
 
 
+def test_each_wheel_is_sent_under_its_literal_filename() -> None:
+    report = release_report()
+    wheels = {a["name"] for a in report["assets"] if a["name"].endswith(".whl")}
+    assert all("%2B" in a["url"] for a in report["assets"] if a["name"] in wheels)
+    sent = [e["url"] for r in km.release_requests(report, channel="nightly", pic="p") for e in r.body["payload"]]
+    assert sorted(url.removeprefix(PREFIX) for url in sent) == sorted(wheels)
+
+
 def test_a_release_targets_the_stable_devzone() -> None:
     requests = km.release_requests(release_report(channel="release"), channel="release", pic="p")
     assert {e["devzone_subdir"] for r in requests for e in r.body["payload"]} == {"nvtorch_oot"}

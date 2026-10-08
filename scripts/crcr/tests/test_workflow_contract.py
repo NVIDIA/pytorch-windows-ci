@@ -281,7 +281,7 @@ def test_rtx_download_pattern_matches_its_own_shards(config, arch):
 
 
 def test_rtx_download_patterns_do_not_cross_cells():
-    """Six rows means six disjoint globs; an overlap would double-count."""
+    """One row per cell means disjoint globs; an overlap would double-count."""
     cells = rtx_cells()
     assert len(cells) > 1
     for config, arch in cells:

@@ -28,8 +28,8 @@ REPO = "NVIDIA/pytorch-windows-ci"
 
 
 def wheel_name(package: str, cell: str = "py313") -> str:
-    tag = "cp" + cell[2:]
-    return f"{package}-{VERSION}-{tag}-{tag}-win_arm64.whl"
+    abi = "cp" + cell[2:]
+    return f"{package}-{VERSION}-{abi.rstrip('t')}-{abi}-win_arm64.whl"
 
 
 def abi3_name(package: str) -> str:
@@ -40,13 +40,20 @@ def sha(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
+def py3_none_name(package: str) -> str:
+    return f"{package}-{VERSION}-py3-none-win_arm64.whl"
+
+
 def write_cell(directory: Path, cell: str = "py313", *, validation: str = "passed", signatures: str = "passed",
-               tamper: str | None = None, packages=gr.PACKAGES, build_run: str = "900", abi3: tuple = ()) -> None:
+               tamper: str | None = None, packages=gr.PACKAGES, build_run: str = "900", abi3: tuple = (),
+               py3_none: tuple = (), names: dict[str, str] | None = None) -> None:
     """A cell's wheels plus the three evidence files that must agree on them."""
     directory.mkdir(parents=True, exist_ok=True)
     wheels = []
     for package in packages:
-        name = abi3_name(package) if package in abi3 else wheel_name(package, cell)
+        name = (names or {}).get(package) or (
+            abi3_name(package) if package in abi3 else py3_none_name(package) if package in py3_none
+            else wheel_name(package, cell))
         data = f"{package} {cell} signed".encode()
         (directory / name).write_bytes(data)
         wheels.append({"filename": name, "package": package, "version": VERSION, "signed_sha256": sha(data)})
@@ -190,6 +197,40 @@ def test_a_shared_stable_abi_wheel_is_published_once_from_the_lowest_python(tmp_
     audio = next(a for a in wheels if a.name == abi3_name("torchaudio"))
     assert audio.sha256 == sha(b"torchaudio py312 signed")
     assert evidence["shared"] == {abi3_name("torchaudio"): "py312"}
+
+
+def test_py3_none_wheels_every_cell_builds_are_published_once_from_the_lowest_python(tmp_path: Path) -> None:
+    """The tagging pytorch/audio#4234 and pytorch/vision#9643 switched to on 2026-10-07,
+    shared by the free-threaded cell too."""
+    cells = ("py314t", "py313", "py312")
+    for cell in cells:
+        write_cell(tmp_path / cell, cell, py3_none=("torchaudio", "torchvision"))
+    evidence = gr.check_evidence(gr.collect_assets(tmp_path))
+    wheels = sorted(a.name for a in evidence["assets"] if a.name.endswith(".whl"))
+    assert wheels == sorted([py3_none_name("torchaudio"), py3_none_name("torchvision")]
+                            + [wheel_name("torch", c) for c in cells])
+    assert evidence["shared"] == {py3_none_name("torchaudio"): "py312", py3_none_name("torchvision"): "py312"}
+
+
+@pytest.mark.parametrize(
+    "cell, names, refused",
+    [
+        ("py312", {"torchvision": wheel_name("torchvision", "py313")}, wheel_name("torchvision", "py313")),
+        ("py314t", {"torchaudio": abi3_name("torchaudio")}, abi3_name("torchaudio")),
+    ],
+    ids=["another Python's wheel", "abi3 on a free-threaded cell"],
+)
+def test_a_wheel_the_cells_torch_cannot_install_is_refused(tmp_path: Path, cell: str, names: dict, refused: str) -> None:
+    write_cell(tmp_path / "py313", "py313")
+    write_cell(tmp_path / cell, cell, names=names)
+    with pytest.raises(ValueError, match=f"cell {cell}: {refused.replace('+', '[+]')} does not install on its torch's"):
+        gr.check_evidence(gr.collect_assets(tmp_path))
+
+
+def test_a_torch_not_built_for_one_interpreter_is_refused(tmp_path: Path) -> None:
+    write_cell(tmp_path, "py313", names={"torch": py3_none_name("torch")})
+    with pytest.raises(ValueError, match="cell py313: .* is not built for exactly one CPython interpreter"):
+        gr.check_evidence(gr.collect_assets(tmp_path))
 
 
 def test_each_cell_vouches_for_its_own_copy_of_a_shared_wheel(tmp_path: Path) -> None:

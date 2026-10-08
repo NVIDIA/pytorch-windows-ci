@@ -61,10 +61,14 @@ Only the native binaries are signed (`.dll`, `.pyd`, `.exe`, `.node`) — Authen
 a zip. Wheel integrity comes from the regenerated `RECORD`, the SHA-256s in the release manifest,
 and GitHub's per-asset digests.
 
-torchaudio builds one `cp310-abi3` wheel for every GIL Python (a free-threaded cell still gets its
-own `cp314t` wheel). Each cell signs and validates its own copy under that one filename; the release
-carries a single copy, from the lowest Python version in the run, and `verify` checks every cell
-against the copy that was published.
+Upstream decides how torchaudio and torchvision are tagged, and has shipped them per Python
+(`cp313-cp313`), as one `cp310-abi3` wheel for every GIL Python, and since 2026-10-07 as one
+`py3-none` wheel for every Python. A cell accepts an extension wheel exactly when pip on that
+cell's torch interpreter would install it (`wheel_tags.py`, checked against `packaging.tags`), so
+a new tagging needs no change here. A wheel that installs on several cells is signed and
+validated by each of them under that one filename; the release carries a single copy, from the
+lowest Python version in the run, and `verify` checks every cell against the copy that was
+published.
 
 ## Publication gates
 
@@ -216,7 +220,8 @@ Retained as release assets (the durable copy) and as workflow artifacts:
 
 - **Cutover from the existing publisher.** Another pipeline still publishes each night's WoA
   wheels to `nvtorch_oot_nightly`, under the same filenames this flow produces (and with
-  per-version torchaudio wheels, which pip prefers over `abi3`). An index holds one file per
+  per-version torchaudio and torchvision wheels, which pip prefers over `abi3` or `py3-none`
+  ones, so `verify` would download those instead of ours). An index holds one file per
   filename and the Kitmaker dry run refuses one the index already lists at a different SHA-256,
   so that pipeline has to stop publishing WoA wheels before this one starts, dry run included.
   Until this flow reaches `release`, `nvtorch_oot_nightly` gets no new WoA wheels.

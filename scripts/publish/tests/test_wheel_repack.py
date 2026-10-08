@@ -131,21 +131,39 @@ def test_select_wheels_accepts_a_stable_abi_extension(tmp_path: Path, torch_pyth
     assert [p.name.split("-")[3] for p in wr.select_wheels(tmp_path)] == [torch_python, "abi3", torch_python]
 
 
+@pytest.mark.parametrize("torch_python, torch_abi", [("cp311", "cp311"), ("cp313", "cp313"), ("cp314", "cp314t")])
+def test_select_wheels_accepts_py3_none_extensions(tmp_path: Path, torch_python: str, torch_abi: str) -> None:
+    """The tagging pytorch/audio#4234 and pytorch/vision#9643 switched to on 2026-10-07."""
+    make_wheel(tmp_path, "torch", python=torch_python, abi=torch_abi)
+    make_wheel(tmp_path, "torchaudio", python="py3", abi="none")
+    make_wheel(tmp_path, "torchvision", python="py3", abi="none")
+    assert [p.name.split("-")[3] for p in wr.select_wheels(tmp_path)] == [torch_abi, "none", "none"]
+
+
 @pytest.mark.parametrize(
-    "torch_python, torch_abi, audio_python",
+    "torch_python, torch_abi, audio_python, audio_abi",
     [
-        ("cp313", "cp313", "cp314"),
-        ("cp314", "cp314t", "cp310"),
+        ("cp313", "cp313", "cp314", "abi3"),
+        ("cp314", "cp314t", "cp310", "abi3"),
+        ("cp313", "cp313", "py314", "none"),
     ],
-    ids=["abi3 floor above the interpreter", "abi3 on a free-threaded interpreter"],
+    ids=["abi3 floor above the interpreter", "abi3 on a free-threaded interpreter", "pyXY floor above the interpreter"],
 )
-def test_select_wheels_refuses_a_stable_abi_wheel_the_cell_cannot_install(
-    tmp_path: Path, torch_python: str, torch_abi: str, audio_python: str
+def test_select_wheels_refuses_an_extension_the_cell_cannot_install(
+    tmp_path: Path, torch_python: str, torch_abi: str, audio_python: str, audio_abi: str
 ) -> None:
     make_wheel(tmp_path, "torch", python=torch_python, abi=torch_abi)
-    make_wheel(tmp_path, "torchaudio", python=audio_python, abi="abi3")
+    make_wheel(tmp_path, "torchaudio", python=audio_python, abi=audio_abi)
     make_wheel(tmp_path, "torchvision", python=torch_python, abi=torch_abi)
     with pytest.raises(ValueError, match="not installable"):
+        wr.select_wheels(tmp_path)
+
+
+def test_select_wheels_refuses_a_torch_not_built_for_one_interpreter(tmp_path: Path) -> None:
+    make_wheel(tmp_path, "torch", python="py3", abi="none")
+    make_wheel(tmp_path, "torchaudio", python="py3", abi="none")
+    make_wheel(tmp_path, "torchvision", python="py3", abi="none")
+    with pytest.raises(ValueError, match="exactly one CPython interpreter"):
         wr.select_wheels(tmp_path)
 
 

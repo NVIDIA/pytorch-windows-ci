@@ -832,8 +832,8 @@ def test_render_aggregate_all_passed(tmp_path):
 # --------------------------------------------------------------------------
 def test_cell_label_extraction():
     assert (
-        pf._cell_label("test-reports-win-rtx-sm89-py312-cu130-sm89-shard1-99-1")
-        == "win-rtx-sm89-py312-cu130-sm89"
+        pf._cell_label("test-reports-win-rtx-sm89-py312-cu132-sm89-shard1-99-1")
+        == "win-rtx-sm89-py312-cu132-sm89"
     )
     assert (
         pf._cell_label("test-reports-win-rtx-sm120-py312-cu132-sm120-shard5-99-1")

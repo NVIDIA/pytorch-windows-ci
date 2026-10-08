@@ -65,7 +65,9 @@ Upstream decides how torchaudio and torchvision are tagged, and has shipped them
 (`cp313-cp313`), as one `cp310-abi3` wheel for every GIL Python, and since 2026-10-07 as one
 `py3-none` wheel for every Python. A cell accepts an extension wheel exactly when pip on that
 cell's torch interpreter would install it (`wheel_tags.py`, checked against `packaging.tags`), so
-a new tagging needs no change here. A wheel that installs on several cells is signed and
+a new Python or ABI tag needs no change here; the platform tag is still fixed to `win_arm64`.
+Each cell's torch must be built for the Python the cell is named for, so a wheel built for one
+Python cannot arrive from two cells. A wheel that installs on several cells is signed and
 validated by each of them under that one filename; the release carries a single copy, from the
 lowest Python version in the run, and `verify` checks every cell against the copy that was
 published.

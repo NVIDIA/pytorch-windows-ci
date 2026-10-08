@@ -233,6 +233,16 @@ def test_a_torch_not_built_for_one_interpreter_is_refused(tmp_path: Path) -> Non
         gr.check_evidence(gr.collect_assets(tmp_path))
 
 
+@pytest.mark.parametrize("cell, built_for", [("py313", "py312"), ("py314", "py314t"), ("py314t", "py314")])
+def test_a_cell_whose_torch_is_for_another_interpreter_is_refused(tmp_path: Path, cell: str, built_for: str) -> None:
+    """Otherwise its wheels share names with the real cell's, and one cell's torch is published for both."""
+    write_cell(tmp_path / built_for, built_for)
+    write_cell(tmp_path / cell, cell, names={p: wheel_name(p, built_for) for p in gr.PACKAGES})
+    torch_tags = wheel_name("torch", built_for)[len(f"torch-{VERSION}-"):-len(".whl")]
+    with pytest.raises(ValueError, match=f"cell {cell}: torch is built for {torch_tags}"):
+        gr.check_evidence(gr.collect_assets(tmp_path))
+
+
 def test_each_cell_vouches_for_its_own_copy_of_a_shared_wheel(tmp_path: Path) -> None:
     write_cell(tmp_path / "py312", "py312", abi3=("torchaudio",))
     write_cell(tmp_path / "py313", "py313", abi3=("torchaudio",), tamper=abi3_name("torchaudio"))

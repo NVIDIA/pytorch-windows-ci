@@ -48,8 +48,9 @@ Note [A wheel several cells build is published once]
     A wheel that installs on more than one interpreter - a `cp310-abi3` or a
     `py3-none` torchaudio or torchvision - is built and signed by every cell
     under the same filename, with different bytes. Each cell's copy is checked
-    against that cell's own evidence by SHA-256, and every wheel a cell vouches
-    for must install on the interpreter that cell's torch is built for (see
+    against that cell's own evidence by SHA-256. Each cell's torch must be built
+    for the interpreter the cell is named for (`py313` for `cp313-cp313`), and
+    every wheel a cell vouches for must install on that interpreter (see
     Note [Compatibility is pip's, not a list of tag shapes] in wheel_tags.py),
     so only such a wheel can arrive from several cells. One copy becomes the
     release asset: the one from the lowest Python version, as upstream does.
@@ -132,11 +133,17 @@ def _cell_order(cell: str) -> tuple[int, str]:
     return (int(match.group(1)), match.group(2)) if match else (10**6, cell)
 
 
+def _cell_of(interpreter: wheel_tags.Interpreter) -> str:
+    return f"py3{interpreter.minor}{'t' if interpreter.free_threaded else ''}"
+
+
 def _torch_interpreter(manifest: dict) -> tuple[wheel_tags.Interpreter | None, str]:
     """The interpreter a cell's torch wheel is built for, or why there is not one."""
     torch = [w.get("filename") or "" for w in manifest.get("wheels", []) if w.get("package") == "torch"]
-    if len(torch) != 1:
-        return None, f"expected one torch wheel, manifest has {len(torch)}" if torch else ""
+    if not torch:
+        return None, ""  # check_evidence's package-set check reports the missing torch
+    if len(torch) > 1:
+        return None, f"expected one torch wheel, manifest has {len(torch)}"
     try:
         return wheel_tags.interpreter_of(torch[0]), ""
     except ValueError as err:
@@ -210,6 +217,8 @@ def check_evidence(assets: list[Asset]) -> dict:
         interpreter, problem = _torch_interpreter(manifest)
         if problem:
             problems.append(f"cell {cell}: {problem}")
+        elif interpreter and cell != _cell_of(interpreter):
+            problems.append(f"cell {cell}: torch is built for {interpreter}")
         packages = set()
         for wheel in manifest.get("wheels", []):
             name, signed = wheel.get("filename"), wheel.get("signed_sha256")

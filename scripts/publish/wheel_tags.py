@@ -11,6 +11,8 @@ Note [Compatibility is pip's, not a list of tag shapes]
     an interpreter exactly when one of its tags is among the tags that
     interpreter supports, listed here the way `packaging.tags.sys_tags()` lists
     them for CPython; `tests/test_wheel_tags.py` holds the two to the same set.
+    That includes the free-threaded stable ABI, `abi3t` (PEP 803, packaging
+    26.3), which a free-threaded interpreter takes in place of `abi3`.
     This stays standard-library only, like the rest of `scripts/publish`.
 """
 
@@ -47,8 +49,8 @@ class Interpreter:
     def supported_tags(self) -> frozenset[Tag]:
         python = f"cp3{self.minor}"
         tags = {(python, python + ("t" if self.free_threaded else ""), self.platform), (python, "none", self.platform)}
-        if not self.free_threaded:
-            tags |= {(f"cp3{minor}", "abi3", self.platform) for minor in range(2, self.minor + 1)}
+        stable_abi = "abi3t" if self.free_threaded else "abi3"
+        tags |= {(f"cp3{minor}", stable_abi, self.platform) for minor in range(2, self.minor + 1)}
         generic = ["py3"] + [f"py3{minor}" for minor in range(self.minor + 1)]
         tags |= {(py, "none", platform) for py in generic for platform in (self.platform, "any")}
         tags.add((python, "none", "any"))

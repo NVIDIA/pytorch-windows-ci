@@ -47,7 +47,11 @@ def test_supported_tags_are_the_ones_pip_generates(minor: int, free_threaded: bo
             tags.compatible_tags((3, minor), interpreter=f"cp3{minor}", platforms=["win_arm64"]),
         )
     }
-    assert wt.Interpreter(minor, free_threaded, "win_arm64").supported_tags() == expected
+    ours = wt.Interpreter(minor, free_threaded, "win_arm64").supported_tags()
+    if version.Version(packaging.__version__) < version.Version("26.3"):
+        # abi3t (PEP 803) arrived in packaging 26.3; older releases offer free-threaded builds no stable ABI.
+        ours = frozenset(t for t in ours if t[1] != "abi3t")
+    assert ours == expected
 
 
 @pytest.mark.parametrize(
@@ -60,6 +64,12 @@ def test_supported_tags_are_the_ones_pip_generates(minor: int, free_threaded: bo
         ("cp313-abi3-win_arm64", "cp313-cp313-win_arm64", True),
         ("cp314-abi3-win_arm64", "cp313-cp313-win_arm64", False),
         ("cp310-abi3-win_arm64", "cp314-cp314t-win_arm64", False),
+        ("cp315-abi3t-win_arm64", "cp315-cp315t-win_arm64", True),
+        ("cp310-abi3t-win_arm64", "cp314-cp314t-win_arm64", True),
+        ("cp316-abi3t-win_arm64", "cp315-cp315t-win_arm64", False),
+        ("cp315-abi3t-win_arm64", "cp315-cp315-win_arm64", False),
+        ("cp315-abi3.abi3t-win_arm64", "cp315-cp315-win_arm64", True),
+        ("cp315-abi3.abi3t-win_arm64", "cp315-cp315t-win_arm64", True),
         ("py3-none-win_arm64", "cp311-cp311-win_arm64", True),
         ("py3-none-win_arm64", "cp314-cp314t-win_arm64", True),
         ("py313-none-win_arm64", "cp313-cp313-win_arm64", True),

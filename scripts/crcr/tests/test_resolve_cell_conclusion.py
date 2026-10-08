@@ -13,8 +13,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import resolve_cell_conclusion as rcc  # noqa: E402
 
-BUILD_CELL = "wheel-py312-cu130-build"
-TEST_CELL = "wheel-py312-cu130-sm89-test"
+BUILD_CELL = "wheel-py312-cu132-build"
+TEST_CELL = "wheel-py312-cu132-sm89-test"
 
 
 def _job(name: str, conclusion: str | None = "success") -> dict:
@@ -65,8 +65,8 @@ class TestSelectCellJobs:
     def test_ignores_other_cells(self) -> None:
         jobs = [
             *_shards(TEST_CELL, "success"),
-            *_shards("wheel-py312-cu130-sm120-test", "failure"),
-            _job("wheel-py312-cu132-build / build", "failure"),
+            *_shards("wheel-py312-cu132-sm120-test", "failure"),
+            _job("wheel-py313-cu132-build / build", "failure"),
             _job("test-summary", "success"),
         ]
         selected = rcc.select_cell_jobs(jobs, TEST_CELL)

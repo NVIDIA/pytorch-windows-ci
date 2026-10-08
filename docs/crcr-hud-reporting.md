@@ -32,12 +32,12 @@ Both nightly workflows report. The names follow pytorch's own
 `<build-environment> / <job> (<config>)` convention so they read natively
 alongside upstream's rows:
 
-**RTX — six rows**, one per matrix cell:
+**RTX — three rows**, one per matrix cell:
 
 ```
-win-rtx-py312-cu130 / build          win-rtx-py312-cu132 / build
-win-rtx-py312-cu130 / test (sm89)    win-rtx-py312-cu132 / test (sm89)
-win-rtx-py312-cu130 / test (sm120)   win-rtx-py312-cu132 / test (sm120)
+win-rtx-py312-cu132 / build
+win-rtx-py312-cu132 / test (sm89)
+win-rtx-py312-cu132 / test (sm120)
 ```
 
 **WoA — two rows**, however many Python cells are enabled:
@@ -56,9 +56,9 @@ implementation detail of ours and are collapsed into the row rather than
 reported individually: CRCR asks downstream repos to aggregate their internal
 shards and avoid one callback per shard.
 
-RTX keeps `cu130` and `cu132` on separate rows, so a regression that only
-affects one CUDA version is attributable from the HUD rather than needing our
-logs.
+RTX gives each CUDA version its own rows (only `cu132` is in the matrix), so a
+regression that only affects one CUDA version is attributable from the HUD
+rather than needing our logs.
 
 WoA goes the other way and reduces its whole Python axis into two rows. One row
 per wheel per stage is more upstream surface than a small set of stable logical
@@ -320,7 +320,7 @@ here, switching to it is a one-line change per call site.
 ### Retry policy
 
 Four attempts total, with exponential backoff and jitter (roughly 5s, 10s, 20s)
-so that eight reporting jobs hitting one relay outage do not come back in
+so that five reporting jobs hitting one relay outage do not come back in
 lockstep. What gets retried is decided by how the attempt failed, because the
 relay should never receive the same rejected payload twice:
 
@@ -368,7 +368,7 @@ optional and only means a field is being omitted from the payload.
 2. Confirm the nightly cron times still run late enough that the day's
    `nightly` commit already exists. If a schedule fires first, the resolver
    picks up the previous day's `main` SHA and files a stale row.
-3. Expect eight rows a night once both workflows report: six from RTX and two
+3. Expect five rows a night once both workflows report: three from RTX and two
    from WoA.
 
 ## Local development

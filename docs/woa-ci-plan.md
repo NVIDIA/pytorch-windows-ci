@@ -42,7 +42,7 @@ wrapped in GitHub Actions workflows + composite actions.
 | --- | --- | --- |
 | Orchestrator | `windows-rtx-build-test.yml` | `windows-woa-build-test.yml` |
 | Reusable units | `_rtx-build.yml`, `_rtx-test.yml` | `_woa-build.yml`, `_woa-test.yml` |
-| Runner selection | labels `[rtx-build, py312, cu130]` (per-config images) | single `woa-arm64` pool tag; python/CTK via **venv paths**, not labels |
+| Runner selection | labels `[rtx-build, py312, cu132]` (per-config images) | single `woa-arm64` pool tag; python/CTK via **venv paths**, not labels |
 | Arch | x86-64, RTX sm89/sm120 | **Windows arm64** |
 | Build driver | bash `tools/pytorch-build/win-build.sh` | **PowerShell** flow (`pytorch-windows-build-flow.ps1`) |
 | Build stages | one multi-arch CUDA wheel | vanilla wheel → **`cuda_embed`** (DLL-embed) → torchaudio → torchvision |

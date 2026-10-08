@@ -12,11 +12,11 @@ This guide builds PyTorch from source on x86_64 Windows using Visual Studio
 
 - Visual Studio 2022 Build Tools with the C++ workload, Windows SDK, and x64 tools.
 - x86_64 Python supported by the PyTorch revision being built.
-- CUDA Toolkit 12.8, 13.0, or 13.2.
+- CUDA Toolkit 12.8 or 13.2.
 - cuDNN matching the selected CUDA Toolkit.
 - CMake, Ninja, and Git with long paths enabled.
 
-The examples use CUDA 13.0 and build for `8.9;12.0`.
+The examples use CUDA 13.2 and build for `8.9;12.0`.
 
 ## 2. Prepare the source and Python environment
 
@@ -79,7 +79,7 @@ $env:CMAKE_GENERATOR = 'Ninja'
 Remove-Item Env:CMAKE_CUDA_ARCHITECTURES -ErrorAction SilentlyContinue
 Remove-Item Env:CUDAARCHS -ErrorAction SilentlyContinue
 
-$env:CUDA_VERSION = '13.0'
+$env:CUDA_VERSION = '13.2'
 $cuda = "C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v$env:CUDA_VERSION"
 $env:CUDA_PATH = $cuda
 $env:CUDA_HOME = $cuda

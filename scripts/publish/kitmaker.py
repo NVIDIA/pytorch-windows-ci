@@ -116,7 +116,10 @@ def release_requests(report: dict, *, channel: str, pic: str) -> list[ReleaseReq
             raise KitmakerError(f"{name} URL {url!r} is not under {prefix}")
         if urllib.parse.unquote(url[len(prefix):]) != name:
             raise KitmakerError(f"{name} URL {url!r} does not end in its own filename")
-        urls.setdefault(match.group(1), []).append(url)
+        # Kitmaker finds the asset by the URL's last path segment without decoding it, so
+        # GitHub's `%2B` for the `+` in a local version matches no asset name. GitHub serves
+        # the literal-`+` form as the same asset.
+        urls.setdefault(match.group(1), []).append(prefix + name)
     if set(urls) != set(PROJECTS):
         raise KitmakerError(f"expected wheels for {sorted(PROJECTS)}, found {sorted(urls)}")
     return [

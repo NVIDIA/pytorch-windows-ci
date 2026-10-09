@@ -800,8 +800,17 @@ jobs:
 
           watchdog_marker="${RUNNER_TEMP}/win-test-watchdog-fired"
           rm -f "$watchdog_marker"
+          # Short sleeps against a deadline, never one long sleep: the `kill`
+          # below stops this subshell but not the `sleep` it is running, and the
+          # runner's end-of-job orphan cleanup cannot see Git Bash programs. The
+          # orphaned sleep holds the runner's stdout pipe open, and the runner
+          # VM's launch script waits for that pipe to close, so a single
+          # RUN_TEST_TIMEOUT_SEC sleep kept every runner VM (and its GPU) busy
+          # until RUN_TEST_TIMEOUT_SEC after this step started, however early
+          # the job finished.
           (
-            sleep "${RUN_TEST_TIMEOUT_SEC}"
+            deadline=$((SECONDS + RUN_TEST_TIMEOUT_SEC))
+            while [ "$SECONDS" -lt "$deadline" ]; do sleep 10; done
             : > "$watchdog_marker"
             echo "::error::Watchdog: win-test.sh made no progress within ${RUN_TEST_TIMEOUT_SEC}s; killing test processes so the shard fails cleanly."
             while true; do

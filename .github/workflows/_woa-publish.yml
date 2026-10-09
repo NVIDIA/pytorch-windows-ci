@@ -146,9 +146,9 @@ jobs:
 
       # Signed wheels + manifest + signature report, and the WoA validation report, for
       # every cell that got this far. github_release.py refuses any wheel not covered by
-      # all three, so a cell that failed validation cannot slip in. Not merged: every GIL
-      # cell carries its own copy of the same-named abi3 torchaudio wheel, and merging
-      # would let one silently overwrite another.
+      # all three, so a cell that failed validation cannot slip in. Not merged: every cell
+      # carries its own copy of any wheel built for several Pythons (an abi3 or py3-none
+      # extension) under one name, and merging would let one silently overwrite another.
       - name: Download signed wheels
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:

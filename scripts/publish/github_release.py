@@ -44,12 +44,16 @@ Note [Re-running is verification, not re-publication]
     A mismatch fails - with immutable releases it could not be repaired anyway,
     and the tag embeds the run id, so the next run gets a fresh one.
 
-Note [A stable-ABI wheel is published once]
-    Every GIL cell builds and signs its own copy of the `cp310-abi3` torchaudio
-    wheel, under the same filename but with different bytes. Each cell's copy is
-    checked against that cell's own evidence by SHA-256, and only one can become
-    the release asset: the copy from the lowest Python version, as upstream
-    does. No other duplicate filename is accepted.
+Note [A wheel several cells build is published once]
+    A wheel that installs on more than one interpreter - a `cp310-abi3` or a
+    `py3-none` torchaudio or torchvision - is built and signed by every cell
+    under the same filename, with different bytes. Each cell's copy is checked
+    against that cell's own evidence by SHA-256. Each cell's torch must be built
+    for the interpreter the cell is named for (`py313` for `cp313-cp313`), and
+    every wheel a cell vouches for must install on that interpreter (see
+    Note [Compatibility is pip's, not a list of tag shapes] in wheel_tags.py),
+    so only such a wheel can arrive from several cells. One copy becomes the
+    release asset: the one from the lowest Python version, as upstream does.
 """
 
 from __future__ import annotations
@@ -67,6 +71,8 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable
+
+import wheel_tags
 
 ASSET_SIZE_LIMIT = 2 * 1024**3
 ASSET_SIZE_WARN = int(ASSET_SIZE_LIMIT * 0.9)
@@ -122,21 +128,33 @@ def release_tag(channel: str, run_id: str, *, date: datetime, torch_version: str
     return f"woa-{channel}-{stamp}-r{run_id}"
 
 
-def _is_stable_abi(name: str) -> bool:
-    match = _WHEEL.match(name)
-    return match is not None and match["abi"] == "abi3"
-
-
 def _cell_order(cell: str) -> tuple[int, str]:
     match = _CELL.match(cell)
     return (int(match.group(1)), match.group(2)) if match else (10**6, cell)
 
 
+def _cell_of(interpreter: wheel_tags.Interpreter) -> str:
+    return f"py3{interpreter.minor}{'t' if interpreter.free_threaded else ''}"
+
+
+def _torch_interpreter(manifest: dict) -> tuple[wheel_tags.Interpreter | None, str]:
+    """The interpreter a cell's torch wheel is built for, or why there is not one."""
+    torch = [w.get("filename") or "" for w in manifest.get("wheels", []) if w.get("package") == "torch"]
+    if not torch:
+        return None, ""  # check_evidence's package-set check reports the missing torch
+    if len(torch) > 1:
+        return None, f"expected one torch wheel, manifest has {len(torch)}"
+    try:
+        return wheel_tags.interpreter_of(torch[0]), ""
+    except ValueError as err:
+        return None, str(err)
+
+
 def collect_assets(asset_dir: Path) -> list[Asset]:
     """Every wheel and evidence file under `asset_dir`; anything else is refused.
 
-    The same stable-ABI wheel may arrive once per cell; see
-    Note [A stable-ABI wheel is published once].
+    A wheel may arrive once per cell; check_evidence decides whether that is
+    allowed. See Note [A wheel several cells build is published once].
     """
     assets, problems = [], []
     for path in sorted(p for p in asset_dir.rglob("*") if p.is_file()):
@@ -151,7 +169,7 @@ def collect_assets(asset_dir: Path) -> list[Asset]:
             print(f"::warning title=release asset size::{name} is {size / 1024**3:.2f} GiB, over 90% of the 2 GiB limit")
         assets.append(Asset(name, path, size, _sha256(path)))
     names = [a.name for a in assets]
-    duplicates = sorted({n for n in names if names.count(n) > 1 and not _is_stable_abi(n)})
+    duplicates = sorted({n for n in names if names.count(n) > 1 and not _WHEEL.match(n)})
     if duplicates:
         problems.append(f"duplicate asset names: {duplicates}")
     if not any(_WHEEL.match(n) for n in names):
@@ -167,7 +185,7 @@ def check_evidence(assets: list[Asset]) -> dict:
     Returns the cells, the torch version and the pytorch source SHAs for the
     release notes, and `assets`: the set to publish, with one copy of each
     filename. See Note [Only a validated set is publishable] and
-    Note [A stable-ABI wheel is published once].
+    Note [A wheel several cells build is published once].
     """
     by_name: dict[str, list[Asset]] = {}
     for asset in assets:
@@ -196,10 +214,17 @@ def check_evidence(assets: list[Asset]) -> dict:
         verified = {w.get("filename"): w.get("sha256") for w in signatures.get("wheels", [])}
         pytorch_shas[cell] = manifest.get("provenance", {}).get("pytorch_sha", "")
         build_runs[cell] = str(manifest.get("provenance", {}).get("build_run_id", ""))
+        interpreter, problem = _torch_interpreter(manifest)
+        if problem:
+            problems.append(f"cell {cell}: {problem}")
+        elif interpreter and cell != _cell_of(interpreter):
+            problems.append(f"cell {cell}: torch is built for {interpreter}")
         packages = set()
         for wheel in manifest.get("wheels", []):
             name, signed = wheel.get("filename"), wheel.get("signed_sha256")
             packages.add(wheel.get("package"))
+            if interpreter and _WHEEL.match(name or "") and not interpreter.installs(name):
+                problems.append(f"cell {cell}: {name} does not install on its torch's {interpreter}")
             copies = by_name.get(name)
             if not copies:
                 problems.append(f"cell {cell}: {name} is in the manifest but not in the release set")

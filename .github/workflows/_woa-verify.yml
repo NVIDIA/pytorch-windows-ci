@@ -99,8 +99,9 @@ jobs:
           python-label: ${{ inputs.python-label }}
           venv-path: ${{ env.WOA_VENV_DIR }}\verify-${{ inputs.python-label }}
 
-      # The hashes come from what was published, not from this cell's build: a shared abi3
-      # wheel is published from one cell only, so the others' own copies differ.
+      # The hashes come from what was published, not from this cell's build: a wheel several
+      # cells build (abi3 or py3-none) is published from one cell only, so the others' own
+      # copies differ.
       - name: Install the released wheels from pypi.nvidia.com
         env:
           INDEX_URL: ${{ inputs.channel == 'release' && 'https://pypi.nvidia.com/nvtorch_oot' || 'https://pypi.nvidia.com/nvtorch_oot_nightly' }}

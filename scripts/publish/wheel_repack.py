@@ -32,12 +32,13 @@ Note [Signed RECORD files are refused]
     do. pip-built PyTorch wheels do not carry them, so meeting one means the
     input is not what this pipeline expects, and `unpack` stops.
 
-Note [An extension may be a stable-ABI wheel]
-    torchaudio builds one `cp310-abi3` wheel that installs on every GIL CPython
-    from 3.10 up, instead of one wheel per version; a free-threaded build still
-    gets its own `cp314t` wheel, because pip will not install abi3 there. So a
-    cell is the torch wheel's Python/ABI tag, and every other wheel must either
-    carry the same tag or be an abi3 wheel that interpreter can install.
+Note [A cell is the interpreter torch is built for]
+    torch is built for exactly one interpreter, and that interpreter is the cell.
+    torchaudio and torchvision need not carry torch's tags: upstream has shipped
+    them per Python, as a `cp310-abi3` wheel and as a `py3-none` wheel. Each
+    belongs in the cell exactly when pip on the cell's interpreter would install
+    it; see Note [Compatibility is pip's, not a list of tag shapes] in
+    wheel_tags.py.
 """
 
 from __future__ import annotations
@@ -57,6 +58,8 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 
+import wheel_tags
+
 NATIVE_SUFFIXES = (".dll", ".pyd", ".exe", ".node")
 EXPECTED_PACKAGES = ("torch", "torchaudio", "torchvision")
 PLAN_NAME = "plan.json"
@@ -67,7 +70,6 @@ _WHEEL_NAME = re.compile(
     r"(?:-(?P<build>\d[^-]*))?"
     r"-(?P<python>[^-]+)-(?P<abi>[^-]+)-(?P<platform>[^-]+)\.whl$"
 )
-_CPYTHON = re.compile(r"^cp3(\d+)$")
 _RECORD = re.compile(r"^[^/]+\.dist-info/RECORD$")
 _RECORD_SIGNATURE = re.compile(r"^[^/]+\.dist-info/RECORD\.(jws|p7s)$")
 
@@ -147,26 +149,11 @@ def record_member(archive: zipfile.ZipFile) -> str:
     return records[0]
 
 
-def _cpython_minor(tag: str) -> int | None:
-    match = _CPYTHON.match(tag)
-    return int(match.group(1)) if match else None
-
-
-def installs_on(wheel: WheelName, cell: WheelName) -> bool:
-    """Whether `wheel` belongs in the cell whose interpreter `cell`'s tags name.
-
-    See Note [An extension may be a stable-ABI wheel].
-    """
-    if (wheel.python, wheel.abi) == (cell.python, cell.abi):
-        return True
-    if wheel.abi != "abi3" or cell.abi.endswith("t"):
-        return False
-    floor, interpreter = _cpython_minor(wheel.python), _cpython_minor(cell.python)
-    return floor is not None and interpreter is not None and floor <= interpreter
-
-
 def select_wheels(wheel_dir: Path) -> list[Path]:
-    """Exactly one torch, torchaudio and torchvision win_arm64 wheel, all for one Python."""
+    """Exactly one torch, torchaudio and torchvision win_arm64 wheel, all installable together.
+
+    See Note [A cell is the interpreter torch is built for].
+    """
     wheels = sorted(p for p in wheel_dir.iterdir() if p.is_file() and p.suffix == ".whl")
     by_package: dict[str, list[Path]] = {}
     for wheel in wheels:
@@ -184,10 +171,10 @@ def select_wheels(wheel_dir: Path) -> list[Path]:
     if problems:
         raise ValueError("; ".join(problems))
     chosen = [by_package[package][0] for package in EXPECTED_PACKAGES]
-    cell = parse_wheel_name(by_package["torch"][0].name)
-    strays = [p.name for p in chosen if not installs_on(parse_wheel_name(p.name), cell)]
+    cell = wheel_tags.interpreter_of(by_package["torch"][0].name)
+    strays = [p.name for p in chosen if not cell.installs(p.name)]
     if strays:
-        raise ValueError(f"not installable on torch's {cell.python}-{cell.abi}: {strays}; one cell per signing job")
+        raise ValueError(f"not installable on torch's {cell}: {strays}; one cell per signing job")
     return chosen
 
 

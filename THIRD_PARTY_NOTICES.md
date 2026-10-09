@@ -16,6 +16,7 @@ This project will require or download and install additional third-party open so
 | `PyYAML` | YAML parser used for local workflow validation. | MIT | Copyright (c) 2017-2021 Ingy d&ouml;t Net; Copyright (c) 2006-2016 Kirill Simonov | https://github.com/yaml/pyyaml/blob/main/LICENSE |
 | `check-jsonschema` | GitHub workflow schema validator used for local workflow validation. | Apache License 2.0 | Copyright 2021, Stephen Rosen | https://github.com/python-jsonschema/check-jsonschema/blob/main/LICENSE |
 | `pytorch/pytorch` | Source tree checked out, built, installed, and tested by the CI workflows. This repository does not distribute PyTorch source or wheels. | BSD-style | See upstream license file for full PyTorch/Caffe2 attributions | https://github.com/pytorch/pytorch/blob/main/LICENSE |
+| `Dao-AILab/flash-attention` | Source tree checked out, built, installed, and tested by the CI workflows. This repository does not distribute Flash Attention source. | BSD 3-Clause License | See upstream license file for full Flash Attention attributions | https://github.com/Dao-AILab/flash-attention/blob/main/LICENSE |
 
 ## MIT License Text
 
@@ -51,3 +52,33 @@ and in the upstream license file linked in the table above.
 The workflows check out and test `pytorch/pytorch` from public upstream
 sources. PyTorch's upstream license file is linked in the table above and
 contains the complete BSD-style license terms and copyright attributions.
+
+## BSD 3-Clause License
+
+Copyright (c) 2022, the respective contributors, as shown by the AUTHORS file.
+All rights reserved.
+
+Redistribution and use in source and binary forms, with or without
+modification, are permitted provided that the following conditions are met:
+
+* Redistributions of source code must retain the above copyright notice, this
+  list of conditions and the following disclaimer.
+
+* Redistributions in binary form must reproduce the above copyright notice,
+  this list of conditions and the following disclaimer in the documentation
+  and/or other materials provided with the distribution.
+
+* Neither the name of the copyright holder nor the names of its
+  contributors may be used to endorse or promote products derived from
+  this software without specific prior written permission.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.

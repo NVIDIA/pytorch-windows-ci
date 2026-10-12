@@ -59,11 +59,11 @@ on:
         type: string
         required: true
       cuda-version:
-        description: "CUDA toolkit version in dotted form (e.g. 13.0)."
+        description: "CUDA toolkit version in dotted form (e.g. 13.2)."
         type: string
         required: true
       cuda-label:
-        description: "CUDA label used in runner labels (e.g. cu130)."
+        description: "CUDA label used in runner labels (e.g. cu132)."
         type: string
         required: true
       cuda-arch-list:

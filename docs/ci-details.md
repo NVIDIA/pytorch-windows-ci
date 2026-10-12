@@ -109,21 +109,21 @@ sharding inside the reusable workflow rather than on the caller.
 
 `config` is a paired `{python, cuda}` entry rather than independent
 `python` and `cuda` axes, because the runner pool is allocated per
-(python, cuda) combination - py312/cu130 and py312/cu132 are
+(python, cuda) combination - py312/cu132 and py313/cu132 are
 different machines, so the matrix enumerates the actual pairings
 rather than blindly cross-multiplying.
 
 Cell names mirror `pytorch/pytorch`'s generated
 `windows-binary-wheel` nightly (`wheel-py3_10-cuda13_0-build` /
 `wheel-py3_10-cuda13_0-test`). Each `config:` entry carries a
-precomputed `build_name` (`wheel-py312-cu130`, etc.) so the
+precomputed `build_name` (`wheel-py312-cu132`, etc.) so the
 job-level `name:` collapses to a one-token reference exactly like
 upstream's `name: ${{ matrix.build_name }}-build`:
 
 | Job | Cell name template | Example cell |
 | --- | --- | --- |
-| orchestrator `build`            | `<build_name>-build`        | `wheel-py312-cu130-build` |
-| orchestrator `test`             | `<build_name>-<arch>-test`  | `wheel-py312-cu130-sm89-test` |
+| orchestrator `build`            | `<build_name>-build`        | `wheel-py312-cu132-build` |
+| orchestrator `test`             | `<build_name>-<arch>-test`  | `wheel-py312-cu132-sm89-test` |
 | `_rtx-test.yml`'s inner shards  | `test (shard <N>/5)`        | nested under each `*-test` cell |
 
 GitHub groups matrix cells alphabetically by name, so leading with
@@ -139,15 +139,15 @@ inside `_rtx-test.yml` to run just its slice.
 windows-rtx-build-test.yml:                          windows-rtx-wheel-test.yml:
 
   build  matrix( config )                         (no preflight job)
-      |   (3 cells)                                test  matrix( config x arch )
-      |   multi-arch wheel + SHA sidecar                  (3 x 2 = 6 cells)
+      |   (1 cell)                                 test  matrix( config x arch )
+      |   multi-arch wheel + SHA sidecar                  (1 x 2 = 2 cells)
       |   uploaded as one artifact per cell
       |                                                  each cell calls
       +-> test  matrix( config x arch )                  _rtx-test.yml, which
-                (3 x 2 = 6 cells)                        internally fans out
+                (1 x 2 = 2 cells)                        internally fans out
                   each cell calls _rtx-test.yml,         5 shard runners.
                   which internally fans out 5
-                  shard runners (30 runners total).      Inside each runner:
+                  shard runners (10 runners total).      Inside each runner:
                                                            - checkout pytorch@nightly
                   Inside each runner:                      - grep public index for the
                     - pip install the build's wheel          matching devYYYYMMDD wheel
@@ -155,12 +155,9 @@ windows-rtx-build-test.yml:                          windows-rtx-wheel-test.yml:
                     - run shard N of 5                     - run shard N of 5
 
 UI grouping in both workflows (orchestrator level):
-  wheel-py312-cu130-build                  (windows-rtx-build-test only)
-  wheel-py312-cu130-sm89-test              ... drill in for 5 shard cells
-  wheel-py312-cu130-sm120-test             ... drill in for 5 shard cells
   wheel-py312-cu132-build                  (windows-rtx-build-test only)
-  wheel-py312-cu132-sm89-test
-  ...
+  wheel-py312-cu132-sm89-test              ... drill in for 5 shard cells
+  wheel-py312-cu132-sm120-test             ... drill in for 5 shard cells
 ```
 
 `_rtx-test.yml` accepts two install paths and routes between them based
@@ -192,20 +189,21 @@ runner; add/remove entries to match the runner pool):
 
 | python | cuda toolkit | python-label | cuda-label |
 | --- | --- | --- | --- |
-| 3.12 | 13.0 | `py312` | `cu130` |
 | 3.12 | 13.2 | `py312` | `cu132` |
-| 3.13 | 13.2 | `py313` | `cu132` |
+
+Python 3.13 (`py313` / `cu132`) is planned but not in the matrix yet; see
+the TODO under `config:` in `windows-rtx-build-test.yml`.
 
 Plus `arch: [sm89, sm120]` on the orchestrator's test job, with the
 5-shard fanout living inside `_rtx-test.yml`
 (`strategy.matrix.shard: [1, 2, 3, 4, 5]`, `NUM_TEST_SHARDS: "5"`),
 matching PR #176678.
 
-Per source-build run that's **3 build jobs + 6 orchestrator-level
-test cells** (3 configs x 2 archs); each test cell expands to 5
-nested shard runners, so the actual runner count is `3 + 6 * 5 = 33`
-GH Actions runner jobs. The wheel-test run is **6 orchestrator-
-level test cells** (30 runners after the internal shard fanout) - no
+Per source-build run that's **1 build job + 2 orchestrator-level
+test cells** (1 config x 2 archs); each test cell expands to 5
+nested shard runners, so the actual runner count is `1 + 2 * 5 = 11`
+GH Actions runner jobs. The wheel-test run is **2 orchestrator-
+level test cells** (10 runners after the internal shard fanout) - no
 preflight, no per-cell wheel producer.
 
 `TORCH_CUDA_ARCH_LIST` is set per `arch` matrix entry (`8.9` for sm89,
@@ -235,8 +233,8 @@ GitHub auto-tags (`self-hosted`, `Windows`, `X64`) that the runner
 agent applies are redundant in the AND filter and are deliberately
 left off `runs-on:` everywhere.
 
-For example, the sm120 test cell for Python 3.13 + CUDA 13.0 needs an
-image registered as `[rtx-50x0-test, py313, cu130]` (plus whatever
+For example, the sm120 test cell for Python 3.13 + CUDA 13.2 needs an
+image registered as `[rtx-50x0-test, py313, cu132]` (plus whatever
 auto-tags the runner agent adds).
 
 ## What the runner image must already contain
@@ -320,12 +318,8 @@ carry no matrix. The orchestrator's test matrix is 2-dimensional
 matrix:
   config:                      # paired {python, cuda} entries; each one
     - { python: { version: "3.12", label: "py312" },  #   corresponds to an actual allocated
-        cuda:   { version: "13.0", label: "cu130" },  #   runner. Add/remove lines freely.
-        build_name: "wheel-py312-cu130" }
-    - { python: { version: "3.12", label: "py312" },
-        cuda:   { version: "13.2", label: "cu132" },
+        cuda:   { version: "13.2", label: "cu132" },  #   runner. Add/remove lines freely.
         build_name: "wheel-py312-cu132" }
-    # ... etc
   arch:                        # 2 entries, each carries runner-base
     - { name: sm89,  runner: rtx-40x0-test, arch_list: "8.9"  }
     - { name: sm120, runner: rtx-50x0-test, arch_list: "12.0" }
@@ -346,7 +340,7 @@ To add or remove cells:
   one place per orchestrator. Each entry is `{ python: {version,
   label}, cuda: {version, label}, build_name: ... }`. Because the
   matrix enumerates only the pairings you put in, dropping an
-  unsupported combination (say `py313` + `cu130` if no machine for it
+  unsupported combination (say `py313` + `cu132` if no machine for it
   exists) is just a line delete - no `exclude:` clause needed.
 - **arch axis**: edit the `arch:` list on the `test` job. Each entry
   is a `{ name, runner, arch_list }` triple - `runner` becomes the
@@ -375,7 +369,7 @@ To add or remove cells:
 
   Cells dropped by the filter show up in the GitHub UI with their
   inner reusable-workflow job in the "skipped" state, so a narrowed run
-  that only covered py3.12 / cu13.0 still leaves an audit trail of
+  that only covered py3.12 / sm89 still leaves an audit trail of
   every other slot as "this cell exists, was deliberately not
   exercised".
 

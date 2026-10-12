@@ -56,8 +56,8 @@ def test_load_jobs_empty(tmp_path):
 
 def test_select_jobs_filters_by_include_and_exclude():
     jobs = [
-        _job("wheel-py312-cu130-sm89-test / test (shard 1/5)", "failure"),
-        _job("wheel-py312-cu130-build / build", "success"),
+        _job("wheel-py312-cu132-sm89-test / test (shard 1/5)", "failure"),
+        _job("wheel-py312-cu132-build / build", "success"),
         _job("test-summary", "success"),
         _job("inspect relay dispatch (parked)", "success"),
     ]
@@ -67,7 +67,7 @@ def test_select_jobs_filters_by_include_and_exclude():
     selected = af.select_jobs(jobs, include, exclude)
 
     names = {j.name for j in selected}
-    assert names == {"wheel-py312-cu130-sm89-test / test (shard 1/5)"}
+    assert names == {"wheel-py312-cu132-sm89-test / test (shard 1/5)"}
 
 
 def test_select_jobs_uses_status_when_conclusion_missing():

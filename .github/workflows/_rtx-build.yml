@@ -26,7 +26,7 @@ name: _rtx-build
 #
 # Runners are ephemeral pre-prepped images selected by the label set
 #   [<runner-base>, <python-label>, <cuda-label>]
-# (e.g. [rtx-build, py312, cu130]). The narrow labels are unique to
+# (e.g. [rtx-build, py312, cu132]). The narrow labels are unique to
 # our self-hosted Windows pool, so the GitHub auto-tags (`self-hosted`,
 # `Windows`, `X64`) are redundant and intentionally omitted. The image
 # has the right Python, CUDA toolkit, MSVC, sccache, magma, ninja,
@@ -58,11 +58,11 @@ on:
         type: string
         required: true
       cuda-version:
-        description: "CUDA toolkit version in dotted form (e.g. 13.0). Exposed as CUDA_VERSION."
+        description: "CUDA toolkit version in dotted form (e.g. 13.2). Exposed as CUDA_VERSION."
         type: string
         required: true
       cuda-label:
-        description: "CUDA label used in runner labels and artifact names (e.g. cu130)."
+        description: "CUDA label used in runner labels and artifact names (e.g. cu132)."
         type: string
         required: true
       cuda-arch-list:

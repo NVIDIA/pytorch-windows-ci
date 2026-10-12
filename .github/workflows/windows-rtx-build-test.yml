@@ -34,10 +34,10 @@ name: windows-rtx-build-test
 #   prep (resolve ref)
 #       |
 #   build  matrix( config )            one multi-arch wheel per cell
-#       |   (up to 3 cells)
+#       |   (1 cell)
 #       |
 #       +-> test  matrix( config x arch )   1 reusable-workflow call per
-#                 up to 3 x 2 = 6 cells     cell; each call internally fans
+#                 1 x 2 = 2 cells           cell; each call internally fans
 #                                           out 5 shard runners.
 #
 # `config` is a paired `{python, cuda}` entry (the runner pool is allocated
@@ -48,8 +48,8 @@ name: windows-rtx-build-test
 # is every scheduled run.
 #
 # Cell-name shape mirrors pytorch/pytorch's generated nightly:
-#   build cell -> `<build_name>-build`        e.g. `wheel-py312-cu130-build`
-#   test  cell -> `<build_name>-<arch>-test`  e.g. `wheel-py312-cu130-sm89-test`
+#   build cell -> `<build_name>-build`        e.g. `wheel-py312-cu132-build`
+#   test  cell -> `<build_name>-<arch>-test`  e.g. `wheel-py312-cu132-sm89-test`
 
 on:
   schedule:
@@ -91,7 +91,7 @@ on:
         required: false
         default: ""
       cuda-versions:
-        description: "Comma-separated subset of 13.0,13.2 to build/test. Empty = all."
+        description: "Comma-separated subset of 13.2 to build/test. Empty = all."
         type: string
         required: false
         default: ""
@@ -242,7 +242,6 @@ jobs:
         # the identity a HUD result is filed under, so changing one orphans
         # that row's history upstream.
         config: &config
-          - { python: { version: "3.12", label: "py312" }, cuda: { version: "13.0", label: "cu130" }, build_name: "wheel-py312-cu130", hud_env: "win-rtx-py312-cu130" }
           - { python: { version: "3.12", label: "py312" }, cuda: { version: "13.2", label: "cu132" }, build_name: "wheel-py312-cu132", hud_env: "win-rtx-py312-cu132" }
           # TODO: re-add Python 3.13 (py313 / cu132) to the matrix in the future.
     uses: ./.github/workflows/_rtx-build.yml
@@ -368,7 +367,7 @@ jobs:
   #     turn skip the whole `test` matrix behind it.
   #   * They are per-cell MATRIX jobs with `fail-fast: false`, so each HUD row
   #     is delivered independently and one failed callback cannot suppress the
-  #     other five.
+  #     others.
   #
   # Being terminal costs us `needs.<cell>.result` (in the caller that expression
   # collapses to one aggregate over every matrix leg), so each leg recovers its

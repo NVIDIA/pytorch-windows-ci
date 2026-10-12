@@ -3,8 +3,8 @@
 # SPDX-License-Identifier: MIT
 """Derive one CRCR HUD cell's conclusion from the run's GitHub job list.
 
-The HUD shows one row per logical cell (``wheel-py312-cu130-build``,
-``wheel-py312-cu130-sm89-test``), but each cell is realised as one or more
+The HUD shows one row per logical cell (``wheel-py312-cu132-build``,
+``wheel-py312-cu132-sm89-test``), but each cell is realised as one or more
 actual GitHub jobs -- a test cell is five parallel shards. Jobs that a reusable
 workflow contributes are named ``"<caller job name> / <called job name>"``, so
 a cell's jobs are exactly those whose name is the cell itself or begins with
@@ -219,7 +219,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         dest="cells",
         metavar="CELL",
         help=(
-            "Cell name, e.g. 'wheel-py312-cu130-sm89-test'. Repeat to reduce "
+            "Cell name, e.g. 'wheel-py312-cu132-sm89-test'. Repeat to reduce "
             "several cells into the one conclusion a combined HUD row reports "
             "(worst wins)."
         ),

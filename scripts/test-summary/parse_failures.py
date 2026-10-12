@@ -714,7 +714,7 @@ def _cell_label(name: str) -> str:
     """Cell (matrix cell) an artifact/dir belongs to, for per-cell grouping.
 
     From ``test-reports-<cell>-shard<N>-<run>-<attempt>`` this returns
-    ``<cell>`` (e.g. ``win-rtx-sm120-py312-cu130-sm120``). When no shard token
+    ``<cell>`` (e.g. ``win-rtx-sm120-py312-cu132-sm120``). When no shard token
     is present the whole name is treated as its own cell; an empty cell (a bare
     ``test-reports-shard<N>-...`` with no cell segment) renders as "(default)".
     """

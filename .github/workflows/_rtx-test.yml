@@ -640,6 +640,21 @@ jobs:
           print("test-harness imports present:", ", ".join(required))
           PY
 
+      - name: Verify Windows CUDA wheel runtime dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from importlib import metadata
+
+          requirements = metadata.distribution("torch").requires or []
+          required = ("cuda-toolkit", "cuda-pathfinder", "nvidia-cudnn", "nvidia-cusparselt")
+          missing = [name for name in required if not any(req.lower().startswith(name) for req in requirements)]
+          if missing:
+              raise RuntimeError(f"torch wheel metadata is missing CUDA runtime requirements: {', '.join(missing)}")
+          print("Verified CUDA runtime requirements in torch wheel metadata")
+          PY
+
       # Seed our own test-time stats into pytorch's .additional_ci_files so
       # run_test.py shards deterministically from data we control instead of
       # downloading test-infra stats (or falling back to round-robin). All 5

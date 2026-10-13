@@ -242,7 +242,11 @@ jobs:
         # the identity a HUD result is filed under, so changing one orphans
         # that row's history upstream.
         config: &config
-          - { python: { version: "3.12", label: "py312" }, cuda: { version: "13.2", label: "cu132" }, build_name: "wheel-py312-cu132", hud_env: "win-rtx-py312-cu132" }
+          - python: { version: "3.12", label: "py312" }
+            cuda: { version: "13.2", label: "cu132" }
+            build_name: "wheel-py312-cu132"
+            hud_env: "win-rtx-py312-cu132"
+            pytorch_extra_install_requirements: "cuda-toolkit[nvrtc,cudart,cupti,cufft,curand,cusolver,cusparse,cublas,cufile,nvjitlink,nvtx]==13.2.2; platform_system == 'Windows' and platform_machine == 'AMD64' | cuda-pathfinder; platform_system == 'Windows' and platform_machine == 'AMD64' | nvidia-cudnn-cu13==9.24.0.43; platform_system == 'Windows' and platform_machine == 'AMD64' | nvidia-cusparselt-cu13==0.8.1; platform_system == 'Windows' and platform_machine == 'AMD64'"
           # TODO: re-add Python 3.13 (py313 / cu132) to the matrix in the future.
     uses: ./.github/workflows/_rtx-build.yml
     with:
@@ -253,6 +257,7 @@ jobs:
       cuda-label: ${{ matrix.config.cuda.label }}
       cuda-arch-list: "8.9;12.0"
       build-environment: win-rtx-cuda
+      pytorch-extra-install-requirements: ${{ matrix.config.pytorch_extra_install_requirements }}
       pytorch-ref: ${{ needs.prep.outputs.pytorch-ref }}
       # Must match the `wheel-artifact:` value passed to the paired test
       # call below so the test job picks up exactly this build's wheel.

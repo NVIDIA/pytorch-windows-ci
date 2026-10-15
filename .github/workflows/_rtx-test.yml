@@ -647,13 +647,28 @@ jobs:
           set -euo pipefail
           python - <<'PY'
           from importlib import metadata
+          from packaging.requirements import Requirement
+          import torch
 
-          requirements = metadata.distribution("torch").requires or []
-          required = ("cuda-toolkit", "cuda-pathfinder", "nvidia-cudnn", "nvidia-cusparselt")
-          missing = [name for name in required if not any(req.lower().startswith(name) for req in requirements)]
+          requirements = {
+              req.name: req for req in map(Requirement, metadata.requires("torch") or [])
+          }
+          required = {"cuda-toolkit", "cuda-pathfinder", "nvidia-cudnn-cu13"}
+          missing = sorted(required - requirements.keys())
           if missing:
-              raise RuntimeError(f"torch wheel metadata is missing CUDA runtime requirements: {', '.join(missing)}")
-          print("Verified CUDA runtime requirements in torch wheel metadata")
+              raise RuntimeError(f"Missing CUDA wheel dependencies: {', '.join(missing)}")
+
+          cudnn = requirements["nvidia-cudnn-cu13"]
+          pins = [spec.version for spec in cudnn.specifier if spec.operator == "=="]
+          if len(pins) != 1 or "*" in pins[0]:
+              raise RuntimeError(f"Expected an exact cuDNN pin: {cudnn}")
+          # Ignore the fourth component: it identifies the PyPI package build.
+          major, minor, patch = map(int, pins[0].split(".")[:3])
+          expected = major * 10000 + minor * 100 + patch
+          actual = torch.backends.cudnn.version()
+          if actual != expected:
+              raise RuntimeError(f"Loaded cuDNN {actual}; wheel requires {pins[0]} ({expected})")
+          print(f"Verified CUDA wheel dependencies and cuDNN {pins[0]} (runtime {actual})")
           PY
 
       # Seed our own test-time stats into pytorch's .additional_ci_files so

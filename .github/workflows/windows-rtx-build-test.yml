@@ -246,7 +246,7 @@ jobs:
             cuda: { version: "13.2", label: "cu132" }
             build_name: "wheel-py312-cu132"
             hud_env: "win-rtx-py312-cu132"
-            pytorch_extra_install_requirements: "cuda-toolkit[nvrtc,cudart,cupti,cufft,curand,cusolver,cusparse,cublas,cufile,nvjitlink,nvtx]==13.2.2; platform_system == 'Windows' and platform_machine == 'AMD64' | cuda-pathfinder>=1.7.0; platform_system == 'Windows' and platform_machine == 'AMD64' | nvidia-cudnn-cu13==9.26.0.51; platform_system == 'Windows' and platform_machine == 'AMD64' | nvidia-cusparselt-cu13==0.8.1; platform_system == 'Windows' and platform_machine == 'AMD64'"
+            pytorch_extra_install_requirements: "cuda-toolkit[nvrtc,cudart,cupti,cufft,curand,cusolver,cusparse,cublas,cufile,nvjitlink,nvtx]==13.2.2; platform_system == 'Windows' and platform_machine == 'AMD64' | cuda-pathfinder>=1.7.0; platform_system == 'Windows' and platform_machine == 'AMD64' | nvidia-cudnn-cu13==9.26.0.51; platform_system == 'Windows' and platform_machine == 'AMD64'"
           # TODO: re-add Python 3.13 (py313 / cu132) to the matrix in the future.
     uses: ./.github/workflows/_rtx-build.yml
     with:

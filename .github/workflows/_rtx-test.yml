@@ -640,6 +640,37 @@ jobs:
           print("test-harness imports present:", ", ".join(required))
           PY
 
+      - name: Verify Windows CUDA wheel runtime dependencies
+        if: inputs.wheel-artifact != ''
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from importlib import metadata
+          from packaging.requirements import Requirement
+          import torch
+
+          requirements = {
+              req.name: req for req in map(Requirement, metadata.requires("torch") or [])
+          }
+          required = {"cuda-toolkit", "cuda-pathfinder", "nvidia-cudnn-cu13"}
+          missing = sorted(required - requirements.keys())
+          if missing:
+              raise RuntimeError(f"Missing CUDA wheel dependencies: {', '.join(missing)}")
+
+          cudnn = requirements["nvidia-cudnn-cu13"]
+          pins = [spec.version for spec in cudnn.specifier if spec.operator == "=="]
+          if len(pins) != 1 or "*" in pins[0]:
+              raise RuntimeError(f"Expected an exact cuDNN pin: {cudnn}")
+          # Ignore the fourth component: it identifies the PyPI package build.
+          major, minor, patch = map(int, pins[0].split(".")[:3])
+          expected = major * 10000 + minor * 100 + patch
+          actual = torch.backends.cudnn.version()
+          if actual != expected:
+              raise RuntimeError(f"Loaded cuDNN {actual}; wheel requires {pins[0]} ({expected})")
+          print(f"Verified CUDA wheel dependencies and cuDNN {pins[0]} (runtime {actual})")
+          PY
+
       # Seed our own test-time stats into pytorch's .additional_ci_files so
       # run_test.py shards deterministically from data we control instead of
       # downloading test-infra stats (or falling back to round-robin). All 5

@@ -76,6 +76,10 @@ on:
         description: "Logical name used in BUILD_ENVIRONMENT env and the artifact name."
         type: string
         required: true
+      pytorch-extra-install-requirements:
+        description: "Pipe-separated PEP 508 CUDA runtime requirements installed by pip alongside torch."
+        type: string
+        required: true
       pytorch-ref:
         description: "pytorch/pytorch ref to build (branch / tag / SHA)."
         type: string
@@ -127,6 +131,9 @@ jobs:
       TORCH_CUDA_ARCH_LIST: ${{ inputs.cuda-arch-list }}
       PYTHON_VERSION: ${{ inputs.python-version }}
       CUDA_VERSION: ${{ inputs.cuda-version }}
+      # PyTorch records these dependencies in wheel metadata and skips bundling
+      # CUDA runtime DLLs when the requirements include cuda-toolkit.
+      PYTORCH_EXTRA_INSTALL_REQUIREMENTS: ${{ inputs.pytorch-extra-install-requirements }}
       # BUILD_TEST is always on across every build config - the C++ test
       # binaries are built unconditionally and must never be disabled.
       BUILD_TEST: "1"

@@ -663,6 +663,28 @@ jobs:
           python "${GITHUB_WORKSPACE}/oot/scripts/test-stats/seed_test_stats.py" \
             --pytorch-root "${{ env.PT_ROOT }}"
 
+      # Exclude KNOWN_FAILING tests (scripts/known-failing/known_failing.py).
+      # win-test.sh takes no extra args, so splice `--exclude` into the .bat that
+      # runs run_test.py. Fails if upstream changes that command line, or if an
+      # entry names no test file.
+      - name: Apply known-failing excludes
+        shell: bash
+        working-directory: ${{ env.PT_ROOT }}
+        run: |
+          set -euo pipefail
+          kf="${GITHUB_WORKSPACE}/oot/scripts/known-failing/known_failing.py"
+          bat=".ci/pytorch/win-test-helpers/test_python_shard.bat"
+          python "$kf" --job x86 --validate .
+          excl="$(python "$kf" --job x86)"
+          if [ -n "$excl" ]; then
+            grep -q -F -- '--exclude-quantization-tests --shard' "$bat" \
+              || { echo "::error::$bat no longer has the run_test.py anchor; update the known-failing splice"; exit 1; }
+            sed -i "s|--exclude-quantization-tests --shard|--exclude-quantization-tests ${excl} --shard|" "$bat"
+            # Keep win-test.sh's assert_git_not_dirty from failing on this edit.
+            git update-index --skip-worktree "$bat"
+            grep -n 'run_test.py' "$bat"
+          fi
+
       - name: Start runner diagnostics
         id: diag
         uses: ./oot/.github/actions/start-runner-diagnostics

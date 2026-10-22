@@ -399,8 +399,9 @@ jobs:
 
       # Exclude KNOWN_FAILING tests (scripts/known-failing/known_failing.py) by
       # appending `--exclude` to PYTORCH_WIN_TEST_RUN_TEST_EXTRA_ARGS. The default
-      # base below must match pytorch-windows-test-shard.ps1. Fails if an entry
-      # names no test file.
+      # base below must match pytorch-windows-test-shard.ps1. Per-test entries are
+      # passed as PYTEST_ADDOPTS --deselect args. Fails if an entry names no
+      # test file, or a test its file lacks.
       - name: Apply known-failing excludes
         shell: powershell
         env:
@@ -411,6 +412,14 @@ jobs:
           $kf = "$env:GITHUB_WORKSPACE\oot\scripts\known-failing\known_failing.py"
           $excl = (python $kf --job woa --validate $env:PT_ROOT)
           if ($LASTEXITCODE -ne 0) { throw "known_failing.py failed with exit $LASTEXITCODE" }
+          # Per-test entries become pytest --deselect args. The shard script appends its
+          # timeout to an existing PYTEST_ADDOPTS, so this survives to every pytest run.
+          $deselect = (python $kf --job woa --deselect-args)
+          if ($LASTEXITCODE -ne 0) { throw "known_failing.py failed with exit $LASTEXITCODE" }
+          if (-not [string]::IsNullOrWhiteSpace($deselect)) {
+            "PYTEST_ADDOPTS=$deselect" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+            Write-Host "PYTEST_ADDOPTS=$deselect"
+          }
           if ([string]::IsNullOrWhiteSpace($excl)) { exit 0 }
           $base = $env:PYTORCH_WIN_TEST_RUN_TEST_EXTRA_ARGS
           if ([string]::IsNullOrWhiteSpace($base)) {

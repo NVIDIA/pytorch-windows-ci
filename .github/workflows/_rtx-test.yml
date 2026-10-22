@@ -666,7 +666,7 @@ jobs:
       # Exclude KNOWN_FAILING tests (scripts/known-failing/known_failing.py).
       # win-test.sh takes no extra args, so splice `--exclude` into the .bat that
       # runs run_test.py. Fails if upstream changes that command line, or if an
-      # entry names no test file.
+      # entry names no test file, or a test its file lacks.
       - name: Apply known-failing excludes
         shell: bash
         working-directory: ${{ env.PT_ROOT }}
@@ -676,6 +676,11 @@ jobs:
           bat=".ci/pytorch/win-test-helpers/test_python_shard.bat"
           python "$kf" --job x86 --validate .
           excl="$(python "$kf" --job x86)"
+          # Per-test entries become pytest --deselect args, which the run step appends
+          # to its PYTEST_ADDOPTS (a step's own env wins over GITHUB_ENV).
+          deselect="$(python "$kf" --job x86 --deselect-args)"
+          echo "KNOWN_FAILING_DESELECT=${deselect}" >> "$GITHUB_ENV"
+          echo "known-failing deselects: ${deselect:-none}"
           if [ -n "$excl" ]; then
             grep -q -F -- '--exclude-quantization-tests --shard' "$bat" \
               || { echo "::error::$bat no longer has the run_test.py anchor; update the known-failing splice"; exit 1; }
@@ -718,7 +723,7 @@ jobs:
           # ---- stacks and then hard-exits the process, which is what lets
           # ---- run_test.py record the file as failed and move on instead
           # ---- of blocking its worker pool forever.
-          PYTEST_ADDOPTS: "--timeout=${{ env.PER_TEST_TIMEOUT_SEC }} --timeout-method=thread"
+          PYTEST_ADDOPTS: "--timeout=${{ env.PER_TEST_TIMEOUT_SEC }} --timeout-method=thread ${{ env.KNOWN_FAILING_DESELECT }}"
           # ---- per-process hang guard, covering the phases pytest-timeout
           # ---- cannot see: import, collection, and everything after the last
           # ---- test while the interpreter and CUDA context tear down. Two of

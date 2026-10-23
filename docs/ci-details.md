@@ -139,15 +139,15 @@ inside `_rtx-test.yml` to run just its slice.
 windows-rtx-build-test.yml:                          windows-rtx-wheel-test.yml:
 
   build  matrix( config )                         (no preflight job)
-      |   (1 cell)                                 test  matrix( config x arch )
-      |   multi-arch wheel + SHA sidecar                  (1 x 2 = 2 cells)
+      |   (2 cells)                                test  matrix( config x arch )
+      |   multi-arch wheel + SHA sidecar                  (2 x 2 = 4 cells)
       |   uploaded as one artifact per cell
       |                                                  each cell calls
       +-> test  matrix( config x arch )                  _rtx-test.yml, which
-                (1 x 2 = 2 cells)                        internally fans out
+                (2 x 2 = 4 cells)                        internally fans out
                   each cell calls _rtx-test.yml,         5 shard runners.
                   which internally fans out 5
-                  shard runners (10 runners total).      Inside each runner:
+                  shard runners (20 runners total).      Inside each runner:
                                                            - checkout pytorch@nightly
                   Inside each runner:                      - grep public index for the
                     - pip install the build's wheel          matching devYYYYMMDD wheel
@@ -158,6 +158,9 @@ UI grouping in both workflows (orchestrator level):
   wheel-py312-cu132-build                  (windows-rtx-build-test only)
   wheel-py312-cu132-sm89-test              ... drill in for 5 shard cells
   wheel-py312-cu132-sm120-test             ... drill in for 5 shard cells
+  wheel-py312-cu134-build                  (windows-rtx-build-test only)
+  wheel-py312-cu134-sm89-test              ... drill in for 5 shard cells
+  wheel-py312-cu134-sm120-test             ... drill in for 5 shard cells
 ```
 
 `_rtx-test.yml` accepts two install paths and routes between them based
@@ -190,6 +193,7 @@ runner; add/remove entries to match the runner pool):
 | python | cuda toolkit | python-label | cuda-label |
 | --- | --- | --- | --- |
 | 3.12 | 13.2 | `py312` | `cu132` |
+| 3.12 | 13.4 | `py312` | `cu134` |
 
 Python 3.13 (`py313` / `cu132`) is planned but not in the matrix yet; see
 the TODO under `config:` in `windows-rtx-build-test.yml`.
@@ -199,11 +203,11 @@ Plus `arch: [sm89, sm120]` on the orchestrator's test job, with the
 (`strategy.matrix.shard: [1, 2, 3, 4, 5]`, `NUM_TEST_SHARDS: "5"`),
 matching PR #176678.
 
-Per source-build run that's **1 build job + 2 orchestrator-level
-test cells** (1 config x 2 archs); each test cell expands to 5
-nested shard runners, so the actual runner count is `1 + 2 * 5 = 11`
-GH Actions runner jobs. The wheel-test run is **2 orchestrator-
-level test cells** (10 runners after the internal shard fanout) - no
+Per source-build run that's **2 build jobs + 4 orchestrator-level
+test cells** (2 configs x 2 archs); each test cell expands to 5
+nested shard runners, so the actual runner count is `2 + 4 * 5 = 22`
+GH Actions runner jobs. The wheel-test run is **4 orchestrator-
+level test cells** (20 runners after the internal shard fanout) - no
 preflight, no per-cell wheel producer.
 
 `TORCH_CUDA_ARCH_LIST` is set per `arch` matrix entry (`8.9` for sm89,

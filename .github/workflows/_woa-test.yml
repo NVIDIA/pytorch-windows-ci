@@ -397,6 +397,38 @@ jobs:
             --pytorch-root $env:PT_ROOT
           if ($LASTEXITCODE -ne 0) { throw "seed_test_stats.py failed with exit $LASTEXITCODE" }
 
+      # Exclude KNOWN_FAILING tests (scripts/known-failing/known_failing.py) by
+      # appending `--exclude` to PYTORCH_WIN_TEST_RUN_TEST_EXTRA_ARGS. The default
+      # base below must match pytorch-windows-test-shard.ps1. Per-test entries are
+      # passed as PYTEST_ADDOPTS --deselect args. Fails if an entry names no
+      # test file, or a test its file lacks.
+      - name: Apply known-failing excludes
+        shell: powershell
+        env:
+          VENV_ACTIVATE: ${{ steps.venv.outputs.venv-activate }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          & $env:VENV_ACTIVATE
+          $kf = "$env:GITHUB_WORKSPACE\oot\scripts\known-failing\known_failing.py"
+          $excl = (python $kf --job woa --validate $env:PT_ROOT)
+          if ($LASTEXITCODE -ne 0) { throw "known_failing.py failed with exit $LASTEXITCODE" }
+          # Per-test entries become pytest --deselect args. The shard script appends its
+          # timeout to an existing PYTEST_ADDOPTS, so this survives to every pytest run.
+          $deselect = (python $kf --job woa --deselect-args)
+          if ($LASTEXITCODE -ne 0) { throw "known_failing.py failed with exit $LASTEXITCODE" }
+          if (-not [string]::IsNullOrWhiteSpace($deselect)) {
+            "PYTEST_ADDOPTS=$deselect" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+            Write-Host "PYTEST_ADDOPTS=$deselect"
+          }
+          if ([string]::IsNullOrWhiteSpace($excl)) { exit 0 }
+          $base = $env:PYTORCH_WIN_TEST_RUN_TEST_EXTRA_ARGS
+          if ([string]::IsNullOrWhiteSpace($base)) {
+            $base = '--exclude-jit-executor --keep-going --exclude-distributed-tests --exclude-quantization-tests --verbose'
+          }
+          $runArgs = "$base $excl"
+          "PYTORCH_WIN_TEST_RUN_TEST_EXTRA_ARGS=$runArgs" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          Write-Host "PYTORCH_WIN_TEST_RUN_TEST_EXTRA_ARGS=$runArgs"
+
       - name: Start runner diagnostics
         id: diag
         uses: ./oot/.github/actions/start-runner-diagnostics

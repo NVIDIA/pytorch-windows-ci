@@ -7,8 +7,14 @@
 # across interpreters, so these are strict - any failure aborts the test venv. The
 # heavier / less-portable domain deps live in woa-test-extended.txt (best-effort).
 # See woa-base.txt for the version strategy (unpinned).
+#
+# `pytest` is the one pinned entry. pytest 9.2.0's junitxml keys its node reporters by
+# `report.id` (a NodeId), while the LogXMLReruns subclass in pytorch's test/conftest.py
+# still keys them by the `report.nodeid` string. Every test report then raises
+# INTERNALERROR KeyError (pytest exit 3), run_test.py retries each test on its own, and
+# every shard runs into its 3 h watchdog. Keep it pinned until conftest.py handles NodeId.
 
-pytest
+pytest==9.1.1
 pytest-cpp
 pytest-flakefinder
 pytest-rerunfailures

@@ -23,8 +23,11 @@ class Entry:
     jobs: tuple[str, ...] = JOBS  # default: every job; narrow to disable on one only
     # Empty: exclude the whole file. Otherwise skip only these and keep running the rest
     # of the file, each as "TestClass" or "TestClass::test_method" (the pytest node id
-    # minus the file). Matching is by prefix, so a class also covers its device variants
-    # (TestFoo skips TestFooCPU) and a method covers its parametrized variants.
+    # minus the file). pytest --deselect matches a literal node-id prefix, so:
+    #   "TestFoo"              also skips TestFooCPU / TestFooCUDA and all their tests
+    #   "TestFooCUDA::test_x"  also skips test_x_cuda and other parametrized variants
+    # but "TestFoo::test_x" does NOT reach TestFooCUDA::test_x_cuda - once a method is
+    # named, the class segment must be the instantiated name, suffix included.
     tests: tuple[str, ...] = ()
 
 # Key: run_test.py TESTS name (path under test/, no ".py", e.g. "dynamo/test_foo").
@@ -38,11 +41,17 @@ KNOWN_FAILING: dict[str, Entry | tuple[Entry, ...]] = {
     "test_reductions": Entry(reason="needs triton-windows"),
     "test_varlen_attention": Entry(reason="needs triton-windows"),
     "test_fake_tensor": Entry(
-        reason="Currently failing, debug required",
+        reason=(
+            "test_module_to: fix in https://github.com/pytorch/pytorch/pull/184976, "
+            "PR waiting on merge; the rest: currently failing, debug required"
+        ),
         tests=(
             "PropagateRealTensorsTestFakeTensor::test_cuda_fake_tensor_new_methods_no_device_init_propagate_real_tensors",
             "TestFakeTensor::test_cuda_fake_tensor_new_methods_no_device_init",
-            "TestFakeTensorOperatorInvariants::test_module_to",
+            # test_module_to is defined on TestFakeTensorOperatorInvariantsDevice and
+            # reaches pytest only as the instantiated TestFakeTensorOperatorInvariantsDeviceCUDA
+            # class, so the class segment must carry the CUDA suffix (see the prefix note above).
+            "TestFakeTensorOperatorInvariantsDeviceCUDA::test_module_to",
         ),
     ),
     "test_cuda": Entry(

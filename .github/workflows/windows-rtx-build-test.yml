@@ -242,6 +242,8 @@ jobs:
         # the identity a HUD result is filed under, so changing one orphans
         # that row's history upstream.
         config: &config
+          # A new cuda.label must also be added to CUDA_VARIANTS in
+          # scripts/known-failing/known_failing.py, or every test job fails its known-failing step.
           - { python: { version: "3.12", label: "py312" }, cuda: { version: "13.2", label: "cu132" }, build_name: "wheel-py312-cu132", hud_env: "win-rtx-py312-cu132" }
           - { python: { version: "3.12", label: "py312" }, cuda: { version: "13.4", label: "cu134" }, build_name: "wheel-py312-cu134", hud_env: "win-rtx-py312-cu134" }
           # TODO: re-add Python 3.13 (py313 / cu132) to the matrix in the future.

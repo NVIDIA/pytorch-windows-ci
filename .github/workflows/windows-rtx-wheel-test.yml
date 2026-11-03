@@ -123,6 +123,8 @@ jobs:
         # (its own `strategy.matrix.shard` fans out 5 runners per
         # cell), so it deliberately does NOT appear in this matrix.
         config:
+          # A new cuda.label must also be added to CUDA_VARIANTS in
+          # scripts/known-failing/known_failing.py, or every test job fails its known-failing step.
           - { python: { version: "3.12", label: "py312" }, cuda: { version: "13.2", label: "cu132" }, build_name: "wheel-py312-cu132" }
           - { python: { version: "3.12", label: "py312" }, cuda: { version: "13.4", label: "cu134" }, build_name: "wheel-py312-cu134" }
         arch:

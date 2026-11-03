@@ -180,6 +180,74 @@ def test_one_file_can_differ_per_job(capsys):
     assert capsys.readouterr().out.strip() == "--deselect=test/f.py::TestA::test_x"
 
 
-def test_rejects_two_entries_for_one_job():
-    with pytest.raises(ValueError, match="more than one entry"):
+def test_rejects_a_whole_file_entry_overlapping_another():
+    with pytest.raises(ValueError, match="whole-file entry overlaps"):
         kf.names_for("x86", {"f": (_e(), _e(tests=("A",)))})
+
+
+def test_allows_two_per_test_entries_for_one_cell():
+    ents = {"f": (_e(tests=("TestA::test_x",)), _e(tests=("TestB::test_y",)))}
+    assert kf.deselect_args_for("x86", ents) == [
+        "--deselect=test/f.py::TestA::test_x",
+        "--deselect=test/f.py::TestB::test_y",
+    ]
+
+
+def test_a_whole_file_entry_may_sit_beside_another_variant():
+    ents = {"f": (_e(cuda=("cu132",)), _e(cuda=("cu134",), tests=("TestA::test_x",)))}
+    assert kf.names_for("x86", ents, "cu132") == ["f"]
+    assert kf.names_for("x86", ents, "cu134") == []
+
+
+_CUDA = {
+    "every": _e(tests=("TestA::test_x",)),
+    "only_cu134": _e(cuda=("cu134",), tests=("TestB::test_y",)),
+}
+
+
+def test_cuda_narrows_per_test_entries(capsys):
+    assert _run(_CUDA, "x86", "--cuda", "cu132", "--deselect-args") == 0
+    assert capsys.readouterr().out.strip() == "--deselect=test/every.py::TestA::test_x"
+    assert _run(_CUDA, "x86", "--cuda", "cu134", "--deselect-args") == 0
+    assert capsys.readouterr().out.strip() == (
+        "--deselect=test/every.py::TestA::test_x --deselect=test/only_cu134.py::TestB::test_y"
+    )
+
+
+def test_no_cuda_flag_applies_every_entry(capsys):
+    assert _run(_CUDA, "x86", "--deselect-args") == 0
+    assert capsys.readouterr().out.strip() == (
+        "--deselect=test/every.py::TestA::test_x --deselect=test/only_cu134.py::TestB::test_y"
+    )
+
+
+def test_cuda_narrows_whole_file_entries():
+    ents = {"a": _e(), "b": _e(cuda=("cu134",))}
+    assert kf.names_for("x86", ents, "cu132") == ["a"]
+    assert sorted(kf.names_for("x86", ents, "cu134")) == ["a", "b"]
+
+
+def test_rejects_an_unknown_cuda_variant():
+    with pytest.raises(ValueError, match="cuda must be a non-empty subset"):
+        kf.names_for("x86", {"f": _e(cuda=("cu999",))})
+    with pytest.raises(ValueError, match="cuda must be a non-empty subset"):
+        kf.names_for("x86", {"f": _e(cuda=())})
+
+
+def test_cli_rejects_an_unknown_cuda_variant():
+    with pytest.raises(SystemExit):
+        _run(_CUDA, "x86", "--cuda", "cu999")
+
+
+def test_validate_skips_files_for_other_cuda_variants(tmp_path):
+    ents = {"only_cu134": _e(cuda=("cu134",))}
+    root = _checkout(tmp_path)  # empty checkout: the file does not exist
+    assert kf.main(["--job", "x86", "--cuda", "cu132", "--validate", root], entries=ents) == 0
+    assert kf.main(["--job", "x86", "--cuda", "cu134", "--validate", root], entries=ents) == 2
+
+
+def test_real_list_is_wellformed_for_every_cell():
+    for job in kf.JOBS:
+        for cu in (None, *kf.CUDA_VARIANTS):
+            kf.names_for(job, kf.KNOWN_FAILING, cu)
+            kf.deselect_args_for(job, kf.KNOWN_FAILING, cu)

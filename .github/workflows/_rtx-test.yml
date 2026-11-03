@@ -674,11 +674,13 @@ jobs:
           set -euo pipefail
           kf="${GITHUB_WORKSPACE}/oot/scripts/known-failing/known_failing.py"
           bat=".ci/pytorch/win-test-helpers/test_python_shard.bat"
-          python "$kf" --job x86 --validate .
-          excl="$(python "$kf" --job x86)"
+          # --cuda keeps variant-specific entries off the cells they still pass on.
+          cu="${{ inputs.cuda-label }}"
+          python "$kf" --job x86 --cuda "$cu" --validate .
+          excl="$(python "$kf" --job x86 --cuda "$cu")"
           # Per-test entries become pytest --deselect args, which the run step appends
           # to its PYTEST_ADDOPTS (a step's own env wins over GITHUB_ENV).
-          deselect="$(python "$kf" --job x86 --deselect-args)"
+          deselect="$(python "$kf" --job x86 --cuda "$cu" --deselect-args)"
           echo "KNOWN_FAILING_DESELECT=${deselect}" >> "$GITHUB_ENV"
           echo "known-failing deselects: ${deselect:-none}"
           if [ -n "$excl" ]; then

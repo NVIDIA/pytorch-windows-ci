@@ -410,11 +410,14 @@ jobs:
           $ErrorActionPreference = "Stop"
           & $env:VENV_ACTIVATE
           $kf = "$env:GITHUB_WORKSPACE\oot\scripts\known-failing\known_failing.py"
-          $excl = (python $kf --job woa --validate $env:PT_ROOT)
+          # --cuda keeps variant-specific entries off the cells they still pass on.
+          # known_failing.py labels variants cu<major><minor>; the input is dotted.
+          $cu = "cu" + ("${{ inputs.cuda-version }}" -replace '\.', '')
+          $excl = (python $kf --job woa --cuda $cu --validate $env:PT_ROOT)
           if ($LASTEXITCODE -ne 0) { throw "known_failing.py failed with exit $LASTEXITCODE" }
           # Per-test entries become pytest --deselect args. The shard script appends its
           # timeout to an existing PYTEST_ADDOPTS, so this survives to every pytest run.
-          $deselect = (python $kf --job woa --deselect-args)
+          $deselect = (python $kf --job woa --cuda $cu --deselect-args)
           if ($LASTEXITCODE -ne 0) { throw "known_failing.py failed with exit $LASTEXITCODE" }
           if (-not [string]::IsNullOrWhiteSpace($deselect)) {
             "PYTEST_ADDOPTS=$deselect" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8

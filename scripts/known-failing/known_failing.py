@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Emit ``--exclude <names...>`` for ``test/run_test.py`` from ``KNOWN_FAILING``.
 
-One list for every OOT Windows job; ``--job`` picks the entries that apply.
+One list for every OOT Windows job; ``--job`` picks the entries that apply, and
+``--cuda`` narrows further to one CUDA variant for tests that only fail on some.
 ``--validate <pytorch-root>`` fails on a name with no ``test/<name>.py``, because
 ``run_test.py`` rejects an unknown name (``choices=TESTS``) and aborts the shard.
 Prints nothing when no entry applies. Exits 2 on a malformed list or entry.
@@ -15,12 +16,20 @@ from dataclasses import dataclass
 from pathlib import Path
 
 JOBS = ("x86", "woa")
+# Update together with the CI matrices that name CUDA variants: --cuda rejects a value
+# missing here, failing the whole test job rather than silently applying every entry to
+# an unknown toolkit. Adding cu135 means editing this tuple and:
+#   .github/workflows/windows-rtx-build-test.yml  (x86 `config` matrix)
+#   .github/workflows/windows-rtx-wheel-test.yml  (x86 `config` matrix)
+#   .github/workflows/windows-woa-build-test.yml, _woa-pr-build-test.yml (WoA cuda-version)
+CUDA_VARIANTS = ("cu132", "cu134")
 
 
 @dataclass(frozen=True)
 class Entry:
     reason: str  # why it fails
     jobs: tuple[str, ...] = JOBS  # default: every job; narrow to disable on one only
+    cuda: tuple[str, ...] = CUDA_VARIANTS  # default: every variant; narrow to failing ones
     # Empty: exclude the whole file. Otherwise skip only these and keep running the rest
     # of the file, each as "TestClass" or "TestClass::test_method" (the pytest node id
     # minus the file). pytest --deselect matches a literal node-id prefix, so:
@@ -30,11 +39,12 @@ class Entry:
     # named, the class segment must be the instantiated name, suffix included.
     tests: tuple[str, ...] = ()
 
-# Key: run_test.py TESTS name (path under test/, no ".py", e.g. "dynamo/test_foo").
-# jobs=("x86",) or ("woa",) limits an entry to one job.
-# tests=("TestY::test_x", ...) disables just those tests instead of the whole file, e.g.
-#   "test_torch": Entry(reason="...", jobs=("woa",), tests=("TestTorch::test_qengine",)),
-# A file that needs different treatment per job takes a tuple of entries with disjoint jobs.
+# Key:   run_test.py TESTS name - path under test/ without ".py" ("dynamo/test_foo").
+# Value: an Entry, or a tuple of Entries to disable different things on different cells.
+#   reason: required - why it fails
+#   jobs:   any of ("x86", "woa")                      default: both
+#   cuda:   any of ("cu132", "cu134")                  default: both
+#   tests:  "TestClass" or "TestClass::test_method"    Without this field, the whole file is disabled
 KNOWN_FAILING: dict[str, Entry | tuple[Entry, ...]] = {
     # ---- Common failures: fail on both x86 RTX and WoA ----
     "test_precompile": Entry(reason="needs triton-windows"),
@@ -62,27 +72,35 @@ KNOWN_FAILING: dict[str, Entry | tuple[Entry, ...]] = {
         tests=(
             "PropagateRealTensorsTestFakeTensor::test_cuda_fake_tensor_new_methods_no_device_init_propagate_real_tensors",
             "TestFakeTensor::test_cuda_fake_tensor_new_methods_no_device_init",
-            # test_module_to is defined on TestFakeTensorOperatorInvariantsDevice and
-            # reaches pytest only as the instantiated TestFakeTensorOperatorInvariantsDeviceCUDA
-            # class, so the class segment must carry the CUDA suffix (see the prefix note above).
             "TestFakeTensorOperatorInvariantsDeviceCUDA::test_module_to",
         ),
     ),
-    "test_cuda": Entry(
-        reason="Currently failing, debug required",
-        tests=(
-            "TestCuda::test_cublas_workspace_cached_lazy_reallocation_backend_cublaslt",
-            "TestCuda::test_cublaslt_workspace_eager_resize_and_zero",
-            "TestCuda::test_graph_capture_error_releases_reserved_segments",
-            "TestCuda::test_storage_copy_releases_gil_during_blocking_cuda_to_cpu",
-            "TestExpandableSegmentRestore::test_restore_retries_after_running_out_of_memory",
-            "TestExpandableSegmentRestore::test_restores_the_saved_reservation_settings",
-            "TestExpandableSegmentRestore::test_tensors_come_back_at_their_original_addresses",
+    "test_cuda": (
+        Entry(
+            reason="Currently failing, debug required",
+            tests=(
+                "TestExpandableSegmentRestore::test_restore_retries_after_running_out_of_memory",
+                "TestExpandableSegmentRestore::test_restores_the_saved_reservation_settings",
+                "TestExpandableSegmentRestore::test_tensors_come_back_at_their_original_addresses",
+            ),
+        ),
+        Entry(
+            # Narrow again once pytorch/pytorch#204192 drops the xfail decorators.
+            reason="upstream's strict xfail reports success as a failure",
+            tests=(
+                "TestCuda::test_graph_capture_error_releases_reserved_segments",
+                "TestCuda::test_graph_rng_after_failed_capture",
+            ),
         ),
     ),
-    "higher_order_ops/test_invoke_subgraph": Entry(reason="Currently failing, debug required"),
-    "inductor/test_warnings": Entry(reason="Currently failing, debug required"),
-    "inductor/test_flex_gemm": Entry(reason="Currently failing, debug required"),
+    "higher_order_ops/test_invoke_subgraph": Entry(
+        reason="needs triton-windows",
+        tests=("TestInvokeSubgraphCompileDeviceCUDA::test_return_none_cuda",),
+    ),
+    "inductor/test_warnings": Entry(
+        reason="needs triton-windows",
+        tests=("InductorWarningTests::test_trivial_matmul_compile_no_user_warning",),
+    ),
 
     # ---- x86 only ----
     "test_multiprocessing": Entry(
@@ -100,7 +118,7 @@ KNOWN_FAILING: dict[str, Entry | tuple[Entry, ...]] = {
         jobs=("x86",),
     ),
 
-    # ---- WoA only (run 87) ----
+    # ---- WoA only ----
     "test_torch": Entry(
         reason="Currently failing, debug required",
         jobs=("woa",),
@@ -148,12 +166,18 @@ def _flat(entries: dict) -> list[tuple[str, Entry]]:
 
 def check_entries(entries: dict) -> None:
     """Raise ValueError on the first malformed entry."""
-    seen: dict[tuple[str, str], int] = {}
+    # A whole-file exclude and anything else for the same cell contradict each other;
+    # two per-test entries for the same cell just merge, so only the former is an error.
+    seen: dict[tuple[str, str, str], bool] = {}
     for name, e in _flat(entries):
         for j in e.jobs:
-            seen[(name, j)] = seen.get((name, j), 0) + 1
-            if seen[(name, j)] > 1:
-                raise ValueError(f"{name}: more than one entry for job {j}")
+            for c in e.cuda:
+                key = (name, j, c)
+                if key in seen and (seen[key] or not e.tests):
+                    raise ValueError(
+                        f"{name}: a whole-file entry overlaps another entry for job {j} / {c}"
+                    )
+                seen[key] = not e.tests
         if not name or name.endswith(".py") or "\\" in name or any(c.isspace() for c in name):
             raise ValueError(
                 f"{name!r} must be a TESTS name: forward slashes, no .py suffix, no spaces"
@@ -162,18 +186,30 @@ def check_entries(entries: dict) -> None:
             raise ValueError(f"{name}: reason is required")
         if not e.jobs or not set(e.jobs) <= set(JOBS):
             raise ValueError(f"{name}: jobs must be a non-empty subset of {JOBS}, got {e.jobs!r}")
+        if not e.cuda or not set(e.cuda) <= set(CUDA_VARIANTS):
+            raise ValueError(
+                f"{name}: cuda must be a non-empty subset of {CUDA_VARIANTS}, got {e.cuda!r}"
+            )
         for t in e.tests:
             if not TEST_KEY.fullmatch(t):
                 raise ValueError(f'{name}: test {t!r} must be "TestClass" or "TestClass::test_method"')
 
 
-def names_for(job: str, entries: dict = KNOWN_FAILING) -> list[str]:
+def applies(e: Entry, job: str, cuda: str | None) -> bool:
+    """Whether this entry covers this cell. ``cuda=None`` means "no variant filter":
+    every entry applies, which is what a caller that does not know its toolkit gets."""
+    return job in e.jobs and (cuda is None or cuda in e.cuda)
+
+
+def names_for(job: str, entries: dict = KNOWN_FAILING, cuda: str | None = None) -> list[str]:
     """Test files to skip outright: entries that name no individual tests."""
     check_entries(entries)
-    return [n for n, e in _flat(entries) if job in e.jobs and not e.tests]
+    return [n for n, e in _flat(entries) if applies(e, job, cuda) and not e.tests]
 
 
-def deselect_args_for(job: str, entries: dict = KNOWN_FAILING) -> list[str]:
+def deselect_args_for(
+    job: str, entries: dict = KNOWN_FAILING, cuda: str | None = None
+) -> list[str]:
     """pytest ``--deselect`` args for this job's per-test entries.
 
     run_test.py runs pytest with rootdir at the checkout, so node ids start ``test/``.
@@ -182,7 +218,7 @@ def deselect_args_for(job: str, entries: dict = KNOWN_FAILING) -> list[str]:
     return [
         f"--deselect=test/{name}.py::{t}"
         for name, e in _flat(entries)
-        if job in e.jobs
+        if applies(e, job, cuda)
         for t in e.tests
     ]
 
@@ -191,13 +227,15 @@ def missing_from(pytorch_root: Path, names: list[str]) -> list[str]:
     return [n for n in names if not (pytorch_root / "test" / f"{n}.py").is_file()]
 
 
-def missing_tests(pytorch_root: Path, job: str, entries: dict) -> list[str]:
+def missing_tests(
+    pytorch_root: Path, job: str, entries: dict, cuda: str | None = None
+) -> list[str]:
     """Tests whose class or method never appears in their file. A text search, not an
     import: the checkout is untrusted and parametrized names only exist at run time."""
     bad = []
     for name, e in _flat(entries):
         src = pytorch_root / "test" / f"{name}.py"
-        if job not in e.jobs or not e.tests or not src.is_file():
+        if not applies(e, job, cuda) or not e.tests or not src.is_file():
             continue  # a missing file is reported by missing_from
         text = src.read_text(encoding="utf-8", errors="replace")
         classes = re.findall(r"^class (\w+)", text, re.M)
@@ -235,6 +273,12 @@ def main(argv: list[str] | None = None, entries: dict = KNOWN_FAILING) -> int:
         help="emit the entries that apply to this job",
     )
     ap.add_argument(
+        "--cuda",
+        choices=CUDA_VARIANTS,
+        help="restrict to entries that apply to this CUDA variant; omit to apply every "
+        "entry regardless of variant",
+    )
+    ap.add_argument(
         "--validate",
         metavar="PYTORCH_ROOT",
         type=Path,
@@ -248,12 +292,15 @@ def main(argv: list[str] | None = None, entries: dict = KNOWN_FAILING) -> int:
     )
     args = ap.parse_args(argv)
     try:
-        names = names_for(args.job, entries)
+        names = names_for(args.job, entries, args.cuda)
     except ValueError as e:
         print(f"known_failing: {e}", file=sys.stderr)
         return 2
     if args.validate is not None:
-        bad = missing_from(args.validate, sorted({n for n, e in _flat(entries) if args.job in e.jobs}))
+        bad = missing_from(
+            args.validate,
+            sorted({n for n, e in _flat(entries) if applies(e, args.job, args.cuda)}),
+        )
         if bad:
             print(
                 "known_failing: not in this PyTorch checkout (stale or misspelled?): "
@@ -261,7 +308,7 @@ def main(argv: list[str] | None = None, entries: dict = KNOWN_FAILING) -> int:
                 file=sys.stderr,
             )
             return 2
-        bad = missing_tests(args.validate, args.job, entries)
+        bad = missing_tests(args.validate, args.job, entries, args.cuda)
         if bad:
             print(
                 "known_failing: test not found in its file (stale or misspelled?): "
@@ -270,7 +317,7 @@ def main(argv: list[str] | None = None, entries: dict = KNOWN_FAILING) -> int:
             )
             return 2
     if args.deselect_args:
-        print(" ".join(deselect_args_for(args.job, entries)))
+        print(" ".join(deselect_args_for(args.job, entries, args.cuda)))
         return 0
     if names:
         print("--exclude " + " ".join(names))

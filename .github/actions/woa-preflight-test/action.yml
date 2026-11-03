@@ -32,8 +32,14 @@ runs:
         $ErrorActionPreference = "Stop"
         $missing = @()
 
+        # An empty path means the lookup itself failed (a name with no manifest default), so it
+        # counts as missing rather than skipping the check.
         function Require-Path([string]$label, [string]$path) {
-          if ([string]::IsNullOrWhiteSpace($path)) { return }
+          if ([string]::IsNullOrWhiteSpace($path)) {
+            Write-Host "  [MISSING] $label -> (resolved to an empty path)"
+            $script:missing += "$label (resolved to an empty path)"
+            return
+          }
           if (Test-Path -LiteralPath $path) {
             Write-Host "  [ok]      $label -> $path"
           } else {

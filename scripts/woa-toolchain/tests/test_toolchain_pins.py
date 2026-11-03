@@ -34,6 +34,12 @@ VERSIONED_PATH = re.compile(r"NVIDIA[\\/](?:CUDA|CUDNN)[\\/]v\d|Microsoft Visual
 ASSIGNMENT = re.compile(r"""^\s*(\w+)\s*=\s*(['"])(.*?)\2""", re.MULTILINE)
 REFERENCE = re.compile(r"\{([A-Za-z][A-Za-z0-9]*)\}")
 VERSION_KEYS = ("CudaVersion", "CudnnVersion", "VsBuildToolsRoot")
+MANIFEST = REPO / "tools" / "woa-build" / "shared" / "env" / "CiEnvManifest.psd1"
+PREFLIGHTS = sorted((REPO / ".github" / "actions").glob("woa-preflight-*/action.yml"))
+# One `'NAME' = @{ ...; DefaultKey = 'Key'; ... }` entry per manifest line.
+MANIFEST_ENTRY = re.compile(r"^\s*'(\w+)'\s*=\s*@\{(.*)\}", re.MULTILINE)
+DEFAULT_KEY = re.compile(r"\bDefaultKey\s*=\s*'(\w+)'")
+RESOLVED_NAME = re.compile(r"Resolve-CiEnv\s+-Name\s+'(\w+)'")
 
 
 def string_defaults(path: Path) -> dict[str, str]:
@@ -86,3 +92,24 @@ def test_every_reference_names_a_default() -> None:
         if ref not in every
     ]
     assert not dangling, dangling
+
+
+def test_every_preflight_lookup_has_a_default() -> None:
+    default_keys = {}
+    for name, body in MANIFEST_ENTRY.findall(MANIFEST.read_text(encoding="utf-8")):
+        match = DEFAULT_KEY.search(body)
+        default_keys[name] = match.group(1) if match else None
+    defaults = set()
+    for path in DEFAULTS_DIR.glob("*.psd1"):
+        defaults.update(key.lower() for key in string_defaults(path))
+    lookups = [(p.parent.name, n) for p in PREFLIGHTS for n in RESOLVED_NAME.findall(p.read_text(encoding="utf-8"))]
+    assert len(lookups) >= 8, lookups
+    broken = [
+        f"{action}: {name} -> DefaultKey {default_keys.get(name)!r}"
+        for action, name in lookups
+        if (default_keys.get(name) or "").lower() not in defaults
+    ]
+    assert not broken, (
+        "Resolve-CiEnv returns '' for these, so the preflight reports them as an empty path; "
+        "fix the name or add a CiEnvManifest.psd1 entry whose DefaultKey is a default:\n" + "\n".join(broken)
+    )

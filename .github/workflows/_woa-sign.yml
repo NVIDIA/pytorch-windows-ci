@@ -221,7 +221,7 @@ jobs:
         shell: pwsh
     env:
       WOA_CUDA_PATH: 'C:\Program Files\NVIDIA\CUDA\v13.4'
-      WOA_CUDNN_ROOT: 'C:\Program Files\NVIDIA\CUDNN\v9.26'
+      WOA_CUDNN_ROOT: 'C:\Program Files\NVIDIA\CUDNN\v9.27'
       PT_ROOT: 'C:\pt'
       WOA_SCRATCH: 'C:\ci\woa\scratch'
       WOA_VENV_DIR: 'C:\ci\woa\scratch\venv'

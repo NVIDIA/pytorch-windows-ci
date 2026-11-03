@@ -49,7 +49,6 @@ if (-not [string]::IsNullOrWhiteSpace($VenvActivate)) {
 # reads. Unset ones fall through to the WoA section 10 defaults in build-toolchain.psd1.
 if ($env:TORCH_CUDA_ARCH_LIST) { $env:PYTORCH_WIN_BUILD_TORCH_CUDA_ARCH_LIST = $env:TORCH_CUDA_ARCH_LIST }
 if ($env:WOA_CUDA_PATH)        { $env:PYTORCH_WIN_BUILD_CUDA_PATH   = $env:WOA_CUDA_PATH }
-if ($env:WOA_CUDNN_ROOT)       { $env:PYTORCH_WIN_BUILD_CUDNN_ROOT  = $env:WOA_CUDNN_ROOT }
 # Keep the dated wheel tree on job scratch (C:) unless the workflow overrode it.
 if ([string]::IsNullOrWhiteSpace($env:PYTORCH_WIN_BUILD_WHEEL_OUT_DIR) -and $env:WOA_SCRATCH) {
     $env:PYTORCH_WIN_BUILD_WHEEL_OUT_DIR = (Join-Path $env:WOA_SCRATCH 'wheels')

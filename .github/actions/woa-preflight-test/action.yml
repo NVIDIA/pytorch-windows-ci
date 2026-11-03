@@ -19,13 +19,13 @@ inputs:
     required: false
     default: ""
   cuda-path:
-    description: "CUDA 13.4 toolkit root that must exist."
+    description: "CUDA toolkit root that must exist. Empty = CudaPath from tools/woa-build/shared/env/defaults/build-toolchain.psd1."
     required: false
-    default: 'C:\Program Files\NVIDIA\CUDA\v13.4'
+    default: ""
   cudnn-root:
-    description: "cuDNN root that must exist."
+    description: "cuDNN root that must exist. Empty = CudnnRoot from build-toolchain.psd1."
     required: false
-    default: 'C:\Program Files\NVIDIA\CUDNN\v9.27'
+    default: ""
 
 runs:
   using: "composite"
@@ -99,10 +99,16 @@ runs:
           return $null
         }
 
+        # Check the same toolchain paths the build reads (the pins in build-toolchain.psd1);
+        # a non-empty input overrides one.
+        . (Join-Path $env:GITHUB_ACTION_PATH '..\..\..\tools\woa-build\shared\env\EnvDefaults.ps1')
+        $cudaPath  = if ($env:INPUT_CUDA_PATH)  { $env:INPUT_CUDA_PATH }  else { Get-CiDefault CudaPath }
+        $cudnnRoot = if ($env:INPUT_CUDNN_ROOT) { $env:INPUT_CUDNN_ROOT } else { Get-CiDefault CudnnRoot }
+
         $label = if ([string]::IsNullOrWhiteSpace($env:INPUT_PY_LABEL)) { $env:INPUT_PY_VERSION } else { $env:INPUT_PY_LABEL }
         Write-Host "== WoA test preflight (python=$label) =="
-        Require-Path "CUDA 13.4"     $env:INPUT_CUDA_PATH
-        Require-Path "cuDNN"         $env:INPUT_CUDNN_ROOT
+        Require-Path "CUDA toolkit"  $cudaPath
+        Require-Path "cuDNN"         $cudnnRoot
 
         $ver = $env:INPUT_PY_VERSION.Trim()
         $ft = $false

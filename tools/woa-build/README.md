@@ -82,15 +82,17 @@ rest):
 | `CHECKOUT_ROOT` | entrypoint (`-PytorchRoot`) | relocated short-path pytorch checkout (`C:\pt`) |
 | `CI_PROJECT_DIR` | entrypoint (`GITHUB_WORKSPACE`) | logs dir + `logs/WHEEL_OUT_ROOT` marker (shared build→ext steps) |
 | `PYTORCH_WIN_BUILD_VENV_ACTIVATE` / `PYTORCH_WIN_TEST_VENV_ACTIVATE` | entrypoint (`-VenvActivate`) | per-Python venv activation script |
-| `PYTORCH_WIN_BUILD_*` (CUDA/cuDNN/arch) | workflow `WOA_*` env → entrypoint, else `.psd1` | toolchain overrides |
+| `PYTORCH_WIN_BUILD_*` (CUDA/cuDNN/arch) | `build-toolchain.psd1`, unless the workflow sets `TORCH_CUDA_ARCH_LIST` / `WOA_CUDA_PATH` | toolchain overrides |
 | `PYTORCH_WIN_TEST_RUN_TEST_EXTRA_ARGS` | test entrypoint | `--exclude-jit-executor --keep-going --exclude-distributed-tests --exclude-quantization-tests --verbose` |
 
 ## Site defaults (`shared/env/defaults/*.psd1`)
 
 The WoA runner contract lives here (overridable via the `PYTORCH_WIN_*` env
 vars above), describing the expected single-drive `C:` arm64 runner layout:
-CUDA `C:\Program Files\NVIDIA\CUDA\v13.4` + cuDNN
-`C:\Program Files\NVIDIA\CUDNN\v9.27`, APL/libuv under `C:\DevToolKit`, the fresh
+CUDA `C:\Program Files\NVIDIA\CUDA\v<CudaVersion>` + cuDNN
+`C:\Program Files\NVIDIA\CUDNN\v<CudnnVersion>` (both versions and the VS
+BuildTools root are set once, in `build-toolchain.psd1`; `{Key}` references
+expand to other defaults), APL/libuv under `C:\DevToolKit`, the fresh
 per-job venv under `C:\ci\woa\scratch\venv\<pylabel>` (built by `woa-create-venv`
 from the runner's clean ARM64 interpreter — no preinstalled venvs),
 wheel/scratch/ext-work roots under

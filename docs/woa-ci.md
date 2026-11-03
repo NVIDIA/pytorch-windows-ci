@@ -91,10 +91,12 @@ Summary:
     tests + the runtime. Nothing a job installs persists to the next job (public-facing
     runners). Rust/Cargo is preinstalled so Rust-sdist deps (`tlparse`, `lintrunner`)
     build when no win_arm64 wheel exists.
-- **Toolchain (CTK 13.4):** CUDA `C:\Program Files\NVIDIA\CUDA\v13.4`, cuDNN
-  `C:\Program Files\NVIDIA\CUDNN\v9.27`, MSVC arm64 `vcvarsall.bat`, APL
+- **Toolchain:** CUDA under `C:\Program Files\NVIDIA\CUDA`, cuDNN under
+  `C:\Program Files\NVIDIA\CUDNN`, MSVC arm64 `vcvarsall.bat`, APL
   (`C:\DevToolKit\APL`) + vcpkg libuv (`C:\DevToolKit\vcpkg`). These are the
-  single-drive `C:` install paths every arm64 runner must provide.
+  single-drive `C:` install paths every arm64 runner must provide. The CUDA,
+  cuDNN and VS versions are pinned once, in
+  `tools/woa-build/shared/env/defaults/build-toolchain.psd1`.
 - Build + test share the pool; the test runners additionally need a **GPU**
   (`woa-preflight-test` asserts `nvidia-smi`).
 

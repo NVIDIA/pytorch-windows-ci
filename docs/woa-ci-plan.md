@@ -282,21 +282,27 @@ wipes it, so nothing a job installs can leak into the next job.
   stay on Windows PowerShell 5.1).
 - `ninja` on PATH; `git` with `core.longpaths` support.
 
-### Toolchain (CTK 13.4)
+### Toolchain
+
+The CUDA, cuDNN and MSVC paths below are defaults in
+`tools/woa-build/shared/env/defaults/build-toolchain.psd1`, built from its
+`CudaVersion`, `CudnnVersion` and `VsBuildToolsRoot` keys. That file is the only
+place the versions are named, so a toolkit bump is a one-line change there (plus
+the runner provisioning).
 
 | Purpose | Default path (override env) |
 | --- | --- |
-| CUDA toolkit | `C:\Program Files\NVIDIA\CUDA\v13.4\` (`WOA_CUDA_PATH`) |
-| cuDNN root | `C:\Program Files\NVIDIA\CUDNN\v9.27\` (`WOA_CUDNN_ROOT`) |
-| cuDNN lib / include / bin | `...\lib\13.4\arm64` / `...\include\13.4` / `...\bin\13.4\arm64` |
+| CUDA toolkit | `C:\Program Files\NVIDIA\CUDA\v<CudaVersion>\` (`PYTORCH_WIN_BUILD_CUDA_PATH`) |
+| cuDNN root | `C:\Program Files\NVIDIA\CUDNN\v<CudnnVersion>\` (`PYTORCH_WIN_BUILD_CUDNN_ROOT`) |
+| cuDNN lib / include / bin | `<root>\lib\<CudaVersion>\arm64` / `<root>\include\<CudaVersion>` / `<root>\bin\<CudaVersion>\arm64` |
 | APL include / lib | `C:\DevToolKit\APL\armpl_26.01\include` / `...\lib` |
 | vcpkg libuv | `C:\DevToolKit\vcpkg\packages\libuv_arm64-windows` |
-| MSVC vcvars (arm64) | `C:\Program Files\Microsoft Visual Studio\18\BuildTools\...` (`WOA_VCVARS_BAT`), invoked with `arm64` — VS 2026 is major version 18 |
+| MSVC vcvars (arm64) | `<VsBuildToolsRoot>\VC\Auxiliary\Build\vcvarsarm64.bat` (`PYTORCH_WIN_BUILD_VCVARS_BAT`); the test shard runs `vcvarsall.bat arm64` from the same folder. VS 2026 BuildTools' root is major version 18 |
 | `TORCH_CUDA_ARCH_LIST` (torch) | `8.9;10.3+PTX;12.0;12.1+PTX` |
 | extension arch (`EXT_WIN_TORCH_CUDA_ARCH_LIST` / `EXT_WIN_CMAKE_CUDA_ARCHITECTURES`) | `8.9;10.3+PTX;12.0;12.1+PTX` / `89;103a;120f` (suffix-free torch list — cpp_extension rejects the `12.0f` family suffix) |
 
-`woa-preflight-build` / `woa-preflight-test` assert these paths exist (and
-`nvidia-smi` for test) at job start; a missing path fails the job before any
+`woa-preflight-build` / `woa-preflight-test` read the same file and assert these
+paths exist (and `nvidia-smi` for test) at job start; a missing path fails the job before any
 build/test work — the same-machine guarantee an in-job preflight provides.
 
 ## 11. Implementation plan (phased; extensions are P0)

@@ -127,8 +127,10 @@ so `FindCUDA.cmake` does not clear the ARM64 library overrides on first configur
 ```powershell
 $cuda = 'C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v13.4'
 # Newest installed cuDNN 9.x
-$cudnn = (Get-ChildItem 'C:\Program Files\NVIDIA\CUDNN' -Directory -Filter 'v9.*' |
+$cudnn = (Get-ChildItem 'C:\Program Files\NVIDIA\CUDNN' -Directory -ErrorAction SilentlyContinue |
+    Where-Object Name -match '^v9\.\d+$' |
     Sort-Object { [version]$_.Name.Substring(1) } | Select-Object -Last 1).FullName
+if (-not $cudnn) { throw 'No cuDNN 9.x install found under C:\Program Files\NVIDIA\CUDNN' }
 $apl = 'C:\DevToolKit\APL\armpl_26.01'
 $libuv = 'C:\DevToolKit\vcpkg\packages\libuv_arm64-windows'
 $cupti = "$cuda\extras\CUPTI\lib\arm64"

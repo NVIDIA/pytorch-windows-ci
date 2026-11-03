@@ -82,7 +82,7 @@ rest):
 | `CHECKOUT_ROOT` | entrypoint (`-PytorchRoot`) | relocated short-path pytorch checkout (`C:\pt`) |
 | `CI_PROJECT_DIR` | entrypoint (`GITHUB_WORKSPACE`) | logs dir + `logs/WHEEL_OUT_ROOT` marker (shared build→ext steps) |
 | `PYTORCH_WIN_BUILD_VENV_ACTIVATE` / `PYTORCH_WIN_TEST_VENV_ACTIVATE` | entrypoint (`-VenvActivate`) | per-Python venv activation script |
-| `PYTORCH_WIN_BUILD_*` (CUDA/cuDNN/arch) | `build-toolchain.psd1`, unless the workflow sets `TORCH_CUDA_ARCH_LIST` / `WOA_CUDA_PATH` | toolchain overrides |
+| `PYTORCH_WIN_BUILD_*` (CUDA/cuDNN/arch) | `build-toolchain.psd1`, unless set in the job env (the workflow's `TORCH_CUDA_ARCH_LIST` is forwarded); the preflight actions resolve the same names | toolchain overrides |
 | `PYTORCH_WIN_TEST_RUN_TEST_EXTRA_ARGS` | test entrypoint | `--exclude-jit-executor --keep-going --exclude-distributed-tests --exclude-quantization-tests --verbose` |
 
 ## Site defaults (`shared/env/defaults/*.psd1`)

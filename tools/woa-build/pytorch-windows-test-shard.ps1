@@ -59,7 +59,6 @@ $env:PYTORCH_CI_TEST_NUM_SHARDS = "$NumShards"
 if (-not [string]::IsNullOrWhiteSpace($VenvActivate)) {
     $env:PYTORCH_WIN_TEST_VENV_ACTIVATE = $VenvActivate
 }
-if ($env:WOA_CUDA_PATH) { $env:PYTORCH_WIN_BUILD_CUDA_PATH = $env:WOA_CUDA_PATH }
 
 # Route run_test.py output into the reports tree so parse_failures.py can recover
 # whole-file failures from the log and the artifact upload captures it. The runner

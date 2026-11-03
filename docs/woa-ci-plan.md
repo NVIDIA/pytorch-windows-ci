@@ -294,16 +294,17 @@ the runner provisioning).
 | --- | --- |
 | CUDA toolkit | `C:\Program Files\NVIDIA\CUDA\v<CudaVersion>\` (`PYTORCH_WIN_BUILD_CUDA_PATH`) |
 | cuDNN root | `C:\Program Files\NVIDIA\CUDNN\v<CudnnVersion>\` (`PYTORCH_WIN_BUILD_CUDNN_ROOT`) |
-| cuDNN lib / include / bin | `<root>\lib\<CudaVersion>\arm64` / `<root>\include\<CudaVersion>` / `<root>\bin\<CudaVersion>\arm64` |
+| cuDNN lib / include / bin | `<root>\lib\<CudaVersion>\arm64` / `<root>\include\<CudaVersion>` / `<root>\bin\<CudaVersion>\arm64` (`PYTORCH_WIN_BUILD_CUDNN_LIB_DIR` / `_INCLUDE_DIR` / `_BIN_DIR`). These don't follow a root override; to point the build at another cuDNN, set all four |
 | APL include / lib | `C:\DevToolKit\APL\armpl_26.01\include` / `...\lib` |
 | vcpkg libuv | `C:\DevToolKit\vcpkg\packages\libuv_arm64-windows` |
 | MSVC vcvars (arm64) | `<VsBuildToolsRoot>\VC\Auxiliary\Build\vcvarsarm64.bat` (`PYTORCH_WIN_BUILD_VCVARS_BAT`); the test shard runs `vcvarsall.bat arm64` from the same folder. VS 2026 BuildTools' root is major version 18 |
 | `TORCH_CUDA_ARCH_LIST` (torch) | `8.9;10.3+PTX;12.0;12.1+PTX` |
 | extension arch (`EXT_WIN_TORCH_CUDA_ARCH_LIST` / `EXT_WIN_CMAKE_CUDA_ARCHITECTURES`) | `8.9;10.3+PTX;12.0;12.1+PTX` / `89;103a;120f` (suffix-free torch list — cpp_extension rejects the `12.0f` family suffix) |
 
-`woa-preflight-build` / `woa-preflight-test` read the same file and assert these
-paths exist (and `nvidia-smi` for test) at job start; a missing path fails the job before any
-build/test work — the same-machine guarantee an in-job preflight provides.
+`woa-preflight-build` / `woa-preflight-test` resolve these paths the way the build does
+(override env first, then this file) and assert they exist (and `nvidia-smi` for test) at job
+start; a missing path fails the job before any build/test work — the same-machine guarantee an
+in-job preflight provides.
 
 ## 11. Implementation plan (phased; extensions are P0)
 

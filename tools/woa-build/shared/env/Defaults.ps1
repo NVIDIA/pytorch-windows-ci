@@ -22,6 +22,7 @@
     * Expands {Key} references to other defaults (any file), so a version that several paths
       share is written once: CudnnLibDir = '{CudnnRoot}\lib\{CudaVersion}\arm64'. Unknown or
       circular references throw at load time; Get-CiDefault only ever sees the expanded string.
+      There is no escape, so a value cannot contain a literal {Word}.
     * Merges into a case-insensitive OrderedDictionary so Get-CiDefault matches CudaPath /
       cudapath / CUDAPATH alike while preserving canonical CamelCase casing on enumeration.
 
@@ -35,7 +36,7 @@
 
 .NOTES
   CHANGES TO THE PER-DOMAIN FILES ARE A RUNTIME CONTRACT.
-  Update tests/pester/windows/shared/Defaults.Tests.ps1 in the same PR as any value change.
+  scripts/woa-toolchain/tests covers the toolchain pins and the {Key} expansion.
 #>
 
 # ----------------------------------------------------------------------------------------------

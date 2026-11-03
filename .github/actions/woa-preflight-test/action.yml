@@ -18,14 +18,6 @@ inputs:
     description: "Python label (py311 | py312 | py313 | py314 | py314t) - used in log output."
     required: false
     default: ""
-  cuda-path:
-    description: "CUDA toolkit root that must exist. Empty = CudaPath from tools/woa-build/shared/env/defaults/build-toolchain.psd1."
-    required: false
-    default: ""
-  cudnn-root:
-    description: "cuDNN root that must exist. Empty = CudnnRoot from build-toolchain.psd1."
-    required: false
-    default: ""
 
 runs:
   using: "composite"
@@ -36,8 +28,6 @@ runs:
       env:
         INPUT_PY_VERSION: ${{ inputs.python-version }}
         INPUT_PY_LABEL: ${{ inputs.python-label }}
-        INPUT_CUDA_PATH: ${{ inputs.cuda-path }}
-        INPUT_CUDNN_ROOT: ${{ inputs.cudnn-root }}
       run: |
         $ErrorActionPreference = "Stop"
         $missing = @()
@@ -99,16 +89,14 @@ runs:
           return $null
         }
 
-        # Check the same toolchain paths the build reads (the pins in build-toolchain.psd1);
-        # a non-empty input overrides one.
-        . (Join-Path $env:GITHUB_ACTION_PATH '..\..\..\tools\woa-build\shared\env\EnvDefaults.ps1')
-        $cudaPath  = if ($env:INPUT_CUDA_PATH)  { $env:INPUT_CUDA_PATH }  else { Get-CiDefault CudaPath }
-        $cudnnRoot = if ($env:INPUT_CUDNN_ROOT) { $env:INPUT_CUDNN_ROOT } else { Get-CiDefault CudnnRoot }
+        # Resolve each path the way the build does: the PYTORCH_WIN_BUILD_* env var when set,
+        # else its default in build-toolchain.psd1.
+        . (Join-Path $env:GITHUB_ACTION_PATH '..\..\..\tools\woa-build\shared\env\EnvResolve.ps1')
 
         $label = if ([string]::IsNullOrWhiteSpace($env:INPUT_PY_LABEL)) { $env:INPUT_PY_VERSION } else { $env:INPUT_PY_LABEL }
         Write-Host "== WoA test preflight (python=$label) =="
-        Require-Path "CUDA toolkit"  $cudaPath
-        Require-Path "cuDNN"         $cudnnRoot
+        Require-Path "CUDA toolkit"  (Resolve-CiEnv -Name 'PYTORCH_WIN_BUILD_CUDA_PATH')
+        Require-Path "cuDNN"         (Resolve-CiEnv -Name 'PYTORCH_WIN_BUILD_CUDNN_ROOT')
 
         $ver = $env:INPUT_PY_VERSION.Trim()
         $ft = $false

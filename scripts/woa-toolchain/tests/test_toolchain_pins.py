@@ -5,10 +5,10 @@
 The CUDA, cuDNN and VS BuildTools install paths used to be repeated in every
 WoA workflow, both preflight actions and the defaults file, so a cuDNN bump
 touched eleven files, and a missed copy left the build and its preflight check
-looking at different installs. The workflows and actions now read the paths
-from `build-toolchain.psd1`, whose paths are built from one key per version
-through `{Key}` references that `Defaults.ps1` expands. These tests keep it
-that way.
+looking at different installs. The workflows, actions and woa-build scripts now
+read the paths from `build-toolchain.psd1`, whose paths are built from one key
+per version through `{Key}` references that `Defaults.ps1` expands. These tests
+keep it that way.
 """
 
 from __future__ import annotations
@@ -24,16 +24,20 @@ TOOLCHAIN = DEFAULTS_DIR / "build-toolchain.psd1"
 WOA_YAML = sorted(
     [*(REPO / ".github" / "workflows").glob("*woa*.yml"), *(REPO / ".github" / "actions").glob("woa-*/action.yml")]
 )
-# A versioned install path: ...\NVIDIA\CUDA\v13.4, ...\NVIDIA\CUDNN\v9.27, ...\Microsoft Visual Studio\18\...
-VERSIONED_PATH = re.compile(r"NVIDIA\\(?:CUDA|CUDNN)\\v\d|Microsoft Visual Studio\\\d+\\", re.IGNORECASE)
-# `Key = 'value'` lines of a defaults .psd1 (string values only; comments never match).
-ASSIGNMENT = re.compile(r"^\s*(\w+)\s*=\s*'([^']*)'", re.MULTILINE)
+WOA_SCRIPTS = sorted(
+    p for p in (REPO / "tools" / "woa-build").rglob("*") if p.suffix in (".ps1", ".psd1") and p != TOOLCHAIN
+)
+# A versioned install path, either slash: ...\NVIDIA\CUDA\v13.4, .../NVIDIA/CUDNN/v9.27,
+# ...\Microsoft Visual Studio\18\...
+VERSIONED_PATH = re.compile(r"NVIDIA[\\/](?:CUDA|CUDNN)[\\/]v\d|Microsoft Visual Studio[\\/]\d+[\\/]", re.IGNORECASE)
+# `Key = 'value'` / `Key = "value"` lines of a defaults .psd1 (string values only; comments never match).
+ASSIGNMENT = re.compile(r"""^\s*(\w+)\s*=\s*(['"])(.*?)\2""", re.MULTILINE)
 REFERENCE = re.compile(r"\{([A-Za-z][A-Za-z0-9]*)\}")
 VERSION_KEYS = ("CudaVersion", "CudnnVersion", "VsBuildToolsRoot")
 
 
 def string_defaults(path: Path) -> dict[str, str]:
-    return dict(ASSIGNMENT.findall(path.read_text(encoding="utf-8")))
+    return {key: value for key, _quote, value in ASSIGNMENT.findall(path.read_text(encoding="utf-8"))}
 
 
 @pytest.fixture(scope="module")
@@ -41,12 +45,13 @@ def toolchain() -> dict[str, str]:
     return string_defaults(TOOLCHAIN)
 
 
-def test_the_woa_yaml_set_is_not_empty() -> None:
+def test_the_scanned_file_sets_are_not_empty() -> None:
     assert len(WOA_YAML) >= 6, [p.name for p in WOA_YAML]
+    assert len(WOA_SCRIPTS) >= 40, [p.name for p in WOA_SCRIPTS]
 
 
-@pytest.mark.parametrize("path", WOA_YAML, ids=lambda p: str(p.relative_to(REPO)))
-def test_no_woa_workflow_or_action_hard_codes_a_toolchain_path(path: Path) -> None:
+@pytest.mark.parametrize("path", WOA_YAML + WOA_SCRIPTS, ids=lambda p: p.relative_to(REPO).as_posix())
+def test_nothing_else_hard_codes_a_toolchain_path(path: Path) -> None:
     hits = [
         f"{path.name}:{n}: {line.strip()}"
         for n, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1)
@@ -54,7 +59,7 @@ def test_no_woa_workflow_or_action_hard_codes_a_toolchain_path(path: Path) -> No
     ]
     assert not hits, (
         "toolchain install paths belong in tools/woa-build/shared/env/defaults/build-toolchain.psd1 "
-        "(the preflight actions read them from there):\n" + "\n".join(hits)
+        "(read them with Resolve-CiEnv / Get-CiDefault):\n" + "\n".join(hits)
     )
 
 

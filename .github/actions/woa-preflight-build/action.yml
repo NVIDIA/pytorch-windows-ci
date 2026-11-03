@@ -23,18 +23,6 @@ inputs:
     description: "Python label (py311 | py312 | py313 | py314 | py314t) - used in log output."
     required: false
     default: ""
-  cuda-path:
-    description: "CUDA toolkit root that must exist. Empty = CudaPath from tools/woa-build/shared/env/defaults/build-toolchain.psd1."
-    required: false
-    default: ""
-  cudnn-root:
-    description: "cuDNN root that must exist. Empty = CudnnRoot from build-toolchain.psd1."
-    required: false
-    default: ""
-  vcvars-bat:
-    description: "arm64 vcvars batch file that must exist. Empty = VcvarsBat from build-toolchain.psd1."
-    required: false
-    default: ""
 
 runs:
   using: "composite"
@@ -45,9 +33,6 @@ runs:
       env:
         INPUT_PY_VERSION: ${{ inputs.python-version }}
         INPUT_PY_LABEL: ${{ inputs.python-label }}
-        INPUT_CUDA_PATH: ${{ inputs.cuda-path }}
-        INPUT_CUDNN_ROOT: ${{ inputs.cudnn-root }}
-        INPUT_VCVARS_BAT: ${{ inputs.vcvars-bat }}
       run: |
         $ErrorActionPreference = "Stop"
         $missing = @()
@@ -112,18 +97,19 @@ runs:
           return $null
         }
 
-        # Check the same toolchain paths the build reads (the pins in build-toolchain.psd1);
-        # a non-empty input overrides one.
-        . (Join-Path $env:GITHUB_ACTION_PATH '..\..\..\tools\woa-build\shared\env\EnvDefaults.ps1')
-        $cudaPath  = if ($env:INPUT_CUDA_PATH)  { $env:INPUT_CUDA_PATH }  else { Get-CiDefault CudaPath }
-        $cudnnRoot = if ($env:INPUT_CUDNN_ROOT) { $env:INPUT_CUDNN_ROOT } else { Get-CiDefault CudnnRoot }
-        $vcvarsBat = if ($env:INPUT_VCVARS_BAT) { $env:INPUT_VCVARS_BAT } else { Get-CiDefault VcvarsBat }
+        # Resolve each path the way the build does: the PYTORCH_WIN_BUILD_* env var when set,
+        # else its default in build-toolchain.psd1. The cuDNN lib/include/bin dirs resolve on
+        # their own, so a root that exists can still be missing the subfolders the build links.
+        . (Join-Path $env:GITHUB_ACTION_PATH '..\..\..\tools\woa-build\shared\env\EnvResolve.ps1')
 
         $label = if ([string]::IsNullOrWhiteSpace($env:INPUT_PY_LABEL)) { $env:INPUT_PY_VERSION } else { $env:INPUT_PY_LABEL }
         Write-Host "== WoA build preflight (python=$label) =="
-        Require-Path "CUDA toolkit"  $cudaPath
-        Require-Path "cuDNN"         $cudnnRoot
-        Require-Path "MSVC vcvars"   $vcvarsBat
+        Require-Path "CUDA toolkit"  (Resolve-CiEnv -Name 'PYTORCH_WIN_BUILD_CUDA_PATH')
+        Require-Path "cuDNN"         (Resolve-CiEnv -Name 'PYTORCH_WIN_BUILD_CUDNN_ROOT')
+        Require-Path "cuDNN lib"     (Resolve-CiEnv -Name 'PYTORCH_WIN_BUILD_CUDNN_LIB_DIR')
+        Require-Path "cuDNN include" (Resolve-CiEnv -Name 'PYTORCH_WIN_BUILD_CUDNN_INCLUDE_DIR')
+        Require-Path "cuDNN bin"     (Resolve-CiEnv -Name 'PYTORCH_WIN_BUILD_CUDNN_BIN_DIR')
+        Require-Path "MSVC vcvars"   (Resolve-CiEnv -Name 'PYTORCH_WIN_BUILD_VCVARS_BAT')
 
         # Clean ARM64 interpreter check. The job builds its own venv from this interpreter, so an
         # x64-only install is a hard fail here (before the expensive checkout/build).

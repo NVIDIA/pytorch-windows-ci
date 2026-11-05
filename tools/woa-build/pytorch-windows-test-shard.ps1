@@ -138,6 +138,11 @@ if (-not (Test-EnvTruthy 'PYTORCH_WIN_TEST_SKIP_IMPORT_CHECK')) {
     Write-CiPhase -State 'PASS' -Phase 'torch_import_check' -Component 'woa-test'
 }
 
+# Deliberately after the import check: that check must see the PATH a user has, and a discovery
+# failure here must not skip the TORCH_IMPORT_FAILED placeholder report.
+$torchLib = Add-TorchLibToPath -PythonExe $pythonExe
+Write-Host "[woa-test] torch lib prepended to PATH: $torchLib"
+
 # --- per-test timeout + uv (best-effort) --------------------------------------
 # External CI provisions uv + pytest-timeout into the test venv during runner setup,
 # so the runtime `pip install` fixes from the source CI are redundant here. Mark the

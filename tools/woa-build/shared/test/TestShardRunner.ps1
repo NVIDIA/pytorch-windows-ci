@@ -541,6 +541,39 @@ function Enable-RunTestUvOnPath {
     return $true
 }
 
+function Add-TorchLibToPath {
+    <#
+    .SYNOPSIS
+      Prepend the installed torch's lib directory to PATH so cuDNN's lazily loaded sub-libraries
+      resolve to the bundled copies.
+
+    .DESCRIPTION
+      cudnn64_9.dll loads cudnn_graph64_9.dll and the other cuDNN sub-libraries by bare name at
+      first use. Since pytorch/pytorch#202206 dropped the torch\lib preload, that lookup only
+      searches PATH: it fails with "Invalid handle. Cannot load symbol cudnnGetVersion" when no
+      cuDNN is on PATH, and picks a mismatched cuDNN when a different version is. Putting
+      torch\lib first makes the wheel's own cuDNN win. The directory comes from the activated
+      interpreter (find_spec does not import torch), so it works for any venv or conda env.
+
+      TEMPORARY workaround. Remove once torch preloads torch\lib\cudnn*.dll again upstream
+      (follow-up to pytorch/pytorch#202206; TODO: link the upstream fix PR / tracking issue here).
+    #>
+    [CmdletBinding()]
+    [OutputType([string])]
+    param([Parameter(Mandatory)][string] $PythonExe)
+    # -I (isolated): ignore the current directory and PYTHONPATH so a source-tree torch\ cannot shadow the
+    # installed wheel; the venv site-packages is still used.
+    $origin = & $PythonExe -I -c "import importlib.util as u; print(u.find_spec('torch').origin)" |
+        Select-Object -Last 1
+    if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($origin)) {
+        throw "Could not locate the installed torch package with $PythonExe"
+    }
+    $torchLib = Join-Path (Split-Path -Parent $origin.Trim()) 'lib'
+    if (-not (Test-Path -LiteralPath $torchLib)) { throw "torch lib directory not found: $torchLib" }
+    $env:PATH = "$torchLib;$env:PATH"
+    return $torchLib
+}
+
 function Test-TorchImportable {
     <#
     .SYNOPSIS

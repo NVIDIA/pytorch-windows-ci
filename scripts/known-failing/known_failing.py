@@ -40,6 +40,20 @@ KNOWN_FAILING: dict[str, Entry | tuple[Entry, ...]] = {
     "test_precompile": Entry(reason="needs triton-windows"),
     "test_reductions": Entry(reason="needs triton-windows"),
     "test_varlen_attention": Entry(reason="needs triton-windows"),
+    "inductor/test_nested_reduction_lanes": Entry(
+        reason="needs triton-windows",
+        tests=(
+            "TestRecursiveLaneSplitCUDA",
+            "TestNestedAsmLaneInputsCUDA",
+            "TestNestedLaneForwardingCUDA",
+            "TestPitchedLaneSourcesCUDA",
+            "TestNestedLaneSplitsCUDA",
+        ),
+    ),
+    "inductor/test_persistent_reduction_lanes": Entry(
+        reason="needs triton-windows",
+        tests=("TestPersistentReductionLanesCUDA",),
+    ),
     "test_fake_tensor": Entry(
         reason=(
             "test_module_to: fix in https://github.com/pytorch/pytorch/pull/184976, "
@@ -76,14 +90,14 @@ KNOWN_FAILING: dict[str, Entry | tuple[Entry, ...]] = {
         jobs=("x86",),
         tests=("TestMultiprocessingDeviceCUDA::test_variable_sharing_cuda",),
     ),
+    # Whole file, not a test list: the wildcard-dispatch numerics are nondeterministic
+    # on cu13.4/sm89, so a different subset of LayoutCoverageWildcardTest's 12 layout
+    # permutations fails each night (10 of the 12 have failed at least once over six
+    # consecutive nightlies) while LegacyConcreteOnlyTunableOpsTest fails every run.
+    # Naming individual tests cannot keep up
     "inductor/test_dynamic_tunable_ops": Entry(
-        reason="Currently failing, debug required",
+        reason="Nondeterministic TunableOp wildcard-dispatch numerics on cu13.4/sm89, debug required",
         jobs=("x86",),
-        tests=(
-            "LayoutCoverageWildcardTest::test_layout_TN",
-            "LayoutCoverageWildcardTest::test_layout_TN_dynamic_k",
-            "LayoutCoverageWildcardTest::test_layout_TT_dynamic_k",
-        ),
     ),
 
     # ---- WoA only (run 87) ----

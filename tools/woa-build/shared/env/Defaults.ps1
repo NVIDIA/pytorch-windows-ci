@@ -19,6 +19,10 @@
 
     * Loads every .psd1 lexicographically (deterministic ordering on every runner).
     * Rejects duplicate keys across files (fail loud — typos used to silently override).
+    * Expands {Key} references to other defaults (any file), so a version that several paths
+      share is written once: CudnnLibDir = '{CudnnRoot}\lib\{CudaVersion}\arm64'. Unknown or
+      circular references throw at load time; Get-CiDefault only ever sees the expanded string.
+      There is no escape, so a value cannot contain a literal {Word}.
     * Merges into a case-insensitive OrderedDictionary so Get-CiDefault matches CudaPath /
       cudapath / CUDAPATH alike while preserving canonical CamelCase casing on enumeration.
 
@@ -32,7 +36,7 @@
 
 .NOTES
   CHANGES TO THE PER-DOMAIN FILES ARE A RUNTIME CONTRACT.
-  Update tests/pester/windows/shared/Defaults.Tests.ps1 in the same PR as any value change.
+  scripts/woa-toolchain/tests covers the toolchain pins and the {Key} expansion.
 #>
 
 # ----------------------------------------------------------------------------------------------
@@ -79,6 +83,31 @@ foreach ($__file in $__domainFiles) {
     }
 }
 
+# Expand {Key} references depth-first. $__inProgress holds the chain being expanded, so a cycle
+# (a key reaching itself, directly or through others) is reported instead of growing forever.
+$__refPattern = '\{([A-Za-z][A-Za-z0-9]*)\}'
+$__inProgress = [ordered]@{}
+$__expand = {
+    param([string] $Key)
+    $value = $__merged[$Key]
+    if ($value -isnot [string] -or $value -notmatch $__refPattern) { return }
+    if ($__inProgress.Contains($Key)) {
+        throw ("Defaults.ps1: circular {{Key}} reference: {0} -> {1}." -f (@($__inProgress.Keys) -join ' -> '), $Key)
+    }
+    $__inProgress[$Key] = $true
+    foreach ($match in [regex]::Matches($value, $__refPattern)) {
+        $ref = $match.Groups[1].Value
+        if (-not $__merged.Contains($ref)) {
+            throw ("Defaults.ps1: {0} in {1} references unknown default '{2}'." -f $Key, $__ownerByKey[$Key], $match.Value)
+        }
+        & $__expand $ref
+        $value = $value.Replace($match.Value, [string]$__merged[$ref])
+    }
+    $__merged[$Key] = $value
+    $__inProgress.Remove($Key)
+}
+foreach ($__name in @($__merged.Keys)) { & $__expand $__name }
+
 # Re-host the merged literal in a case-insensitive OrderedDictionary so Get-CiDefault matches
 # keys without regard to casing. Enumeration order and key casing are preserved.
 $Script:CiDefaultsTable = [System.Collections.Specialized.OrderedDictionary]::new(
@@ -92,5 +121,6 @@ foreach ($__entry in $__merged.GetEnumerator()) {
 $Script:CiDefaultsOwner = $__ownerByKey
 
 # Tidy aggregation scratch.
-Remove-Variable -Name '__merged','__ownerByKey','__domainFiles','__defaultsDir','__data','__entry','__name','__file' `
+Remove-Variable -Name '__merged','__ownerByKey','__domainFiles','__defaultsDir','__data','__entry','__name','__file',
+    '__refPattern','__inProgress','__expand' `
     -Scope Script -ErrorAction SilentlyContinue

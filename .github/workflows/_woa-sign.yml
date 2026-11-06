@@ -220,8 +220,6 @@ jobs:
       run:
         shell: pwsh
     env:
-      WOA_CUDA_PATH: 'C:\Program Files\NVIDIA\CUDA\v13.4'
-      WOA_CUDNN_ROOT: 'C:\Program Files\NVIDIA\CUDNN\v9.26'
       PT_ROOT: 'C:\pt'
       WOA_SCRATCH: 'C:\ci\woa\scratch'
       WOA_VENV_DIR: 'C:\ci\woa\scratch\venv'
@@ -251,8 +249,6 @@ jobs:
         with:
           python-version: ${{ inputs.python-version }}
           python-label: ${{ inputs.python-label }}
-          cuda-path: ${{ env.WOA_CUDA_PATH }}
-          cudnn-root: ${{ env.WOA_CUDNN_ROOT }}
 
       - name: Create job venv
         id: venv

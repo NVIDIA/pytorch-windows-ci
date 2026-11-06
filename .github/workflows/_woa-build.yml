@@ -127,13 +127,9 @@ jobs:
       TORCHAUDIO_WIN_GIT_REF: ${{ inputs.torchaudio-ref }}
       TORCHVISION_WIN_GIT_REF: ${{ inputs.torchvision-ref }}
       # ---- WoA preinstall contract (single-drive C: runners; see docs/woa-ci-plan.md) ----
-      # Expected install paths on every woa-arm64 runner: CTK/cuDNN under
-      # C:\Program Files\NVIDIA, tools/vcpkg/APL under C:\DevToolKit.
-      WOA_CUDA_PATH: 'C:\Program Files\NVIDIA\CUDA\v13.4'
-      WOA_CUDNN_ROOT: 'C:\Program Files\NVIDIA\CUDNN\v9.26'
-      # arm64 MSVC entry point verified by woa-preflight-build (fail fast if absent).
-      # VS 2026 BuildTools: install root is major version 18, outside the '(x86)' prefix.
-      WOA_VCVARS_BAT: 'C:\Program Files\Microsoft Visual Studio\18\BuildTools\VC\Auxiliary\Build\vcvarsarm64.bat'
+      # The CUDA / cuDNN / MSVC paths every woa-arm64 runner must provide are pinned in
+      # tools/woa-build/shared/env/defaults/build-toolchain.psd1, which both the build and
+      # woa-preflight-build read; tools/vcpkg/APL live under C:\DevToolKit.
       # Short relocated checkout root + job scratch on C: (MAX_PATH + space; runners are C: only).
       PT_ROOT: 'C:\pt'
       WOA_SCRATCH: 'C:\ci\woa\scratch'
@@ -170,9 +166,6 @@ jobs:
         with:
           python-version: ${{ inputs.python-version }}
           python-label: ${{ inputs.python-label }}
-          cuda-path: ${{ env.WOA_CUDA_PATH }}
-          cudnn-root: ${{ env.WOA_CUDNN_ROOT }}
-          vcvars-bat: ${{ env.WOA_VCVARS_BAT }}
 
       # Build a FRESH, throwaway venv for this job from the clean interpreter and install the
       # WoA BUILD deps (woa-base.txt + woa-build.txt, strict - no test harness/domain stack).

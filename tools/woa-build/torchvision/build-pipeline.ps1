@@ -29,7 +29,6 @@ $ErrorActionPreference = 'Stop'
 if ([string]::IsNullOrWhiteSpace($env:CI_PROJECT_DIR)) {
     $env:CI_PROJECT_DIR = if ($env:GITHUB_WORKSPACE) { $env:GITHUB_WORKSPACE } else { (Get-Location).Path }
 }
-if ($env:WOA_CUDA_PATH)   { $env:PYTORCH_WIN_BUILD_CUDA_PATH   = $env:WOA_CUDA_PATH }
 # The extension flow creates its own isolated venv via `python -m venv`; activate
 # the per-cell venv first so a `python` is on PATH to bootstrap from.
 if (-not [string]::IsNullOrWhiteSpace($VenvActivate) -and (Test-Path -LiteralPath $VenvActivate)) {

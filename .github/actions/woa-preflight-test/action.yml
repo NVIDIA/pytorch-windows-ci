@@ -18,14 +18,6 @@ inputs:
     description: "Python label (py311 | py312 | py313 | py314 | py314t) - used in log output."
     required: false
     default: ""
-  cuda-path:
-    description: "CUDA 13.4 toolkit root that must exist."
-    required: false
-    default: 'C:\Program Files\NVIDIA\CUDA\v13.4'
-  cudnn-root:
-    description: "cuDNN root that must exist."
-    required: false
-    default: 'C:\Program Files\NVIDIA\CUDNN\v9.26'
 
 runs:
   using: "composite"
@@ -36,14 +28,18 @@ runs:
       env:
         INPUT_PY_VERSION: ${{ inputs.python-version }}
         INPUT_PY_LABEL: ${{ inputs.python-label }}
-        INPUT_CUDA_PATH: ${{ inputs.cuda-path }}
-        INPUT_CUDNN_ROOT: ${{ inputs.cudnn-root }}
       run: |
         $ErrorActionPreference = "Stop"
         $missing = @()
 
+        # An empty path means the lookup itself failed (a name with no manifest default), so it
+        # counts as missing rather than skipping the check.
         function Require-Path([string]$label, [string]$path) {
-          if ([string]::IsNullOrWhiteSpace($path)) { return }
+          if ([string]::IsNullOrWhiteSpace($path)) {
+            Write-Host "  [MISSING] $label -> (resolved to an empty path)"
+            $script:missing += "$label (resolved to an empty path)"
+            return
+          }
           if (Test-Path -LiteralPath $path) {
             Write-Host "  [ok]      $label -> $path"
           } else {
@@ -99,10 +95,14 @@ runs:
           return $null
         }
 
+        # Resolve each path the way the build does: the PYTORCH_WIN_BUILD_* env var when set,
+        # else its default in build-toolchain.psd1.
+        . (Join-Path $env:GITHUB_ACTION_PATH '..\..\..\tools\woa-build\shared\env\EnvResolve.ps1')
+
         $label = if ([string]::IsNullOrWhiteSpace($env:INPUT_PY_LABEL)) { $env:INPUT_PY_VERSION } else { $env:INPUT_PY_LABEL }
         Write-Host "== WoA test preflight (python=$label) =="
-        Require-Path "CUDA 13.4"     $env:INPUT_CUDA_PATH
-        Require-Path "cuDNN"         $env:INPUT_CUDNN_ROOT
+        Require-Path "CUDA toolkit"  (Resolve-CiEnv -Name 'PYTORCH_WIN_BUILD_CUDA_PATH')
+        Require-Path "cuDNN"         (Resolve-CiEnv -Name 'PYTORCH_WIN_BUILD_CUDNN_ROOT')
 
         $ver = $env:INPUT_PY_VERSION.Trim()
         $ft = $false

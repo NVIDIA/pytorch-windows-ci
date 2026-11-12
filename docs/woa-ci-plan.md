@@ -178,7 +178,7 @@ test-summary   parse_failures.py --shards-root (per-cell + overall)
    cuda_embed + extensions; uploads `wheel-artifact`).
 3. `.github/workflows/_woa-test.yml` — reusable test (one python; dynamic shard
    matrix; installs that cell's wheel; `run_test.py` with WoA exclude args
-   `--exclude-jit-executor --keep-going --exclude-distributed-tests
+   `--keep-going --exclude-distributed-tests
    --exclude-quantization-tests --verbose`; uploads `test-reports-*`; per-shard summary).
 4. `tools/woa-build/**` — vendored PowerShell library + entrypoints.
 5. `.github/actions/woa-preflight-build/`, `woa-preflight-test/`, `woa-strict-clean/`.

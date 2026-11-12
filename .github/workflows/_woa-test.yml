@@ -426,7 +426,7 @@ jobs:
           if ([string]::IsNullOrWhiteSpace($excl)) { exit 0 }
           $base = $env:PYTORCH_WIN_TEST_RUN_TEST_EXTRA_ARGS
           if ([string]::IsNullOrWhiteSpace($base)) {
-            $base = '--exclude-jit-executor --keep-going --exclude-distributed-tests --exclude-quantization-tests --verbose'
+            $base = '--keep-going --exclude-distributed-tests --exclude-quantization-tests --verbose'
           }
           $runArgs = "$base $excl"
           "PYTORCH_WIN_TEST_RUN_TEST_EXTRA_ARGS=$runArgs" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8

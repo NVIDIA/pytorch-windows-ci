@@ -83,7 +83,7 @@ rest):
 | `CI_PROJECT_DIR` | entrypoint (`GITHUB_WORKSPACE`) | logs dir + `logs/WHEEL_OUT_ROOT` marker (shared build→ext steps) |
 | `PYTORCH_WIN_BUILD_VENV_ACTIVATE` / `PYTORCH_WIN_TEST_VENV_ACTIVATE` | entrypoint (`-VenvActivate`) | per-Python venv activation script |
 | `PYTORCH_WIN_BUILD_*` (CUDA/cuDNN/arch) | workflow `WOA_*` env → entrypoint, else `.psd1` | toolchain overrides |
-| `PYTORCH_WIN_TEST_RUN_TEST_EXTRA_ARGS` | test entrypoint | `--exclude-jit-executor --keep-going --exclude-distributed-tests --exclude-quantization-tests --verbose` |
+| `PYTORCH_WIN_TEST_RUN_TEST_EXTRA_ARGS` | test entrypoint | `--keep-going --exclude-distributed-tests --exclude-quantization-tests --verbose` |
 
 ## Site defaults (`shared/env/defaults/*.psd1`)
 

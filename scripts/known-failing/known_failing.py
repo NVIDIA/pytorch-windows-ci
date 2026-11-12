@@ -70,8 +70,8 @@ KNOWN_FAILING: dict[str, Entry | tuple[Entry, ...]] = {
             "PR waiting on merge; the rest: currently failing, debug required"
         ),
         tests=(
-            "PropagateRealTensorsTestFakeTensor::test_cuda_fake_tensor_new_methods_no_device_init_propagate_real_tensors",
-            "TestFakeTensor::test_cuda_fake_tensor_new_methods_no_device_init",
+            "PropagateRealTensorsTestFakeTensorCUDA::test_cuda_fake_tensor_new_methods_no_device_init_propagate_real_tensors",
+            "TestFakeTensorCUDA::test_cuda_fake_tensor_new_methods_no_device_init",
             "TestFakeTensorOperatorInvariantsDeviceCUDA::test_module_to",
         ),
     ),
@@ -91,6 +91,13 @@ KNOWN_FAILING: dict[str, Entry | tuple[Entry, ...]] = {
                 "TestCuda::test_graph_capture_error_releases_reserved_segments",
                 "TestCuda::test_graph_rng_after_failed_capture",
             ),
+        ),
+        Entry(
+            reason=(
+                "CUDA 13.2: cudaErrorStreamCaptureInvalidated, then the serial lane loops on exit code 3221226505 until the shard watchdog fires. Unable to reproduce locally"
+            ),
+            cuda=("cu132",),
+            tests=("TestCuda::test_graph_allocator_free_after_auxiliary_capture_invalidation",),
         ),
     ),
     "higher_order_ops/test_invoke_subgraph": Entry(

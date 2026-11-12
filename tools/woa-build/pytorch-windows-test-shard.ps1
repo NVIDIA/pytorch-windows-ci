@@ -73,7 +73,7 @@ $env:PYTORCH_WIN_TEST_LOG_DIR = $reportsDir
 # default. Operator can still override via the same env var.
 if ([string]::IsNullOrWhiteSpace($env:PYTORCH_WIN_TEST_RUN_TEST_EXTRA_ARGS)) {
     $env:PYTORCH_WIN_TEST_RUN_TEST_EXTRA_ARGS =
-        '--exclude-jit-executor --keep-going --exclude-distributed-tests --exclude-quantization-tests --verbose'
+        '--keep-going --exclude-distributed-tests --exclude-quantization-tests --verbose'
 }
 
 # --- validate + resolve paths ------------------------------------------------

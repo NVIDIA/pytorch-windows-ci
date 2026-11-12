@@ -26,7 +26,6 @@ function Get-RunTestStaticArgumentList {
     return @(
         "--include",
         "test_cuda",
-        "--exclude-jit-executor",
         "--keep-going",
         "--exclude-distributed-tests",
         "--exclude-quantization-tests",

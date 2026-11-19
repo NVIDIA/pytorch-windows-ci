@@ -55,7 +55,13 @@
         # other. Drop -DSLEEF_DISABLE_SVE=ON only once the toolset builds SVE, and in that same
         # change set SleefDisableSve above to '0' so the exported env var cannot advertise SVE as
         # disabled while CMake is building it.
-        CMakeArgs                = '-DSLEEF_DISABLE_SVE=ON'
+        #
+        # -DBLAS_USE_CBLAS_DOT=ON pre-seeds the result of the CHECK_C_SOURCE_RUNS probe in
+        # cmake/BLAS_ABI.cmake. On the WoA runner that probe's test exe can't run, so it fails and
+        # silently picks the Fortran zdotu_/cdotc_ ABI, which APL doesn't match: complex dot/vdot
+        # then return 0j/NaN. Pre-seeding skips the probe and uses APL's cblas_*dot*_sub.
+        # Native builds only; cross builds read PYTORCH_BLAS_USE_CBLAS_DOT instead (not set here).
+        CMakeArgs                = '-DSLEEF_DISABLE_SVE=ON -DBLAS_USE_CBLAS_DOT=ON'
         CFlags                   = '/Zc:preprocessor /EHsc'
         CxxFlags                 = '/Zc:preprocessor /EHsc'
         ClFlags                  = '/Zc:preprocessor /EHsc'

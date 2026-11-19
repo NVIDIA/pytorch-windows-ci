@@ -39,7 +39,9 @@ ml-dtypes
 
 # --- solvers / misc test tooling ---
 lark
-z3-solver
+# x64 CI pins 4.15.1.0 which has no win_arm64 wheel
+# 4.16.0.0 is the newest 4.x with a win_arm64 wheel. 
+z3-solver==4.16.0.0
 PuLP
 pwlf
 tlparse

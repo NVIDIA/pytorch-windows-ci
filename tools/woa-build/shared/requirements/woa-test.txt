@@ -25,5 +25,7 @@ hypothesis
 expecttest
 xdoctest
 parameterized
+click
+spin==0.17
 junitparser
 unittest-xml-reporting

@@ -103,6 +103,13 @@ KNOWN_FAILING: dict[str, Entry | tuple[Entry, ...]] = {
             reason="flaky; disabled on Linux CI (pytorch/pytorch#182021)",
             tests=("TestFP32PrecisionFlags::test_generic_fp32_precision_propagates_to_cudnn_conv_rnn",),
         ),
+        Entry(
+            reason=(
+                "passes, then aborts at exit (0xC0000409): the static cuDNN dropout state is destroyed after the "
+                "CUDA runtime unloads, so run_test.py restarts the serial lane until the shard watchdog fires"
+            ),
+            tests=("TestCuda::test_graph_cudnn_dropout",),
+        ),
     ),
     "higher_order_ops/test_invoke_subgraph": Entry(
         reason="needs triton-windows",
@@ -136,9 +143,9 @@ KNOWN_FAILING: dict[str, Entry | tuple[Entry, ...]] = {
         tests=("TestTorch::test_qengine",),
     ),
     "export/test_export_opinfo": Entry(
-        reason="Currently failing, debug required",
+        reason="With CUDA available, FakeTensorMode runs a real .to('xpu') on a non-XPU build; upstream gap",
         jobs=("woa",),
-        tests=("TestExportOpInfoCPU::test_fake_export_xpu_trunc_cpu_float32",),
+        tests=("TestExportOpInfoCPU::test_fake_export_xpu",),
     ),
     "test_serialization": Entry(reason="4gb_file and filelike_exceptions fail; debug required", jobs=("woa",)),
     "test_cpp_extensions_jit": Entry(reason="test_jit_cudnn_extension fails; debug required", jobs=("woa",)),
@@ -147,6 +154,11 @@ KNOWN_FAILING: dict[str, Entry | tuple[Entry, ...]] = {
     "cpython/v3_13/test_fstring": Entry(reason="test_conversions fails; debug required", jobs=("woa",)),
     "cpython/v3_13/test_int": Entry(reason="test_int_max_str_digits_is_per_interpreter fails; debug required", jobs=("woa",)),
     "cpython/v3_13/test_richcmp": Entry(reason="test_recursion fails; debug required", jobs=("woa",)),
+    "cpython/v3_13/test_reprlib": Entry(
+        reason="Expects repr(sys.stdin) == '<stdin>' but pytest capture replaces stdin; skipped upstream",
+        jobs=("woa",),
+        tests=("ReprTests::test_custom_repr",),
+    ),
     "functorch/test_vmap": Entry(reason="test_op_has_batch_rule fmod/remainder fail; debug required", jobs=("woa",)),
     "functorch/test_eager_transforms": Entry(reason="test_compile_vmap_hessian_cpu fails; debug required", jobs=("woa",)),
     "dynamo/test_dynamo_decompositions": Entry(

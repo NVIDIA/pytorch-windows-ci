@@ -71,8 +71,8 @@ function Initialize-PytorchWindowsCompilerAndBuildEnvironment {
     Set-CiEnv -Name 'CMAKE_CXX_COMPILER'          -Value (Resolve-CiEnv -Name 'PYTORCH_WIN_BUILD_CMAKE_CXX_COMPILER')          | Out-Null
     Set-CiEnv -Name 'TORCH_CUDA_ARCH_LIST'        -Value (Resolve-CiEnv -Name 'PYTORCH_WIN_BUILD_TORCH_CUDA_ARCH_LIST')        | Out-Null
     # Generator selection MUST precede CMAKE_ARGS. The default is Ninja; CMAKE_ARGS disables SLEEF
-    # SVE but omits the '-A ARM64' platform flag because Ninja rejects it (the ARM64 target comes
-    # from the imported vcvars environment).
+    # SVE and pre-seeds BLAS_USE_CBLAS_DOT=ON, but omits the '-A ARM64' platform flag because
+    # Ninja rejects it (the ARM64 target comes from the imported vcvars environment).
     Set-CiEnv -Name 'CMAKE_GENERATOR'             -Value (Resolve-CiEnv -Name 'PYTORCH_WIN_BUILD_CMAKE_GENERATOR')             | Out-Null
     Set-CiEnv -Name 'CMAKE_ARGS'                  -Value (Resolve-CiEnv -Name 'PYTORCH_WIN_BUILD_CMAKE_ARGS')                  | Out-Null
     Set-CiEnv -Name 'CFLAGS'                      -Value (Resolve-CiEnv -Name 'PYTORCH_WIN_BUILD_CFLAGS')                      | Out-Null

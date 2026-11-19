@@ -99,6 +99,10 @@ KNOWN_FAILING: dict[str, Entry | tuple[Entry, ...]] = {
             cuda=("cu132",),
             tests=("TestCuda::test_graph_allocator_free_after_auxiliary_capture_invalidation",),
         ),
+        Entry(
+            reason="flaky; disabled on Linux CI (pytorch/pytorch#182021)",
+            tests=("TestFP32PrecisionFlags::test_generic_fp32_precision_propagates_to_cudnn_conv_rnn",),
+        ),
     ),
     "higher_order_ops/test_invoke_subgraph": Entry(
         reason="needs triton-windows",

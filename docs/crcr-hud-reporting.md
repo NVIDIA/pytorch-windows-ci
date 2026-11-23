@@ -19,12 +19,10 @@ CRCR gates downstream repositories by trust level in
 | L1 | Upstream events are relayed *to* us. Nothing we send back is used. |
 | L2 | Our results are accepted and rendered on the HUD (not on PRs). |
 
-This repository is currently **L1**. Everything described here is implemented
-and safe to run at L1 — it just has no visible effect yet, because the relay
-accepts an L1 callback with `HTTP 200 {"ok": true, "status": "ignored"}` and
-drops it. Promotion is a one-line move of the repo from the L1 list to the L2
-list in the upstream allowlist. Note that the upstream parser raises on a repo
-appearing under two levels, so it must be **moved**, not added.
+This repository is currently **L2**. Its authenticated callbacks are accepted
+and rendered on the [PyTorch HUD](https://hud.pytorch.org/crcr/NVIDIA/pytorch-windows-ci).
+The repository must remain listed only under L2 in the upstream allowlist; the
+upstream parser rejects a repository that appears under more than one level.
 
 ## What gets reported
 

@@ -617,6 +617,13 @@ jobs:
           # load-bearing and the import check must cover it.
           python -m pip install "pytest-timeout==2.3.1"
 
+          # requirements-ci.txt lists redis>=4.0.0.
+          # redis 8.2.0 has a known regression:
+          #   https://github.com/redis/redis-py/issues/4677
+          #   https://github.com/redis/redis-py/pull/4678
+          # Drop this pin once a release with the fix is out
+          python -m pip install "redis==8.1.0"
+
           python - <<'PY'
           import importlib.util
           import sys

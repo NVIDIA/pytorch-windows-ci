@@ -46,7 +46,12 @@ PuLP
 pwlf
 tlparse
 tqdm
-redis
+# This file listed redis unpinned.
+# redis 8.2.0 has a known regression:
+#   https://github.com/redis/redis-py/issues/4677
+#   https://github.com/redis/redis-py/pull/4678
+# Drop this pin once a release with the fix is out
+redis==8.1.0
 dill
 fbscribelogger
 setuptools-git-versioning

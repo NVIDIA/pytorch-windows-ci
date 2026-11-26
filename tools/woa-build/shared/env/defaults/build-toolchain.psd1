@@ -39,6 +39,14 @@
         CudnnLibDir     = 'C:\Program Files\NVIDIA\CUDNN\v9.26\lib\13.4\arm64'
         CudnnIncludeDir = 'C:\Program Files\NVIDIA\CUDNN\v9.26\include\13.4'
         CudnnBinDir     = 'C:\Program Files\NVIDIA\CUDNN\v9.26\bin\13.4\arm64'
+        # The torch wheel's CUDA runtime: written into its metadata as PYTORCH_EXTRA_INSTALL_REQUIREMENTS
+        # (upstream's Windows string, with ARM64 markers) and loaded by cuda-pathfinder at import.
+        # The pins must follow the toolkit and cuDNN above. cuda-toolkit==<CTK version> pins each
+        # component wheel to that release, except nvJitLink, which takes any newer 13.x; CUPTI's exact
+        # pin matters because torch_cpu.dll imports it by a file name that changes between releases.
+        # cuDNN wheels must be the same 9.x minor or newer (there is no
+        # 9.26.0 arm64 wheel). cuda-pathfinder 1.9.1 is the first release that finds the arm64 cuDNN wheel.
+        ExtraInstallRequirements = 'cuda-toolkit[nvrtc,cudart,cupti,cufft,curand,cusolver,cusparse,cublas,cufile,nvjitlink,nvtx]==13.4.2; platform_system == "Windows" and platform_machine == "ARM64" | cuda-pathfinder>=1.9.1; platform_system == "Windows" and platform_machine == "ARM64" | nvidia-cudnn-cu13==9.26.1.1; platform_system == "Windows" and platform_machine == "ARM64"'
         # Arm Performance Libraries (arm64 BLAS/LAPACK) + vcpkg libuv - runner-provided.
         # APL is expected under C:\DevToolKit\APL, laid out per version as armpl_<major.minor>;
         # libuv comes from a vcpkg root at C:\DevToolKit\vcpkg.

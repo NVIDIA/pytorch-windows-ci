@@ -9,7 +9,7 @@ for this repo's out-of-tree CI. It is invoked by the WoA GitHub Actions workflow
 `windows-woa-build-test.yml`) and produces the full P0 wheel set:
 
 ```
-torch (vanilla) → torch (cuda_embed, DLLs embedded) → torchaudio → torchvision → test → summary
+torch (vanilla) → torch (cuda_embed) → torchaudio → torchvision → test → summary
 ```
 
 See [`docs/woa-ci-plan.md`](../../docs/woa-ci-plan.md) for the design, the locked
@@ -54,7 +54,7 @@ shared/
   env/      # Resolve-CiEnv / Set-CiEnv / Get-CiDefault + defaults/*.psd1 (site config)
   log/      # Write-CiPhase structured phase logging
   workflow/ # Prereqs, Subset, FlowExitCode, LoggedExec
-  build/    # ImportVcvars, CudaDelveAddPath, ResolveTorchWheel, extension pipeline
+  build/    # ImportVcvars, ResolveTorchWheel, extension pipeline
   test/     # run_test.py shard runner, watchdog + synthetic-failure JUnit
   io/       # long-path-safe delete
   publish/  # Test-PyPiWheelRelease: download released wheels, checksum, install, CUDA smoke

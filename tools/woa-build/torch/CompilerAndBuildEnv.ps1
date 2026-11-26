@@ -57,6 +57,9 @@ function Initialize-PytorchWindowsCompilerAndBuildEnvironment {
     Set-CiEnv -Name 'CUDNN_LIB_DIR'               -Value (Resolve-CiEnv -Name 'PYTORCH_WIN_BUILD_CUDNN_LIB_DIR')               | Out-Null
     Set-CiEnv -Name 'CUDNN_INCLUDE_DIR'           -Value (Resolve-CiEnv -Name 'PYTORCH_WIN_BUILD_CUDNN_INCLUDE_DIR')           | Out-Null
     Set-CiEnv -Name 'CUDA_PATH'                   -Value (Resolve-CiEnv -Name 'PYTORCH_WIN_BUILD_CUDA_PATH')                   | Out-Null
+    # Naming cuda-toolkit here also turns off PyTorch's cmake/PostBuildSteps.cmake copy of the
+    # toolkit DLLs into torch\lib, which prefers bin\x64 (the wrong architecture here).
+    Set-CiEnv -Name 'PYTORCH_EXTRA_INSTALL_REQUIREMENTS' -Value (Resolve-CiEnv -Name 'PYTORCH_WIN_BUILD_EXTRA_INSTALL_REQUIREMENTS') | Out-Null
     Set-CiEnv -Name 'USE_MKLDNN'                  -Value (Resolve-CiEnv -Name 'PYTORCH_WIN_BUILD_USE_MKLDNN')                  | Out-Null
     Set-CiEnv -Name 'USE_MKLDNN_ACL'              -Value (Resolve-CiEnv -Name 'PYTORCH_WIN_BUILD_USE_MKLDNN_ACL')              | Out-Null
     Set-CiEnv -Name 'USE_MAGMA'                   -Value (Resolve-CiEnv -Name 'PYTORCH_WIN_BUILD_USE_MAGMA')                   | Out-Null

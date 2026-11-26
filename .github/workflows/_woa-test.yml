@@ -337,8 +337,10 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
       # Install the built wheels into this cell's fresh venv. The cuda_embed torch wheel
-      # is the distributable one (DLLs embedded), so prefer it over any vanilla
-      # torch wheel that may also be present; then add the extension wheels.
+      # is the distributable one, so prefer it over any vanilla torch wheel that may
+      # also be present; then add the extension wheels. It carries no CUDA DLLs:
+      # installing it pulls the nvidia-* runtime wheels, and every CUDA library must
+      # then load from them rather than from the runner's toolkit.
       - name: Install PyTorch + extensions
         shell: powershell
         env:
@@ -355,7 +357,7 @@ jobs:
             if ($LASTEXITCODE -ne 0) { throw "pip $($PipArgs -join ' ') failed with exit $LASTEXITCODE" }
           }
 
-          # torch is required. Prefer the cuda_embed wheel (DLLs embedded).
+          # torch is required. Prefer the cuda_embed wheel.
           $torch = Get-ChildItem -LiteralPath $dist -Filter "torch-*.whl" |
             Sort-Object { if ($_.Name -match "cuda_embed|cuda-embed") { 0 } else { 1 } } |
             Select-Object -First 1
@@ -375,6 +377,8 @@ jobs:
           # extension must import too, so a broken wheel fails the shard instead of going green.
           python -c "import torch; print('torch', torch.__version__, 'cuda', torch.version.cuda); assert torch.cuda.is_available()"
           if ($LASTEXITCODE -ne 0) { throw "import torch smoke test failed with exit $LASTEXITCODE" }
+          python "$env:GITHUB_WORKSPACE\oot\scripts\woa-smoke\cuda_wheels_check.py"
+          if ($LASTEXITCODE -ne 0) { throw "cuda_wheels_check.py failed with exit $LASTEXITCODE" }
           foreach ($ext in $installedExts) {
             python -c "import $ext; print('$ext', $ext.__version__)"
             if ($LASTEXITCODE -ne 0) { throw "import $ext smoke test failed with exit $LASTEXITCODE" }

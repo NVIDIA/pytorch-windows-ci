@@ -122,8 +122,12 @@ touched. All checkouts use `persist-credentials: false`.
 | `test-reports-win-woa-arm64-<pylabel>-arm64-shard<N>-<run_id>-<attempt>` | each test shard | JUnit XML + `run_test.py` logs |
 | `runner-diagnostics-woa-*` | build/test | runner diagnostics (best-effort) |
 
-The distributable torch wheel is the `cuda_embed` one (CUDA DLLs embedded); the
-test job installs it in preference to any vanilla wheel.
+The distributable torch wheel is the `cuda_embed` one; the test job installs it
+in preference to any vanilla wheel. It carries no CUDA, cuDNN or CUPTI DLLs. Its
+metadata requires `cuda-toolkit`, `nvidia-cudnn-cu13` and `cuda-pathfinder`
+(`ExtraInstallRequirements` in `tools/woa-build/shared/env/defaults/build-toolchain.psd1`),
+and torch loads each library from those wheels at import. Every test job checks
+that with `scripts/woa-smoke/cuda_wheels_check.py`.
 
 Wheels are versioned to match upstream pytorch nightlies:
 `<base>.dev<yyyyMMdd>+cu<cudaver>` (e.g. `torch-2.10.0.dev20260713+cu134-...whl`),

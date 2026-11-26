@@ -9,7 +9,7 @@ name: _woa-build
 #
 # One invocation builds ONE Python cell for CTK 13.4 and produces the full P0
 # set of wheels:
-#     torch (vanilla) -> torch (cuda_embed, DLLs embedded)
+#     torch (vanilla) -> torch (cuda_embed; its CUDA DLLs come from the nvidia-* wheels)
 #       -> torchaudio -> torchvision
 # The two extensions are P0 but non-blocking: `continue-on-error: true` lets a
 # failed extension keep the run going (build the sibling extension + upload the

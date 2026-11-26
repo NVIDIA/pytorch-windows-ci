@@ -64,7 +64,7 @@ if ($rc -ne 0) {
 }
 
 # --- collect the distributable cuda_embed torch wheel into OutputDir ---------
-# Prefer the cuda_embed wheel (DLLs embedded); it shares the vanilla wheel's
+# Prefer the cuda_embed wheel; it shares the vanilla wheel's
 # filename, so copying only this one avoids a flat-dir collision.
 New-Item -ItemType Directory -Force -Path $OutputDir | Out-Null
 $marker = Join-Path (Join-Path $env:CI_PROJECT_DIR 'logs') 'WHEEL_OUT_ROOT'

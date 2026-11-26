@@ -110,6 +110,9 @@ print("pypi-release-smoke-ok", torch.__version__, torchaudio.__version__, torchv
 '@
     & $venvPython -c $smoke 2>&1 | Out-Host
     if ($LASTEXITCODE -ne 0) { throw 'Released PyTorch/CUDA smoke test failed.' }
+    $cudaWheelsCheck = Join-Path $PSScriptRoot '..\..\..\..\scripts\woa-smoke\cuda_wheels_check.py'
+    & $venvPython $cudaWheelsCheck 2>&1 | Out-Host
+    if ($LASTEXITCODE -ne 0) { throw 'The released torch did not load its CUDA libraries from the nvidia-* wheels.' }
 
     $report = [pscustomobject][ordered]@{
         index_url = $IndexUrl

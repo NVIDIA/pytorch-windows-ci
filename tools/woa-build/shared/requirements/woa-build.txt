@@ -7,7 +7,7 @@
 # extensions; it does NOT run pytest, so the test harness + domain deps are excluded.
 # Installed as a strict `pip install -r` pass - any failure aborts the build.
 #
-# `delvewheel` embeds the CUDA DLLs into the cuda_embed torch wheel (build stage only).
+# `delvewheel` repairs the torchvision wheel (build stage only).
 # See woa-base.txt for the version strategy (unpinned).
 
 delvewheel
